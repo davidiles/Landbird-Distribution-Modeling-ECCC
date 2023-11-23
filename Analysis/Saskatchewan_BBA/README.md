@@ -11,7 +11,14 @@
   
 ### Bird Data
 Data were downloaded from two sources: 1) [WildTrax](https://wildtrax.ca/), and 2) [NatureCounts](https://naturecounts.ca/).
+
 ### Covariates
+Covariate layers were obtained from the following sources:
+
+- [2020 Land Cover of Canada](https://open.canada.ca/data/en/dataset/ee1580ab-a23d-4f86-a09b-79763677eb47)
+- Digital elevation map (provided by Birds Canada)
+- Stand Canopy Closure (extracted from [Beaudoin et al. 2014](https://cdnsciencepub.com/doi/10.1139/cjfr-2013-0401))
+
 
 ### Model Structure
 

@@ -1,0 +1,10 @@
+
+*.Rhistory
+*.Rdata
+*.rds
+*.RDS
+*.png
+*.csv
+Data/
+text_documents/
+archive_code/

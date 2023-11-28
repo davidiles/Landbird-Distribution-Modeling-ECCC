@@ -127,22 +127,18 @@ cut_levs_labs <- c("1 to 5",
 hex25$levs <- cut(as.data.frame(hex25)[,"nPC"], 
                               cut_levs,labels=cut_levs_labs)
 
-raster_CV <- stars::st_rasterize(ONGrid_species %>% dplyr::select(CV_levs, x),
-                                 nx = dim(raster_q50)[1],ny = dim(raster_q50)[2])
+tgt <- st_as_stars(target_raster)
+raster_CV <- stars::st_rasterize(hex25 %>% dplyr::select(levs, x),nx = dim(tgt)[1],ny = dim(tgt)[2])
 
 
 plot1 <- ggplot() +
   
-  geom_stars(data = raster_CV) +
-  scale_fill_manual(name = "<span style='font-size:13pt'>Relative Uncertainty</span><br><span style='font-size:7pt'>Per 5-minute point count</span><br><span style='font-size:7pt'>Coefficient of Variation</span>",
-                    values = colpal_uncertainty(length(levels(raster_CV$CV_levs))), drop=FALSE,na.translate=FALSE)+
-  
-  # Surveyed squares
-  geom_sf(data = subset(ONSquares_centroids, !is.na(PC_detected)), col = "gray40", size=0.4,stroke = 0, shape = 16)+
-  # Point count detections
-  geom_sf(data = subset(ONSquares_centroids, !is.na(PC_detected) & PC_detected > 0), col = "black",size=0.5,stroke = 0, shape = 16)+
-  
   geom_sf(data = ONBoundary,colour="black",fill=NA,lwd=0.3,show.legend = F) +
+  geom_stars(data = raster_CV) +
+  geom_sf(data = subset(hex25,!is.na(nPC)), fill="transparent")+
+  scale_fill_manual(name = "<span style='font-size:13pt'>Number of surveys</span><br><span style='font-size:7pt'>Point counts & ARUs</span>",
+                    values = rev(magma(length(levels(raster_CV$levs)))), drop=FALSE,na.translate=FALSE)+
+  
   coord_sf(clip = "off",xlim = range(as.data.frame(st_coordinates(ONBoundary))$X))+
   theme(panel.background = element_blank(),
         panel.grid.major = element_blank(), 
@@ -156,14 +152,13 @@ plot1 <- ggplot() +
         legend.title = element_markdown(lineheight=.9,hjust = "left"))+
   theme(legend.key = element_rect(fill = "transparent", colour = "transparent"))+
   
-  annotate(geom="text",x=1040000,y=1500000, label= paste0(species_label),lineheight = .85,hjust = 0,size=6,fontface =2) +
-  annotate(geom="text",x=1050000,y=680000, label= paste0("Prepared on ",Sys.Date()),size=2,lineheight = .75,hjust = 0,color="gray75")+
-  
   guides(fill = guide_legend(order = 1), 
          size = guide_legend(order = 2))
 
-png(paste0("../Output/Prediction_Maps/Uncertainty/",sp_code,"_CV.png"), width=8, height=6.5, units="in", res=1000, type="cairo")
-print(plot_CV)
+print(plot1)
+
+png("../Output/Covariate_Maps/Survey_Density_PointCount.png", width=10, height=6.5, units="in", res=1000, type="cairo")
+print(plot1)
 dev.off()
 
 # ------------------------------------------------

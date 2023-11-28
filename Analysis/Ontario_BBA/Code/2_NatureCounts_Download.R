@@ -83,25 +83,28 @@ CustomTheme <- theme_update(legend.key = element_rect(colour = NA),
 # ************************************************************
 # ************************************************************
 
-###--------> Last downloaded/run on Nov 16 2023
-
+# ###--------> Last downloaded/run on Nov 27 2023
+# 
 # # Get Species information #
 # species <- search_species_code()
 # 
-# duplicates <- species %>% 
-#   group_by(species_id) %>% 
+# duplicates <- species %>%
+#   group_by(species_id) %>%
 #   filter(n()>1)
 # 
 # species %<>% filter(BSCDATA %!in% c("MCLO","EWPE","CAGO","UNDD","GRPA","ASTK","MONP","COSN","RWBU","PEPL","UNSG","GUSP","RODO","ECDO","WPWI","TTWO","GRAJ","SIFL","HYBG","YWAR","NSTS","OTHR","DOWS","EWWR","UNWX","COMO","SBDU","JUNI","RIPH","BNOW","BDOW"))
 # 
 # ### Point Counts
-# PCData <- read_xlsx(path = "../../../Data/Bird_Data_Raw/NatureCounts/SK_atlas/skatlas1pc_naturecounts_data.xlsx")
+# PCData<- read.table("../../../Data/Bird_Data_Raw/NatureCounts/OBBA3/onatlas3pc_naturecounts_data.txt", sep="\t",  
+#                     header=TRUE, fill = TRUE,comment.char = "",quote = "")
 # 
 # ### Checklists
-# DOData <- read_xlsx(path = "../../../Data/Bird_Data_Raw/NatureCounts/SK_atlas/skatlas1be_do_naturecounts_data.xlsx")
+# DOData <- read.table("../../../Data/Bird_Data_Raw/NatureCounts/OBBA3/onatlas3be_do_naturecounts_data.txt", sep="\t",  
+#                      header=TRUE, fill = TRUE,comment.char = "",quote = "")
 # 
 # ### Highest Breeding evidence
-# BEData <- read_xlsx(path = "../../../Data/Bird_Data_Raw/NatureCounts/SK_atlas/skatlas1be_summ_naturecounts_data.xlsx")
+# BEData <- read.table("../../../Data/Bird_Data_Raw/NatureCounts/OBBA3/onatlas3be_summ_naturecounts_data.txt", sep="\t",  
+#                      header=TRUE, fill = TRUE,comment.char = "",quote = "")
 # 
 # #### Data Processing ####
 # ### Remove empty columns
@@ -154,7 +157,7 @@ CustomTheme <- theme_update(legend.key = element_rect(colour = NA),
 # 
 # saveRDS(PCData,"../Data_Cleaned/NatureCounts/PCData.rds")
 # saveRDS(DOData,"../Data_Cleaned/NatureCounts/DOData.rds")
-
+# 
 
 # ************************************************************
 # ************************************************************
@@ -209,6 +212,7 @@ PCData  %<>% mutate(DurationInMinutes=round(PCData$DurationInHours * 60))
 # Remove NA counts
 PCData %<>%  filter(!is.na(ObservationCount)) 
 
+
 # ---------------------------------------------------------
 # Dataframe with one row per survey
 # ---------------------------------------------------------
@@ -216,7 +220,7 @@ PCData %<>%  filter(!is.na(ObservationCount))
 # Construct a dataset that contains JUST survey information (not counts)
 PC_surveyinfo <- PCData %>% 
   as.data.frame() %>%
-  dplyr::select(surveyID,Locality,DecimalLatitude,DecimalLongitude,ObservationDate,TimeCollected,DurationInMinutes,EffortMeasurement1) %>%
+  dplyr::select(surveyID,Locality,DecimalLatitude,DecimalLongitude,ObservationDate,TimeCollected,DurationInMinutes,ProtocolType) %>%
   distinct() %>%
   rename(sq_id = Locality) %>%
   st_as_sf(.,coords = c("DecimalLongitude","DecimalLatitude"), crs = st_crs(4326), remove = FALSE)
@@ -241,16 +245,16 @@ PC_matrix <- PC_matrix[,-which(colSums(PC_matrix,na.rm = T)==0)]
 
 NC_PC_surveyinfo <- PC_surveyinfo %>%
   
-  rename(survey_ID = surveyID, 
+  rename(Survey_Type = ProtocolType,
+         survey_ID = surveyID, 
          Latitude = DecimalLatitude, 
          Longitude = DecimalLongitude,
-         Survey_Duration_Minutes = DurationInMinutes,
-         Survey_Type = EffortMeasurement1) %>%
+         Survey_Duration_Minutes = DurationInMinutes) %>%
   
   mutate(Max_Distance_Metres = Inf, 
          Date_Time = ymd(ObservationDate) + hours(floor(TimeCollected)) + minutes(round(60*(TimeCollected-floor(TimeCollected)))),
          Data_Source = "NatureCounts",
-         Project_Name = "SK Breeding Bird Atlas") %>%
+         Project_Name = "OBBA3") %>%
   
   dplyr::select(Data_Source,
                 Project_Name,
@@ -261,6 +265,15 @@ NC_PC_surveyinfo <- PC_surveyinfo %>%
                 Date_Time,
                 Survey_Duration_Minutes,
                 Max_Distance_Metres)
+
+# ---------------------------------------------------------
+# Remove rows that are missing time or date information
+# ---------------------------------------------------------
+summary(NC_PC_surveyinfo)
+
+rows_to_exclude <- which(is.na(NC_PC_surveyinfo$Date_Time))
+NC_PC_surveyinfo <- NC_PC_surveyinfo[-rows_to_exclude,]
+PC_matrix <- PC_matrix[-rows_to_exclude,]
 
 # ************************************************************
 # ************************************************************
@@ -276,90 +289,94 @@ NC_PC_surveyinfo <- PC_surveyinfo %>%
 # ************************************************************
 # ************************************************************
 
-# Prepared by a separate script; downloaded from NatureCounts
-DOData <- readRDS("../Data_Cleaned/NatureCounts/DOData.rds")
-
-# ------------------------------------------------------------
-# QA/QC
-# ------------------------------------------------------------
-
-# Only include complete checklists (AllSpeciesReported == "Y")
-DOData %<>% mutate(AllSpeciesReported=case_when(AllSpeciesReported=="y" ~ "Y", .default = AllSpeciesReported))
-table(DOData$AllSpeciesReported, useNA = "always")
-DOData %<>% filter(AllSpeciesReported == "Y")
-
-# ----------------------------------------------------------------
-# ASSUME NA'S CORRESPOND TO NON-DETECTIONS (SET TO 0)
-# ----------------------------------------------------------------
-
-DOData$ObservationCount[which(is.na(DOData$ObservationCount))] <- 0
-
-# ---------------------------------------------------------
-# Dataframe with one row per checklist
-# ---------------------------------------------------------
-
-# Summarize remaining checklist information
-DO_surveyinfo <- DOData %>% 
-  dplyr::rename(TravelDistance_m = EffortMeasurement1,
-                IncludesPointCounts = EffortMeasurement3) %>%
-  group_by(SamplingEventIdentifier,
-           Locality,
-           ObservationDate,
-           TimeCollected,
-           CollectorNumber,
-           ProtocolType,
-           AllIndividualsReported,
-           AllSpeciesReported,
-           
-           # Effort covariates
-           DurationInHours,
-           NumberOfObservers,
-           
-           # Travel distance
-           TravelDistance_m,
-           
-           # Does checklist include point counts (EffortMeasurement3 == 1)
-           IncludesPointCounts) %>%
-  
-  summarize(n_Species_Detected = length(unique(spcd)),
-            n_Birds_Detected = sum(ObservationCount),
-            
-            # There is one checklist with a minor discrepancy in lat/lon coordinates among rows, so
-            # calculate the mean lat/lon.  All other checklists are consistent among rows
-            Latitude = mean(DecimalLatitude),
-            Longitude = mean(DecimalLongitude)) %>%
-  
-  mutate(Date_Time = ymd(ObservationDate) + hours(floor(TimeCollected)) + minutes(round(60*(TimeCollected-floor(TimeCollected)))),
-         Data_Source = "NatureCounts",
-         Project_Name = "SK Breeding Bird Atlas",
-         Survey_Duration_Minutes = DurationInHours*60) %>%
-  
-  rename(Atlas_Square_ID = Locality,
-         survey_ID = SamplingEventIdentifier,
-         Travel_Distance_Metres = TravelDistance_m,
-         Survey_Type = ProtocolType) %>%
-  ungroup() %>%
-  st_as_sf(.,coords = c("Longitude","Latitude"), crs = st_crs(4326), remove = FALSE) %>%
-  subset(!is.na(Date_Time)) %>% 
-  dplyr::select(Data_Source,Project_Name,Survey_Type,survey_ID,Latitude,Longitude,
-                Date_Time,Survey_Duration_Minutes,Travel_Distance_Metres,n_Species_Detected,n_Birds_Detected,IncludesPointCounts,geometry)
-
-# ---------------------------------------------------------
-# Create matrix of species counts (each row corresponds to one in DO_surveyinfo)
-# ---------------------------------------------------------
-
-DO_matrix <- matrix(0,nrow = nrow(DO_surveyinfo),ncol = nrow(BSC_species),
-                    dimnames = list(DO_surveyinfo$survey_ID,BSC_species$BSC_spcd))
-
-pb = txtProgressBar(min = 0, max = nrow(DOData), initial = 0, style = 3) 
-for (i in 1:nrow(DOData)) {
-  DO_matrix[which(rownames(DO_matrix) == DOData$SamplingEventIdentifier[i]),which(colnames(DO_matrix) == DOData$spcd[i])] <- DOData$ObservationCount[i]
-  setTxtProgressBar(pb,i)
-}
-close(pb)
-
-# Remove columns (species) that were never observed to save storage space
-DO_matrix <- DO_matrix[,-which(colSums(DO_matrix,na.rm = TRUE)==0)]
+# # Prepared by a separate script; downloaded from NatureCounts
+# DOData <- readRDS("../Data_Cleaned/NatureCounts/DOData.rds")
+# 
+# # ------------------------------------------------------------
+# # QA/QC
+# # ------------------------------------------------------------
+# 
+# # Only include complete checklists (AllSpeciesReported == "Y")
+# DOData %<>% mutate(AllSpeciesReported=case_when(AllSpeciesReported=="y" ~ "Y", .default = AllSpeciesReported))
+# table(DOData$AllSpeciesReported, useNA = "always")
+# DOData %<>% filter(AllSpeciesReported == "Y")
+# 
+# # ----------------------------------------------------------------
+# # ASSUME NA'S CORRESPOND TO NON-DETECTIONS (SET TO 0)
+# # ----------------------------------------------------------------
+# 
+# DOData$ObservationCount[which(is.na(DOData$ObservationCount))] <- 0
+# 
+# # ---------------------------------------------------------
+# # Dataframe with one row per checklist
+# # ---------------------------------------------------------
+# 
+# # Summarize remaining checklist information
+# DO_surveyinfo <- DOData %>% 
+#   dplyr::rename(TravelDistance_m = EffortMeasurement1#,
+#                 #IncludesPointCounts = EffortMeasurement3
+#                 ) %>%
+#   group_by(SamplingEventIdentifier,
+#            Locality,
+#            ObservationDate,
+#            TimeCollected,
+#            CollectorNumber,
+#            ProtocolType,
+#            AllIndividualsReported,
+#            AllSpeciesReported,
+#            
+#            # Effort covariates
+#            DurationInHours,
+#            NumberOfObservers,
+#            
+#            # Travel distance
+#            TravelDistance_m#,
+#            
+#            # Does checklist include point counts (EffortMeasurement3 == 1)
+#            #IncludesPointCounts
+#            ) %>%
+#   
+#   summarize(n_Species_Detected = length(unique(spcd)),
+#             n_Birds_Detected = sum(ObservationCount),
+#             
+#             # There is one checklist with a minor discrepancy in lat/lon coordinates among rows, so
+#             # calculate the mean lat/lon.  All other checklists are consistent among rows
+#             Latitude = mean(DecimalLatitude),
+#             Longitude = mean(DecimalLongitude)) %>%
+#   
+#   mutate(Date_Time = ymd(ObservationDate) + hours(floor(TimeCollected)) + minutes(round(60*(TimeCollected-floor(TimeCollected)))),
+#          Data_Source = "NatureCounts",
+#          Project_Name = "SK Breeding Bird Atlas",
+#          Survey_Duration_Minutes = DurationInHours*60) %>%
+#   
+#   rename(Atlas_Square_ID = Locality,
+#          survey_ID = SamplingEventIdentifier,
+#          Travel_Distance_Metres = TravelDistance_m,
+#          Survey_Type = ProtocolType) %>%
+#   ungroup() %>%
+#   st_as_sf(.,coords = c("Longitude","Latitude"), crs = st_crs(4326), remove = FALSE) %>%
+#   subset(!is.na(Date_Time)) %>% 
+#   dplyr::select(Data_Source,Project_Name,Survey_Type,survey_ID,Latitude,Longitude,
+#                 Date_Time,Survey_Duration_Minutes,Travel_Distance_Metres,n_Species_Detected,n_Birds_Detected,
+#                 #IncludesPointCounts,
+#                 geometry)
+# 
+# # ---------------------------------------------------------
+# # Create matrix of species counts (each row corresponds to one in DO_surveyinfo)
+# # ---------------------------------------------------------
+# 
+# DO_matrix <- matrix(0,nrow = nrow(DO_surveyinfo),ncol = nrow(BSC_species),
+#                     dimnames = list(DO_surveyinfo$survey_ID,BSC_species$BSC_spcd))
+# 
+# pb = txtProgressBar(min = 0, max = nrow(DOData), initial = 0, style = 3) 
+# for (i in 1:nrow(DOData)) {
+#   DO_matrix[which(rownames(DO_matrix) == DOData$SamplingEventIdentifier[i]),which(colnames(DO_matrix) == DOData$spcd[i])] <- DOData$ObservationCount[i]
+#   setTxtProgressBar(pb,i)
+# }
+# close(pb)
+# 
+# # Remove columns (species) that were never observed to save storage space
+# DO_matrix <- DO_matrix[,-which(colSums(DO_matrix,na.rm = TRUE)==0)]
 
 # ************************************************************
 # ************************************************************
@@ -396,10 +413,10 @@ for (i in 1:nrow(subset(NC_PC_surveyinfo, to_evaluate))){
   time_diff <- abs(difftime(obs_to_evaluate$Date_Time, WT_within_5m$Date_Time, units='mins')) %>% as.numeric()
   
   # If the survey was ARU-based, use WildTrax as authoritative
-  if (min(time_diff)<=10 & obs_to_evaluate$Survey_Type != "IN_PERSON") NC_PC_surveyinfo$to_remove[which(NC_PC_surveyinfo$Obs_Index == obs_to_evaluate$Obs_Index)] <- TRUE
+  if (min(time_diff)<=10 & obs_to_evaluate$Survey_Type != "Point_Count") NC_PC_surveyinfo$to_remove[which(NC_PC_surveyinfo$Obs_Index == obs_to_evaluate$Obs_Index)] <- TRUE
   
   # If the survey was Human-based, use NatureCounts as authoritative
-  if (min(time_diff)<=10 & obs_to_evaluate$Survey_Type == "IN_PERSON") WT_surveyinfo$to_remove[which(WT_surveyinfo$survey_ID %in% WT_within_5m[which(time_diff<=10),]$survey_ID)] <- TRUE
+  if (min(time_diff)<=10 & obs_to_evaluate$Survey_Type == "Point_Count") WT_surveyinfo$to_remove[which(WT_surveyinfo$survey_ID %in% WT_within_5m[which(time_diff<=10),]$survey_ID)] <- TRUE
 }
 
 # Remove duplicated records from NatureCounts dataset
@@ -422,14 +439,15 @@ WT_surveyinfo <- WT_surveyinfo %>% dplyr::select(-Obs_Index, -to_remove)
 
 WT_surveyinfo$survey_ID <- as.character(WT_surveyinfo$survey_ID)
 NC_PC_surveyinfo$survey_ID <- as.character(NC_PC_surveyinfo$survey_ID)
-DO_surveyinfo$survey_ID <- as.character(DO_surveyinfo$survey_ID)
+#DO_surveyinfo$survey_ID <- as.character(DO_surveyinfo$survey_ID)
 
 all_surveys <- bind_rows(WT_surveyinfo %>% st_transform(crs = AEA_proj) %>% mutate(Survey_Class = "WT"),
-                         NC_PC_surveyinfo %>% st_transform(crs = AEA_proj) %>% mutate(Survey_Class = "NC_PC"),
-                         DO_surveyinfo %>% st_transform(crs = AEA_proj) %>% mutate(Survey_Class = "DO"))
+                         NC_PC_surveyinfo %>% st_transform(crs = AEA_proj) %>% mutate(Survey_Class = "NC_PC"))
+
+#,DO_surveyinfo %>% st_transform(crs = AEA_proj) %>% mutate(Survey_Class = "DO"))
 
 # Set time zone
-tz(all_surveys$Date_Time) <- "Canada/Central"
+tz(all_surveys$Date_Time) <- "Canada/Eastern"
 
 # Hours since sunrise
 all_surveys$Sunrise <- suntools::sunriset(crds = st_transform(all_surveys,crs = 4326),
@@ -445,22 +463,22 @@ all_surveys$Hours_Since_Sunrise <- with(all_surveys, difftime(Date_Time,Sunrise,
 
 NC_species <- colnames(PC_matrix)
 WT_species <- colnames(WT_matrix)
-DO_species <- colnames(DO_matrix)
+#DO_species <- colnames(DO_matrix)
 
 # NC_species only detected in NatureCounts point counts
-NC_only <- NC_species[NC_species %!in% WT_species & NC_species %!in% DO_species]
+NC_only <- NC_species[NC_species %!in% WT_species] # & NC_species %!in% DO_species
 
 # NC_species only detected in WildTrax
-WT_only <- WT_species[WT_species %!in% NC_species & WT_species %!in% DO_species]
+WT_only <- WT_species[WT_species %!in% NC_species ] #& WT_species %!in% DO_species
 
 # NC_species only detected in checklists
-DO_only <- DO_species[DO_species %!in% NC_species & DO_species %!in% WT_species]
+#DO_only <- DO_species[DO_species %!in% NC_species & DO_species %!in% WT_species]
 
 subset(all_species,BSC_spcd %in% NC_only)
 subset(all_species,BSC_spcd %in% WT_only)
-subset(all_species,BSC_spcd %in% DO_only)
+#subset(all_species,BSC_spcd %in% DO_only)
 
-species_combined <- c(NC_species,WT_species,DO_species) %>% unique() %>% sort()
+species_combined <- c(NC_species,WT_species) %>% unique() %>% sort() # c(NC_species,WT_species,DO_species) %>% unique() %>% sort()
 
 full_count_matrix <- matrix(0, nrow=nrow(all_surveys), ncol = length(species_combined),
                             dimnames = list(all_surveys$survey_ID,species_combined))
@@ -469,7 +487,7 @@ for (spp in species_combined){
   
   if (spp %in% colnames(WT_matrix)) full_count_matrix[which(all_surveys$Survey_Class == "WT"),spp] <- WT_matrix[,spp] 
   if (spp %in% colnames(PC_matrix)) full_count_matrix[which(all_surveys$Survey_Class == "NC_PC"),spp] <- NC_PC_matrix[,spp] 
-  if (spp %in% colnames(DO_matrix)) full_count_matrix[which(all_surveys$Survey_Class == "DO"),spp] <- DO_matrix[,spp] 
+  #if (spp %in% colnames(DO_matrix)) full_count_matrix[which(all_surveys$Survey_Class == "DO"),spp] <- DO_matrix[,spp] 
   
 }
 
@@ -482,7 +500,7 @@ for (spp in species_combined){
 
 # all_surveys$Obs_Index <- 1:nrow(all_surveys)
 # 
-# point_counts <- subset(all_surveys, Survey_Type %in% c("Point_Count","IN_PERSON",
+# point_counts <- subset(all_surveys, Survey_Type %in% c("Point_Count","Point_Count",
 #                                                        
 #                                                        "ARU_SPT","ARU_SPM",
 #                                                        "ARU_SM2","ARU_BAR_LT","ARU_SM_UNKN",
@@ -505,19 +523,19 @@ saveRDS(analysis_data, file = "../Data_Cleaned/analysis_data.rds")
 # ************************************************************
 # ************************************************************
 
-SK_BCR <- st_read("../../../Data/Spatial/National/BCR/BCR_Terrestrial_master.shp")  %>%
-  subset(PROVINCE_S == "SASKATCHEWAN") %>%
+ON_BCR <- st_read("../../../Data/Spatial/National/BCR/BCR_Terrestrial_master.shp")  %>%
+  subset(PROVINCE_S == "ONTARIO") %>%
   st_make_valid() %>%
   st_transform(st_crs(AEA_proj)) %>%
   dplyr::select(BCR, PROVINCE_S)
 
-SaskBoundary <- SK_BCR %>% st_union()
+ONBoundary <- ON_BCR %>% st_union()
 
-all_surveys$Survey_Class <- factor(all_surveys$Survey_Class, levels = c("WT","NC_PC","DO"))
+all_surveys$Survey_Class <- factor(all_surveys$Survey_Class, levels = c("WT","NC_PC")) # "DO"
 ggplot()+
-  geom_sf(data = SK_BCR, fill = "gray95", col = "transparent") +
+  geom_sf(data = ON_BCR, fill = "gray95", col = "transparent") +
   geom_sf(data = subset(all_surveys, year(Date_Time) > 2010),aes(col = Survey_Class), size = 0.2)+
-  geom_sf(data = SaskBoundary, fill = "transparent", col = "black") +
+  geom_sf(data = ONBoundary, fill = "transparent", col = "black") +
   scale_color_manual(values=c("orangered","black","dodgerblue"),name = "Data Source")+
   facet_grid(.~Survey_Class)+
   ggtitle("Data availability")

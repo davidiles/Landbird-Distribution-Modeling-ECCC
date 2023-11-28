@@ -418,9 +418,7 @@ species_to_model <- left_join(n_detections,BSC_species %>% dplyr::select(-index)
                               "vireo sp.",
                               "Catharus sp.",
                               "Worthen's Sparrow",
-                              "woodpecker sp.")) %>%
-  
-  subset(n_squares >=40 & n_detections >= 80)
+                              "woodpecker sp."))
 
 dim(species_to_model) # 175 species
 species_to_model$english_name %>% sort()

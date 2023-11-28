@@ -48,6 +48,12 @@ setwd(dirname)
 
 `%!in%` <- Negate(`%in%`)
 
+# -----------------------------------------------
+# WildTrax credentials
+# -----------------------------------------------
+
+wt_auth() # Need your wildtrax username
+
 # ------------------------------------------------
 # Reconcile species lists between Birds Canada and NatureCounts
 # ------------------------------------------------

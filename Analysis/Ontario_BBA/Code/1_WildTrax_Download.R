@@ -62,13 +62,12 @@ setwd(dirname)
 
 all_species <- readRDS("../Data_Cleaned/all_species.RDS")
 
-
 # -----------------------------------------------
 # Polygon delineating study area boundary
 # -----------------------------------------------
 
 Study_Area <- st_read("../../../Data/Spatial/National/BCR/BCR_Terrestrial_master.shp")  %>%
-  subset(PROVINCE_S == "SASKATCHEWAN") %>%
+  subset(PROVINCE_S == "ONTARIO") %>%
   st_make_valid() %>%
   dplyr::select(BCR, PROVINCE_S)
 
@@ -88,7 +87,7 @@ PC_projects <- wt_get_download_summary(sensor_id = 'PC') %>% subset(sensor == "P
 # # ---------------------------------------------------------
 # # Download projects with 'ARU' data
 # # ---------------------------------------------------------
-#
+# 
 # ARU_fulldat <- data.frame()
 # 
 # for (i in 1:nrow(ARU_projects)){
@@ -297,13 +296,22 @@ ARU_recordings_SPT <- dplyr::select(ARU_recordings_SPT,
                                     organization,project,project_id,location,location_id
 ) %>% unique()
 
+# Duplicated recording_ids
+duplicated_ids <- ARU_recordings_SPT$recording_id[duplicated(ARU_recordings_SPT$recording_id)] %>% unique()
+subset(ARU_recordings_SPT,recording_id %in% duplicated_ids) %>% arrange(recording_id)
+
+# Remove duplicated recording IDs 
+# (!!! THIS NEEDS TO BE CAREFULLY INSPECTED IN THE FUTURE  !!!)
+duplicated_rows <- which(duplicated(ARU_recordings_SPT$recording_id))
+ARU_recordings_SPT <- ARU_recordings_SPT[-duplicated_rows,]
+
 # ---------------------------------------------------------
 # Process tags (count individuals)
 # ---------------------------------------------------------
 
 # Extract correct tags (based on recording id)
 ARU_tags_SPT <- subset(ARU_tags, recording_id %in% ARU_recordings_SPT$recording_id)
-ARU_tags_SPT$recording_id <- factor(ARU_tags_SPT$recording_id,levels = ARU_recordings_SPT$recording_id)
+ARU_tags_SPT$recording_id <- factor(ARU_tags_SPT$recording_id,levels = unique(ARU_recordings_SPT$recording_id))
 
 # Total number of individuals detected per survey (sum of individual counts)
 ARU_counts_SPT <- ARU_tags_SPT %>%
@@ -594,8 +602,8 @@ for (spp in WT_species_codes){
 WT_matrix <- WT_matrix[,-which(colSums(WT_matrix)==0)]
 
 # Fix particular species manually
-WT_matrix[,"YRWA"] <- WT_matrix[,"YRWA"] + WT_matrix[,"MYWA"]
-WT_matrix <- WT_matrix[,-which(colnames(WT_matrix) == "MYWA")]
+#WT_matrix[,"YRWA"] <- WT_matrix[,"YRWA"] + WT_matrix[,"MYWA"]
+#WT_matrix <- WT_matrix[,-which(colnames(WT_matrix) == "MYWA")]
 
 # *********************************************************
 # *********************************************************

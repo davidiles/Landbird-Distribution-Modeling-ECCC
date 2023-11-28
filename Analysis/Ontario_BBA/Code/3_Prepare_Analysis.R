@@ -59,18 +59,14 @@ setwd(dirname)
 # PART 1: Select data meeting criteria for inclusion (dates, time since sunrise, etc)
 # ******************************************************************
 
-AEA_proj <- "+proj=aea +lat_1=50 +lat_2=70 +lat_0=40 +lon_0=-106 +x_0=0 +y_0=0 +ellps=GRS80 +datum=NAD83 +units=m +no_defs "
+AEA_proj <- "+proj=aea +lat_1=50 +lat_2=70 +lat_0=40 +lon_0=-87 +x_0=0 +y_0=0 +ellps=GRS80 +datum=NAD83 +units=m +no_defs "
 
 analysis_data <- readRDS(file = "../Data_Cleaned/analysis_data.rds")
 
 all_surveys <- analysis_data$all_surveys %>% mutate(Obs_Index = 1:nrow(.))
 full_count_matrix <- analysis_data$full_count_matrix
 
-all_surveys$Survey_Type[all_surveys$Survey_Type == "IN_PERSON"] <- "Point_Count"
-all_surveys$Survey_Type[all_surveys$Survey_Type %in% c("ARU_SM2","ARU_BAR_LT","ARU_SM_UNKN",
-                                                       "ARU_SM4","ZOOM_H2N","ARU_IRIVER_E",
-                                                       "ARU_MARANTZ","ARU_IRIVER","ARU_UNKNOWN")] <- "ARU_SPT"
-
+all_surveys$Survey_Type[all_surveys$Survey_Type == "Point Count"] <- "Point_Count"
 
 # ------------------------------------------
 # Select Point Counts / ARUs to use
@@ -85,59 +81,59 @@ PC_to_use <- subset(all_surveys,
                       Hours_Since_Sunrise >= -2 &
                       Hours_Since_Sunrise <= 4 &
                       
-                      yday(Date_Time) >= yday(ymd("2022-05-28")) &
-                      yday(Date_Time) <= yday(ymd("2022-07-07")) &
+                      yday(Date_Time) >= yday(ymd("2022-05-15")) &
+                      yday(Date_Time) <= yday(ymd("2022-07-15")) &
                       
-                      year(Date_Time) >= 2017 &
-                      year(Date_Time) <= 2021
+                      year(Date_Time) >= 2021 &
+                      year(Date_Time) <= 2025
 )
 
 # ------------------------------------------
-# Select STATIONARY COUNT data to use (assuming these are 'breeding bird atlas' checklists; vast majority do not have distance)
+# Select STATIONARY COUNT data to use
 # ------------------------------------------
 
 # Select stationary counts to use
 SC_to_use <- subset(all_surveys,
                     
-                    Survey_Type %in% c("Breeding Bird Atlas") & 
+                    Survey_Type %in% c("Stationary Count") & 
                       
                       Hours_Since_Sunrise >= -2 &
                       Hours_Since_Sunrise <= 4 &
                       
                       Survey_Duration_Minutes >= 1 &
-                      Survey_Duration_Minutes <= 10 &
-                      
-                      yday(Date_Time) >= yday(ymd("2022-05-28")) &
-                      yday(Date_Time) <= yday(ymd("2022-07-07")) & 
-                      
-                      year(Date_Time) >= 2017 &
-                      year(Date_Time) <= 2021)
-
-# ------------------------------------------
-# Select LINEAR TRANSECT data to use
-# ------------------------------------------
-
-LT_to_use <- subset(all_surveys,
-                    Survey_Type %in% c("Linear transect") & 
-                      
-                      Hours_Since_Sunrise >= -2 &
-                      Hours_Since_Sunrise <= 15 &
-                      
-                      Survey_Duration_Minutes > 10 &
                       Survey_Duration_Minutes <= 120 &
-                      Travel_Distance_Metres <= 10000 &
                       
-                      yday(Date_Time) >= yday(ymd("2022-05-28")) &
-                      yday(Date_Time) <= yday(ymd("2022-07-07")) &
+                      yday(Date_Time) >= yday(ymd("2022-05-15")) &
+                      yday(Date_Time) <= yday(ymd("2022-07-15")) & 
                       
-                      year(Date_Time) >= 2017 &
-                      year(Date_Time) <= 2021)
+                      year(Date_Time) >= 2021 &
+                      year(Date_Time) <= 2025)
+
+# # ------------------------------------------
+# # Select LINEAR TRANSECT data to use
+# # ------------------------------------------
+# 
+# LT_to_use <- subset(all_surveys,
+#                     Survey_Type %in% c("Linear transect") & 
+#                       
+#                       Hours_Since_Sunrise >= -2 &
+#                       Hours_Since_Sunrise <= 15 &
+#                       
+#                       Survey_Duration_Minutes > 10 &
+#                       Survey_Duration_Minutes <= 120 &
+#                       Travel_Distance_Metres <= 10000 &
+#                       
+#                       yday(Date_Time) >= yday(ymd("2022-05-28")) &
+#                       yday(Date_Time) <= yday(ymd("2022-07-07")) &
+#                       
+#                       year(Date_Time) >= 2017 &
+#                       year(Date_Time) <= 2021)
 
 # ------------------------------------------
 # Subset
 # ------------------------------------------
 
-surveys_to_use <- c(PC_to_use$Obs_Index, SC_to_use$Obs_Index, LT_to_use$Obs_Index)
+surveys_to_use <- c(PC_to_use$Obs_Index) # , SC_to_use$Obs_Index , LT_to_use$Obs_Index
 all_surveys <- subset(all_surveys, Obs_Index %in% surveys_to_use)
 full_count_matrix <- full_count_matrix[surveys_to_use,]
 
@@ -145,14 +141,13 @@ full_count_matrix <- full_count_matrix[surveys_to_use,]
 # Atlas Squares in which each survey is located
 # ------------------------------------------
 
-SaskSquares <- st_read("../../../Data/Spatial/Saskatchewan/SaskSquares/SaskSquares.shp") %>%
-  st_transform(st_crs(all_surveys)) %>%
-  dplyr::select(SQUARE_ID) %>%
-  rename(sq_id = SQUARE_ID)
+# ONSquares <- st_read("../../../Data/Spatial/ONatchewan/ONSquares/ONSquares.shp") %>%
+#   st_transform(st_crs(all_surveys)) %>%
+#   dplyr::select(SQUARE_ID) %>%
+#   rename(sq_id = SQUARE_ID)
 
 all_surveys <- all_surveys %>% 
-  mutate(Obs_Index = 1:nrow(.)) %>%
-  st_intersection(SaskSquares)
+  mutate(Obs_Index = 1:nrow(.)) #%>%st_intersection(ONSquares)
 full_count_matrix <- full_count_matrix[all_surveys$Obs_Index,]
 
 all_surveys$Obs_Index <- 1:nrow(all_surveys)
@@ -162,7 +157,7 @@ all_surveys$Obs_Index <- 1:nrow(all_surveys)
 # ------------------------------------------
 
 # Raster with target properties
-target_crs <- "+proj=aea +lat_1=50 +lat_2=70 +lat_0=40 +lon_0=-106 +x_0=0 +y_0=0 +ellps=GRS80 +datum=NAD83 +units=m +no_defs "
+target_crs <- AEA_proj
 
 all_surveys <- st_transform(all_surveys,target_crs)
 
@@ -180,25 +175,25 @@ all_surveys_covariates <- all_surveys %>% dplyr::select(Obs_Index)
 # Prepare a grid on which maps/predictions will eventually be made
 # ---------------------------------------------------
 
-SaskBoundary <- st_read("../../../Data/Spatial/National/BCR/BCR_Terrestrial_master.shp")  %>%
-  subset(PROVINCE_S == "SASKATCHEWAN") %>%
+ONBoundary <- st_read("../../../Data/Spatial/National/BCR/BCR_Terrestrial_master.shp")  %>%
+  subset(PROVINCE_S == "ONTARIO") %>%
   st_make_valid() %>%
   st_union() %>%
   st_transform(target_crs)
 
 # 1 km x 1 km grid
-SaskGrid <- st_make_grid(
-  SaskBoundary,
+ONGrid <- st_make_grid(
+  ONBoundary,
   cellsize = units::set_units(1*1,km^2),
   what = "polygons",
   square = TRUE,
   flat_topped = FALSE)%>%
   st_as_sf() %>%
-  st_intersection(SaskBoundary) %>%
+  st_intersection(ONBoundary) %>%
   na.omit()
 
-SaskGrid$point_id <- 1:nrow(SaskGrid)
-SaskGrid_centroid <- st_centroid(SaskGrid)
+ONGrid$point_id <- 1:nrow(ONGrid)
+ONGrid_centroid <- st_centroid(ONGrid)
 
 # ---------------------------------------------------
 # Load covariate layers
@@ -208,25 +203,21 @@ SaskGrid_centroid <- st_centroid(SaskGrid)
 covar_folder <- "../../../Data/Spatial/"
 
 # Add 20 km buffer so that covariates can extend slightly outside province if possible
-SaskBoundary_buffer <- SaskBoundary %>% st_buffer(20000)
-
-# Elevation
-elevation <- rast(paste0(covar_folder,"Saskatchewan/SaskElevation/Sask_Elevation.tif")) %>%  
-  project(st_as_sf(SaskBoundary_buffer), res = 250)
+ONBoundary_buffer <- ONBoundary %>% st_buffer(20000)
 
 # Annual mean temperature
 AMT <- rast(paste0(covar_folder,"National/AnnualMeanTemperature/wc2.1_30s_bio_1.tif")) %>% 
-  crop(st_transform(SaskBoundary_buffer,crs(.))) %>%  
-  project(st_as_sf(SaskBoundary_buffer), res = 250)
+  crop(st_transform(ONBoundary_buffer,crs(.))) %>%  
+  project(st_as_sf(ONBoundary_buffer), res = 250)
 
 # Land cover of Canada 2020 (not reprojected... faster to reproject grid)
 lcc2020 <- rast(paste0(covar_folder,"National/LandCoverCanada2020/landcover-2020-classification.tif")) %>% 
-  crop(st_transform(SaskBoundary_buffer,crs(.))) 
+  crop(st_transform(ONBoundary_buffer,crs(.))) 
 
 # Stand canopy closure
 SCC <- rast(paste0(covar_folder,"National/NationalForestInventory/NFI_MODIS250m_2011_kNN_Structure_Stand_CrownClosure_v1.tif")) %>% 
-  crop(st_transform(SaskBoundary_buffer,crs(.))) %>% 
-  project(st_as_sf(SaskBoundary_buffer), res = 250)
+  crop(st_transform(ONBoundary_buffer,crs(.))) %>% 
+  project(st_as_sf(ONBoundary_buffer), res = 250)
 
 # ---------------------------------------------------
 # For each survey, extract covariates within 1 km of location
@@ -235,7 +226,7 @@ SCC <- rast(paste0(covar_folder,"National/NationalForestInventory/NFI_MODIS250m_
 # Continuous covariates
 all_surveys_1km <- all_surveys %>%
   st_buffer(1000) %>%
-  mutate(elevation_1km = exact_extract(elevation, ., 'mean'),
+  mutate(#elevation_1km = exact_extract(elevation, ., 'mean'),
          AMT_1km = exact_extract(AMT, ., 'mean'),
          SCC_1km = exact_extract(SCC, ., 'mean'))
 
@@ -269,18 +260,18 @@ all_surveys_1km <- all_surveys_1km %>%
 all_surveys_covariates <- all_surveys_covariates %>% left_join(all_surveys_1km)
 
 # ---------------------------------------------------
-# For each point in SaskGrid, extract covariates within 1 km of location
+# For each point in ONGrid, extract covariates within 1 km of location
 # ---------------------------------------------------
 
 # Continuous covariates
-SaskGrid_1km <- SaskGrid_centroid %>%
+ONGrid_1km <- ONGrid_centroid %>%
   st_buffer(1000) %>%
-  mutate(elevation_1km = exact_extract(elevation, ., 'mean'),
+  mutate(#elevation_1km = exact_extract(elevation, ., 'mean'),
          AMT_1km = exact_extract(AMT, ., 'mean'),
          SCC_1km = exact_extract(SCC, ., 'mean'))
 
 # Proportion of each land cover class
-prop_LCC_1km <- exact_extract(lcc2020,SaskGrid_1km,"frac") %>% suppressWarnings()
+prop_LCC_1km <- exact_extract(lcc2020,ONGrid_1km,"frac") %>% suppressWarnings()
 names(prop_LCC_1km) <- paste0(str_replace(names(prop_LCC_1km),"frac","LCC"),"_1km")
 prop_LCC_1km[setdiff(paste0("LCC_",seq(1,18),"_1km"),names(prop_LCC_1km))] <- 0
 prop_LCC_1km %<>% dplyr::select(sort(names(.)))
@@ -297,20 +288,27 @@ prop_LCC_1km <- prop_LCC_1km %>%
     Water_1km = LCC_18_1km) %>%
   dplyr::select(Needleleaf_forest_1km:Water_1km)
 
-prop_LCC_1km$point_id <- SaskGrid_1km$point_id
+prop_LCC_1km$point_id <- ONGrid_1km$point_id
 
-SaskGrid_1km <- left_join(SaskGrid_1km,prop_LCC_1km)
+ONGrid_1km <- left_join(ONGrid_1km,prop_LCC_1km)
 
-# Join with SaskGrid
-SaskGrid <- SaskGrid %>% left_join(as.data.frame(SaskGrid_1km) %>% dplyr::select(-x))
+# Join with ONGrid
+ONGrid <- ONGrid %>% left_join(as.data.frame(ONGrid_1km) %>% dplyr::select(-x))
 
 # --------------------------------
 # Conduct Principal Components Analysis on covariates to identify axes of major variation in habitat
 # --------------------------------
 
+# Remove surveys with no covariate information
+surveys_to_remove <- as.data.frame(all_surveys_covariates) %>% dplyr::select(-geometry)
+surveys_to_remove <- which(is.na(rowSums(surveys_to_remove)))
+all_surveys_covariates <- all_surveys_covariates[-surveys_to_remove,]
+all_surveys <- all_surveys[-surveys_to_remove,]
+full_count_matrix <- full_count_matrix[-surveys_to_remove,]
+
 covars_for_PCA <- all_surveys_covariates %>%
   as.data.frame() %>%
-  dplyr::select(elevation_1km:Water_1km)
+  dplyr::select(AMT_1km:Water_1km)
 
 pca <- prcomp(covars_for_PCA, scale = TRUE)
 
@@ -323,7 +321,7 @@ fviz_eig(pca)  # Scree plot (first 5 axes explain 85% of variation in habitat be
 pca            # Variable loadings
 
 fviz_pca_var(pca,
-             axes = c(3,4),
+             axes = c(1,2),
              col.var = "contrib", # Color by contributions to the PC
              gradient.cols = viridis(10),
              repel = TRUE     # Avoid text overlapping
@@ -335,7 +333,7 @@ fviz_pca_var(pca,
 # ------------------------------------------
 
 all_surveys_PCA <- predict(pca, newdata = as.data.frame(all_surveys_covariates)[,names(pca$center)])
-SaskGrid_PCA <- predict(pca, newdata = as.data.frame(SaskGrid)[,names(pca$center)])
+ONGrid_PCA <- predict(pca, newdata = as.data.frame(ONGrid)[,names(pca$center)])
 
 for (covar in colnames(all_surveys_PCA)){
 
@@ -343,7 +341,7 @@ for (covar in colnames(all_surveys_PCA)){
   covar_sd <- sd(all_surveys_PCA[,covar],na.rm = TRUE)
 
   all_surveys_PCA[,covar] <- (as.data.frame(all_surveys_PCA)[,covar] - covar_mean)/covar_sd
-  SaskGrid_PCA[,covar] <- (as.data.frame(SaskGrid_PCA)[,covar] - covar_mean)/covar_sd
+  ONGrid_PCA[,covar] <- (as.data.frame(ONGrid_PCA)[,covar] - covar_mean)/covar_sd
   
 }
 
@@ -352,8 +350,9 @@ all_surveys_covariates <- all_surveys_covariates %>%
   dplyr::select(-geometry) %>%
   bind_cols(all_surveys_PCA)
 
+
 all_surveys <- full_join(all_surveys,all_surveys_covariates)
-SaskGrid <- bind_cols(SaskGrid,SaskGrid_PCA)
+ONGrid <- bind_cols(ONGrid,ONGrid_PCA)
 
 # ******************************************************************
 # PART 3: Identify list of species to run analysis for
@@ -363,23 +362,23 @@ SaskGrid <- bind_cols(SaskGrid,SaskGrid_PCA)
 # Process species names / labels (from Birds Canada)
 # ------------------------------------------
 
-Sask_spcd <- search_species_code() %>% rename(spcd = BSCDATA, CommonName = english_name)
+ON_spcd <- search_species_code() %>% rename(spcd = BSCDATA, CommonName = english_name)
 countSpaces <- function(s) { sapply(gregexpr(" ", s), function(p) { sum(p>=0) } ) }
 
 # Process Species Names so they fit
-Sask_spcd$Label <- NA
-Sask_spcd$CommonName[Sask_spcd$CommonName=="Rock Pigeon (Feral Pigeon)"] <- "Rock Pigeon"
+ON_spcd$Label <- NA
+ON_spcd$CommonName[ON_spcd$CommonName=="Rock Pigeon (Feral Pigeon)"] <- "Rock Pigeon"
 
-for (i in 1:nrow(Sask_spcd)) {
-  Name <- Sask_spcd$CommonName[i]
+for (i in 1:nrow(ON_spcd)) {
+  Name <- ON_spcd$CommonName[i]
   if(nchar(Name) > 13){
     if(countSpaces(Name)>0){
-      Sask_spcd$Label[i] <- gsub(" "," \n",Name)
+      ON_spcd$Label[i] <- gsub(" "," \n",Name)
     }
     
   }
   else {
-    Sask_spcd$Label[i] <- Sask_spcd$CommonName[i]
+    ON_spcd$Label[i] <- ON_spcd$CommonName[i]
   }
   
 }
@@ -401,8 +400,6 @@ n_detections <- n_detections %>%
   summarize(n_squares = length(unique(sq_id)),
             n_detections = sum(detected>0)) 
 
-
-
 species_to_model <- left_join(n_detections,BSC_species %>% dplyr::select(-index),
                               by = c("Species_Code_BSC" = "BSC_spcd")) %>%
   
@@ -418,11 +415,27 @@ species_to_model <- left_join(n_detections,BSC_species %>% dplyr::select(-index)
                               "vireo sp.",
                               "Catharus sp.",
                               "Worthen's Sparrow",
-                              "woodpecker sp.")) %>%
-  
-  subset(n_squares >=40 & n_detections >= 80)
+                              "woodpecker sp.",
+                              "Alder/Willow Flycatcher (Traill's Flycatcher)",
+                              "Aythya sp.",
+                              "Bat sp.",
+                              "bird sp.",
+                              "chickadee sp.",
+                              "finch sp.",
+                              "Golden-winged/Blue-winged Warbler",
+                              "goose sp.",
+                              "hawk sp.",
+                              "new world flycatcher sp.",
+                              "Northern Flicker (Yellow-shafted)",
+                              "owl sp.",
+                              "Philadelphia/Red-eyed Vireo",
+                              "swallow sp.",
+                              "swan sp.",
+                              "tern sp.",
+                              "Ula-ai-hawane",
+                              "Yellow-rumped Warbler (Myrtle)"))
 
-dim(species_to_model) # 175 species
+dim(species_to_model) 
 species_to_model$english_name %>% sort()
 
 # ******************************************************************
@@ -488,22 +501,22 @@ usethis::edit_r_environ()
 
 # This should read:
 # EBIRDST_KEY='ntqm1ha68fov'
-# EBIRDST_DATA_DIR='D:/Working_Files/1_Projects/Landbirds/SK_BBA_analysis/SaskAtlas/!Data/!Spatial/eBird/'
+# EBIRDST_DATA_DIR='C:/Users/IlesD/OneDrive - EC-EC/Iles/Projects/Landbirds/Landbird-Distribution-Modeling-ECCC/Data/Spatial/eBird/'
 
-# Spatial layers for SK
-SK_BCR <- st_read("../../../Data/Spatial/National/BCR/BCR_Terrestrial_master.shp")  %>%
-  subset(PROVINCE_S == "SASKATCHEWAN") %>%
-  st_make_valid() %>%
-  dplyr::select(BCR, PROVINCE_S)
-
-SaskBoundary <- SK_BCR %>% st_union()
+# # Spatial layers for ON
+# ON_BCR <- st_read("../../../Data/Spatial/National/BCR/BCR_Terrestrial_master.shp")  %>%
+#   subset(PROVINCE_S == "ONTARIO") %>%
+#   st_make_valid() %>%
+#   dplyr::select(BCR, PROVINCE_S)
+# 
+# ONBoundary <- ON_BCR %>% st_union()
 
 # List to contain sf objects for species ranges
 species_ranges <- list()
 
 for (sp_code in species_to_model$Species_Code_BSC){
   print(sp_code)
-  if (file.exists("../Data_Cleaned/Spatial/eBird_ranges_SK.RDS")) species_ranges <- readRDS("../Data_Cleaned/Spatial/eBird_ranges_SK.RDS")
+  if (file.exists("../Data_Cleaned/Spatial/eBird_ranges_ON.RDS")) species_ranges <- readRDS("../Data_Cleaned/Spatial/eBird_ranges_ON.RDS")
   
   # ------------------------------------------------
   # Check is species already in the list
@@ -514,8 +527,8 @@ for (sp_code in species_to_model$Species_Code_BSC){
   # Download and trim ebird range for this species
   # ------------------------------------------------
   
-  species_name = Sask_spcd$CommonName[which(Sask_spcd$spcd == sp_code)]
-  species_label = Sask_spcd$Label[which(Sask_spcd$spcd == sp_code)]
+  species_name = ON_spcd$CommonName[which(ON_spcd$spcd == sp_code)]
+  species_label = ON_spcd$Label[which(ON_spcd$spcd == sp_code)]
   
   # Check if species is available
   check <- get_species(species_name)
@@ -536,12 +549,12 @@ for (sp_code in species_to_model$Species_Code_BSC){
   range <- load_ranges(path, resolution = "lr")
   
   range <- range %>% subset(season %in% c("resident","breeding")) %>% 
-    st_transform(.,crs = st_crs(SaskBoundary)) %>% 
+    st_transform(.,crs = st_crs(ONBoundary)) %>% 
     st_union() %>%
-    st_crop(SaskBoundary)
+    st_crop(ONBoundary)
   
   species_ranges[[sp_code]] <- range
-  saveRDS(species_ranges,file="../Data_Cleaned/Spatial/eBird_ranges_SK.RDS")
+  saveRDS(species_ranges,file="../Data_Cleaned/Spatial/eBird_ranges_ON.RDS")
   
   
 } # close species loop
@@ -560,14 +573,14 @@ analysis_data_package <- list(
   
   pca = pca,
   
-  # Contains covariates on SK-wide grid
-  SaskGrid = SaskGrid,
+  # Contains covariates on ON-wide grid
+  ONGrid = ONGrid,
   
   # Species to include in analysis (and number of detections in point counts)
   species_to_model = species_to_model,
   
   # Species codes and common names
-  Sask_spcd = Sask_spcd,
+  ON_spcd = ON_spcd,
   
   # eBird range limits
   species_ranges = species_ranges

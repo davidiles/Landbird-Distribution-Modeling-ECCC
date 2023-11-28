@@ -31,7 +31,7 @@ rm(list=ls())
 # }
 # 
 # dirname <- thisPath()
-dirname <- "C:/Users/IlesD/OneDrive - EC-EC/Iles/Backup/2023-11-09/SDM_ECCC/Analysis/Saskatchewan/Code"
+dirname <- "C:/Users/IlesD/OneDrive - EC-EC/Iles/Projects/Landbirds/Landbird-Distribution-Modeling-ECCC/Analysis/Saskatchewan_BBA/Code"
 setwd(dirname)
 
 `%!in%` <- Negate(`%in%`)
@@ -86,7 +86,7 @@ cut.fn <- function(df = NA,
   
   tmp = stars::st_rasterize(df %>% dplyr::select(levs, x))
   
-  return(tmp)
+  return(list(raster = tmp,cut_levs = cut_levs))
 }
 
 # ------------------------------------------------
@@ -196,7 +196,7 @@ for (sp_code in rev(species_to_model$Species_Code_BSC)){
   map_file <- paste0("../Output/Prediction_Maps/Relative_Abundance/",sp_code,"_q50.png")
   
   # Skip this species if already run
-  if (file.exists(map_file)) next
+  #if (file.exists(map_file)) next
   
   # Prepare data for this species
   sp_dat <- all_surveys %>% 
@@ -211,7 +211,7 @@ for (sp_code in rev(species_to_model$Species_Code_BSC)){
     summarize(n_sq = length(unique(sq_id)),
               n_det = sum(count>0))
   
-  if (n_det_sq$n_sq < 30 | n_det_sq$n_det < 60) next
+  #if (n_det_sq$n_sq < 30 | n_det_sq$n_det < 60) next
   
   # ------------------------------------------------
   # Extract ebird range for this species (if it exists); prepared by 4_Prep_Analysis.R
@@ -226,6 +226,29 @@ for (sp_code in rev(species_to_model$Species_Code_BSC)){
   } else{
     sp_dat$distance_from_range <- 0
   }
+  
+  # ------------------------------------------------
+  # # Standardize 'time since sunrise' covariate (TSS)
+  # ------------------------------------------------
+  
+  #sp_dat$Hours_Since_Sunrise <- as.data.frame(sp_dat$Hours_Since_Sunrise)[,1] %>% scale()
+  
+  # ------------------------------------------------
+  # Prepare iid random effects
+  # ------------------------------------------------
+  
+  # Define 'square ID' covariate which will be treated as a random effect
+  sp_dat$sq_idx <- factor(sp_dat$sq_id) %>% as.numeric()
+  
+  # Define 'square-day' covariate which will be treated as a random effect
+  sp_dat$square_day <- paste0(sp_dat$sq_id,"-",yday(sp_dat$Date_Time)) %>% factor() %>% as.numeric()
+  
+  # Define unique survey location / year covariate
+  coords <- st_coordinates(sp_dat) %>% round() %>% as.data.frame()
+  X <- coords$X
+  Y <- coords$Y
+  Year <- year(sp_dat$Date_Time)
+  sp_dat$loc_year <- paste0(Year,"-",X,"-",Y) %>% factor() %>% as.numeric()
   
   # --------------------------------
   # Generate QPAD offsets for each survey (assumes unlimited distance point counts)
@@ -271,7 +294,8 @@ for (sp_code in rev(species_to_model$Species_Code_BSC)){
   prior_sigma <- c(0.5,0.1) # 10% chance sd is larger than 0.5
   matern_coarse <- inla.spde2.pcmatern(mesh_spatial,
                                        prior.range = prior_range, 
-                                       prior.sigma = prior_sigma)
+                                       prior.sigma = prior_sigma 
+  )
   
   # ------------------------------------------------
   # Create mesh to model effect of time since sunrise (TSS)
@@ -282,13 +306,14 @@ for (sp_code in rev(species_to_model$Species_Code_BSC)){
   TSS_mesh1D = inla.mesh.1d(TSS_meshpoints,boundary="free")
   TSS_spde = inla.spde2.pcmatern(TSS_mesh1D,
                                  prior.range = c(6,0.1),
-                                 prior.sigma = c(1,0.1)) 
+                                 prior.sigma = c(1,0.1)) # 10% chance sd is larger than 1
   
   # ------------------------------------------------
   # Model formulas
   # ------------------------------------------------
   
-  sd_linear <- 0.25
+  #sd_linear <- 0.25
+  sd_linear <- 1
   prec_linear <-  c(1/sd_linear^2,1/(sd_linear/2)^2)
   model_components = as.formula(paste0('~
             Intercept_PC(1)+
@@ -408,13 +433,15 @@ for (sp_code in rev(species_to_model$Species_Code_BSC)){
     subset(Survey_Type %in% c("Point_Count","ARU_SPT","ARU_SPM")) %>% 
     as.data.frame() %>%
     group_by(sq_id) %>%
-    summarize(PC_detected = as.numeric(sum(count)>0))
+    summarize(PC_detected = as.numeric(sum(count)>0),
+              PC_mean_count = mean(count) %>% round(2))
   
   CL_detected <-sp_dat %>%
     subset(Survey_Type %in% c("Breeding Bird Atlas","Linear transect")) %>%
     as.data.frame() %>%
     group_by(sq_id) %>%
-    summarize(CL_detected = as.numeric(sum(count)>0))
+    summarize(CL_detected = as.numeric(sum(count)>0),
+              CL_mean_count = mean(count))
   
   SaskSquares_species <- SaskSquares %>%
     relocate(geometry,.after = last_col()) %>%
@@ -453,11 +480,16 @@ for (sp_code in rev(species_to_model$Species_Code_BSC)){
   upper_bound <- quantile(SaskGrid_species$pred_q50,0.99,na.rm = TRUE) %>% signif(2)
   if (lower_bound >= (upper_bound/5)) lower_bound <- (upper_bound/5) %>% signif(2)
   
-  raster_q50 <- cut.fn(df = SaskGrid_species,
-                       target_raster = target_raster,
-                       column_name = "pred_q50",
-                       lower_bound = lower_bound,
-                       upper_bound = upper_bound)
+  sp_cut <- cut.fn(df = SaskGrid_species,
+                   target_raster = target_raster,
+                   column_name = "pred_q50",
+                   lower_bound = lower_bound,
+                   upper_bound = upper_bound)
+  
+  raster_q50 <- sp_cut$raster
+  
+  # Legend for size
+  size_breaks <- c(0,mean(SaskSquares_species$PC_mean_count,na.rm = TRUE),quantile(SaskSquares_species$PC_mean_count,0.99,na.rm = TRUE),max(SaskSquares_species$PC_mean_count,na.rm = TRUE)) %>% round(1) %>% as.numeric() %>% sort()
   
   # Median of posterior
   plot_q50 <- ggplot() +
@@ -481,6 +513,7 @@ for (sp_code in rev(species_to_model$Species_Code_BSC)){
     # Checklist detections
     #geom_sf(data = subset(SaskSquares_centroids, !is.na(CL_detected) & CL_detected > 0), col = "black", pch = 4, size = 0.2)+
     
+    
     coord_sf(clip = "off",xlim = range(as.data.frame(st_coordinates(SaskBoundary))$X))+
     theme(panel.background = element_blank(),
           panel.grid.major = element_blank(), 
@@ -492,8 +525,14 @@ for (sp_code in rev(species_to_model$Species_Code_BSC)){
           legend.box.margin=margin(5,10,5,-20),
           legend.title.align=0.5,
           legend.title = element_markdown(lineheight=.9,hjust = "left"))+
-    annotate(geom="text",x=346000,y=1850000, label= paste0(species_label),lineheight = .85,hjust = 0,size=6,fontface =2) +
-    annotate(geom="text",x=346000,y=1400000, label= paste0("Prepared on ",Sys.Date()),size=3,lineheight = .75,hjust = 0,color="#3b3b3b")
+    theme(legend.key = element_rect(fill = "transparent", colour = "transparent"))+
+    annotate(geom="text",x=346000,y=2050000, label= paste0(species_label),lineheight = .85,hjust = 0,size=6,fontface =2) +
+    annotate(geom="text",x=200000,y=970000, label= paste0("Prepared on ",Sys.Date()),size=1.5,lineheight = .75,hjust = 0,color="gray75")+
+    guides(fill = guide_legend(order = 1), 
+           size = guide_legend(order = 2))+
+    scale_size_continuous(name = "<span style='font-size:13pt'><br>Observed Count</span><br><span style='font-size:7pt'>Mean across point counts</span>",
+                          breaks = size_breaks,
+                          range = c(0.5,3))
   
   print(plot_q50)
   
@@ -516,7 +555,7 @@ for (sp_code in rev(species_to_model$Species_Code_BSC)){
                                target_raster = target_raster,
                                column_name = "pred_CI_width_90",
                                lower_bound = lower_bound,
-                               upper_bound = upper_bound)
+                               upper_bound = upper_bound)$raster
   
   # Median of posterior
   plot_CI_width_90 <- ggplot() +
@@ -610,88 +649,88 @@ for (sp_code in rev(species_to_model$Species_Code_BSC)){
     annotate(geom="text",x=346000,y=1850000, label= paste0(species_label),lineheight = .85,hjust = 0,size=6,fontface =2) +
     annotate(geom="text",x=346000,y=1400000, label= paste0("Prepared on ",Sys.Date()),size=3,lineheight = .75,hjust = 0,color="#3b3b3b")
   
-  print(plot_pObs)
+  #print(plot_pObs)
   
   png(paste0("../Output/Prediction_Maps/PObs/",sp_code,"_PObs.png"), width=6.5, height=8, units="in", res=300, type="cairo")
   print(plot_pObs)
   dev.off()
   
-  # ------------------------------------------------
-  # Fit BRT for this species, for comparison
-  # ------------------------------------------------
-
-  PC_df <- as.data.frame(PC_sp)
-  PC_df$in_range <- (!(PC_df$distance_from_range>0)) %>% as.numeric()
-
-  BRT_covariates <- as.data.frame(PC_df) %>%
-    dplyr::select(elevation_1km:PC10) %>%
-    colnames()
-  BRT_covariates <- c(BRT_covariates,"Hours_Since_Sunrise","distance_from_range","in_range")
-
-  fit_BRT <- fit_brt(model_data =  PC_df,
-                     response_column = which(colnames(PC_df)=="count"),
-                     covariate_columns = which(colnames(PC_df)%in% BRT_covariates))
-
-  # Predictions across SK
-  SaskGrid_df <- SaskGrid %>%
-    mutate(distance_from_range = (st_centroid(.) %>%
-                                    st_distance( . , range) %>%
-                                    as.numeric())/1000) %>%
-    as.data.frame()
-  SaskGrid_df$in_range <- (!(SaskGrid_df$distance_from_range>0)) %>% as.numeric()
-  SaskGrid_df$Hours_Since_Sunrise <- 0
-  pred_BRT  <- predict(fit_BRT,
-                       SaskGrid_df,
-                       n.trees = fit_BRT$gbm.call$best.trees)
-
-  SaskGrid_species$pred_BRT <- exp(pred_BRT + log_offset_5min)
-
-  lower_bound <- 0.01
-  upper_bound <- quantile(SaskGrid_species$pred_q50,0.99,na.rm = TRUE) %>% signif(2)
-  if (lower_bound >= (upper_bound/5)) lower_bound <- (upper_bound/5) %>% signif(2)
-
-  raster_BRT <- cut.fn(df = SaskGrid_species,
-                       target_raster = target_raster,
-                       column_name = "pred_BRT",
-                       lower_bound = lower_bound,
-                       upper_bound = upper_bound)
-
-  # Median of posterior
-  plot_BRT <- ggplot() +
-
-    geom_stars(data = raster_BRT) +
-    scale_fill_manual(name = "<span style='font-size:13pt'>Relative Abundance</span><br><span style='font-size:7pt'>Per 5-minute point count</span><br><span style='font-size:7pt'>BRT model</span>",
-                      values = colpal_relabund(length(levels(raster_BRT$levs))), drop=FALSE,na.translate=FALSE)+
-
-    geom_sf(data = SaskWater,colour=NA,fill="#59F3F3",show.legend = F)+
-
-    geom_sf(data = SaskBoundary,colour="black",fill=NA,lwd=0.3,show.legend = F) +
-
-    #geom_sf(data = range,colour="darkred",fill=NA,show.legend = F) +
-
-    # Surveyed squares
-    geom_sf(data = subset(SaskSquares_centroids, !is.na(PC_detected) | !is.na(CL_detected)), col = "gray70", pch = 19, size = 0.1)+
-
-    # Point count detections
-    geom_sf(data = subset(SaskSquares_centroids, !is.na(PC_detected) & PC_detected > 0), col = "black", pch = 19, size = 0.2)+
-
-    # Checklist detections
-    #geom_sf(data = subset(SaskSquares_centroids, !is.na(CL_detected) & CL_detected > 0), col = "black", pch = 4, size = 0.2)+
-
-    coord_sf(clip = "off",xlim = range(as.data.frame(st_coordinates(SaskBoundary))$X))+
-    theme(panel.background = element_blank(),panel.grid.major = element_blank(), panel.grid.minor = element_blank())+
-    theme(axis.title.x=element_blank(), axis.text.x=element_blank(), axis.ticks.x=element_blank())+
-    theme(axis.title.y=element_blank(), axis.text.y=element_blank(), axis.ticks.y=element_blank())+
-    theme(plot.margin = unit(c(0, 0, 0, 0), "cm"))+
-    theme(legend.margin=margin(0,0,0,0),legend.box.margin=margin(5,10,5,-20),legend.title.align=0.5,
-          legend.title = element_markdown(lineheight=.9,hjust = "left"))+
-    annotate(geom="text",x=346000,y=1850000, label= paste0(species_label),lineheight = .85,hjust = 0,size=6,fontface =2) +
-    annotate(geom="text",x=346000,y=1400000, label= paste0("Prepared on ",Sys.Date()),size=3,lineheight = .75,hjust = 0,color="#3b3b3b")
-
-  png(paste0("../Output/Prediction_Maps/Relative_Abundance/",sp_code,"_BRT.png"), width=6.5, height=8, units="in", res=300, type="cairo")
-  print(plot_BRT)
-  dev.off()
-  
+  # # ------------------------------------------------
+  # # Fit BRT for this species, for comparison
+  # # ------------------------------------------------
+  # 
+  # PC_df <- as.data.frame(PC_sp)
+  # PC_df$in_range <- (!(PC_df$distance_from_range>0)) %>% as.numeric()
+  # 
+  # BRT_covariates <- as.data.frame(PC_df) %>%
+  #   dplyr::select(elevation_1km:PC10) %>%
+  #   colnames()
+  # BRT_covariates <- c(BRT_covariates,"Hours_Since_Sunrise","distance_from_range","in_range")
+  # 
+  # fit_BRT <- fit_brt(model_data =  PC_df,
+  #                    response_column = which(colnames(PC_df)=="count"),
+  #                    covariate_columns = which(colnames(PC_df)%in% BRT_covariates))
+  # 
+  # # Predictions across SK
+  # SaskGrid_df <- SaskGrid %>%
+  #   mutate(distance_from_range = (st_centroid(.) %>%
+  #                                   st_distance( . , range) %>%
+  #                                   as.numeric())/1000) %>%
+  #   as.data.frame()
+  # SaskGrid_df$in_range <- (!(SaskGrid_df$distance_from_range>0)) %>% as.numeric()
+  # SaskGrid_df$Hours_Since_Sunrise <- 0
+  # pred_BRT  <- predict(fit_BRT,
+  #                      SaskGrid_df,
+  #                      n.trees = fit_BRT$gbm.call$best.trees)
+  # 
+  # SaskGrid_species$pred_BRT <- exp(pred_BRT + log_offset_5min)
+  # 
+  # lower_bound <- 0.01
+  # upper_bound <- quantile(SaskGrid_species$pred_q50,0.99,na.rm = TRUE) %>% signif(2)
+  # if (lower_bound >= (upper_bound/5)) lower_bound <- (upper_bound/5) %>% signif(2)
+  # 
+  # raster_BRT <- cut.fn(df = SaskGrid_species,
+  #                      target_raster = target_raster,
+  #                      column_name = "pred_BRT",
+  #                      lower_bound = lower_bound,
+  #                      upper_bound = upper_bound)$raster
+  # 
+  # # Median of posterior
+  # plot_BRT <- ggplot() +
+  # 
+  #   geom_stars(data = raster_BRT) +
+  #   scale_fill_manual(name = "<span style='font-size:13pt'>Relative Abundance</span><br><span style='font-size:7pt'>Per 5-minute point count</span><br><span style='font-size:7pt'>BRT model</span>",
+  #                     values = colpal_relabund(length(levels(raster_BRT$levs))), drop=FALSE,na.translate=FALSE)+
+  # 
+  #   geom_sf(data = SaskWater,colour=NA,fill="#59F3F3",show.legend = F)+
+  # 
+  #   geom_sf(data = SaskBoundary,colour="black",fill=NA,lwd=0.3,show.legend = F) +
+  # 
+  #   #geom_sf(data = range,colour="darkred",fill=NA,show.legend = F) +
+  # 
+  #   # Surveyed squares
+  #   geom_sf(data = subset(SaskSquares_centroids, !is.na(PC_detected) | !is.na(CL_detected)), col = "gray70", pch = 19, size = 0.1)+
+  # 
+  #   # Point count detections
+  #   geom_sf(data = subset(SaskSquares_centroids, !is.na(PC_detected) & PC_detected > 0), col = "black", pch = 19, size = 0.2)+
+  # 
+  #   # Checklist detections
+  #   #geom_sf(data = subset(SaskSquares_centroids, !is.na(CL_detected) & CL_detected > 0), col = "black", pch = 4, size = 0.2)+
+  # 
+  #   coord_sf(clip = "off",xlim = range(as.data.frame(st_coordinates(SaskBoundary))$X))+
+  #   theme(panel.background = element_blank(),panel.grid.major = element_blank(), panel.grid.minor = element_blank())+
+  #   theme(axis.title.x=element_blank(), axis.text.x=element_blank(), axis.ticks.x=element_blank())+
+  #   theme(axis.title.y=element_blank(), axis.text.y=element_blank(), axis.ticks.y=element_blank())+
+  #   theme(plot.margin = unit(c(0, 0, 0, 0), "cm"))+
+  #   theme(legend.margin=margin(0,0,0,0),legend.box.margin=margin(5,10,5,-20),legend.title.align=0.5,
+  #         legend.title = element_markdown(lineheight=.9,hjust = "left"))+
+  #   annotate(geom="text",x=346000,y=1850000, label= paste0(species_label),lineheight = .85,hjust = 0,size=6,fontface =2) +
+  #   annotate(geom="text",x=346000,y=1400000, label= paste0("Prepared on ",Sys.Date()),size=3,lineheight = .75,hjust = 0,color="#3b3b3b")
+  # 
+  # png(paste0("../Output/Prediction_Maps/Relative_Abundance/",sp_code,"_BRT.png"), width=6.5, height=8, units="in", res=300, type="cairo")
+  # print(plot_BRT)
+  # dev.off()
+  # 
   # # ----------------------------------------------------------------
   # # Save estimates of relative population size
   # # ----------------------------------------------------------------

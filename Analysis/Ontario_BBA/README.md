@@ -1,5 +1,4 @@
-# 3rd Ontario Breeding Bird Atlas 
-## Analysis
+# Analysis of 3rd Ontario Breeding Bird Atlas 
 
  This folder contains scripts that are in development, aimed at analysis of data from the [3rd Ontario Breeding Bird Analysis](https://www.birdsontario.org/), which began in 2021 and will conclude data collection in 2025.
  

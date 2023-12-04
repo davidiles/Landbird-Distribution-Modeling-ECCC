@@ -209,8 +209,10 @@ ONGrid <- ONGrid %>%
 species_to_model <- species_to_model %>%
   arrange(desc(n_squares),desc(n_detections))
 
-species_list <- c("REVI","CAWA","OSFL")
-for (sp_code in species_list){
+species_to_fit <- species_to_model %>%
+  subset(Species_Code_BSC %in% c("SOSA","LEYE","GRYE"))
+
+for (sp_code in species_to_fit$Species_Code_BSC){
   
   print(sp_code)
   
@@ -283,14 +285,14 @@ for (sp_code in species_list){
   )
   mesh_spatial <- fm_mesh_2d_inla(
     boundary = hull, 
-    max.edge = c(50000, 100000), # km inside and outside
-    cutoff = 20000, 
+    max.edge = c(70000, 100000), # km inside and outside
+    cutoff = 30000, 
     crs = fm_crs(sp_dat)
   ) # cutoff is min edge
   mesh_locs <- mesh_spatial$loc[,c(1,2)] %>% as.data.frame()
   dim(mesh_locs)
-  plot(mesh_spatial)
-  lines(BCR_PROV)
+  #plot(mesh_spatial)
+  #lines(BCR_PROV)
   
   
   # # Note: mesh developed using tutorial at: https://rpubs.com/jafet089/886687
@@ -674,7 +676,7 @@ for (sp_code in species_list){
                                   cut_levs,labels=cut_levs_labs)
   
   raster_pObs = stars::st_rasterize(ONGrid_species %>% dplyr::select(pObs_levs, geometry),
-                                    nx = dim(raster_q50)[1],ny = dim(raster_q50)[2])
+                                    nx = dim(raster_q50)[1], ny = dim(raster_q50)[2])
   
   # Median of posterior
   plot_pObs <- ggplot() +
@@ -783,58 +785,58 @@ for (sp_code in species_list){
     print(plot_dens)
     dev.off()
     
-    # ------------------------------------------------
-    # ------------------------------------------------
-    # Estimate total abundance within each BCR and OVERALL PROVINCIALLY; plot uncertainty
-    # Density is males per ha by default.  Convert to males per km2 by multiplying by 100
-    # ------------------------------------------------
-    # ------------------------------------------------
-    
-    region_estimates <- data.frame()
-    region_vector <- c(unique(ONGrid_species$BCR),"PROVINCIAL")
-    
-    for (region in region_vector){
-      
-      if (region == "PROVINCIAL"){
-        
-        # Convert to density per km2, then to abundance per square km
-        region_sum <- apply(pred/exp(log_offset_5min) * 1000000,2,sum,na.rm = TRUE)
-        
-      } else {
-        
-        region_rows <- which(ONGrid_species$BCR == region)
-        region_sum <- apply(pred[region_rows,]/exp(log_offset_5min) * 1000000 ,2,sum,na.rm = TRUE)
-        
-      }
-      
-      region_estimates <- rbind(region_estimates,
-                                data.frame(Region = region,
-                                           
-                                           mean = mean(region_sum),
-                                           q025 = quantile(region_sum,0.025),
-                                           q500 = quantile(region_sum,0.500),
-                                           q975 = quantile(region_sum,0.975),
-                                           SE = sd(region_sum),
-                                           CV = sd(region_sum)/mean(region_sum),
-                                           var_logN = var(log(region_sum))))
-      
-      
-    }
-    
-    BCR_PROV_species <- BCR_PROV %>% 
-      mutate(BCR = as.character(BCR)) %>%
-      full_join(subset(region_estimates, Region != "PROVINCIAL"), by = c("BCR" = "Region")) 
-    
-    BCR_centroid <- st_centroid(BCR_PROV_species)
-    BCR_centroid$label <- paste0("BCR ",BCR_centroid$BCR,":\nSum = ",round(BCR_centroid$q500) %>% comma(), "\n95% CI = ",round(BCR_centroid$q025) %>% comma()," to ",round(BCR_centroid$q975) %>% comma())
-    
-    prov_total <- subset(region_estimates, Region == "PROVINCIAL")
-    plot_regional <- plot_q50 + 
-      geom_sf_label(data = BCR_centroid, aes(label = label), fill = "white", col = "black", fontface = "bold", alpha = 0.9)+
-      ggtitle(paste0("\nTotal ",sp_code," in Ontario: ",round(prov_total$q500)%>% comma(), " (",round(prov_total$q025) %>% comma()," to ",round(prov_total$q975)%>% comma(),")"))
-    png(paste0("../Output/Prediction_Maps/Density/",sp_code,"_regional_total.png"), width=10, height=6.5, units="in", res=1000, type="cairo")
-    print(plot_regional)
-    dev.off()
+    # # ------------------------------------------------
+    # # ------------------------------------------------
+    # # Estimate total abundance within each BCR and OVERALL PROVINCIALLY; plot uncertainty
+    # # Density is males per ha by default.  Convert to males per km2 by multiplying by 100
+    # # ------------------------------------------------
+    # # ------------------------------------------------
+    # 
+    # region_estimates <- data.frame()
+    # region_vector <- c(unique(ONGrid_species$BCR),"PROVINCIAL")
+    # 
+    # for (region in region_vector){
+    #   
+    #   if (region == "PROVINCIAL"){
+    #     
+    #     # Convert to density per km2, then to abundance per square km
+    #     region_sum <- apply(pred/exp(log_offset_5min) * 1000000,2,sum,na.rm = TRUE)
+    #     
+    #   } else {
+    #     
+    #     region_rows <- which(ONGrid_species$BCR == region)
+    #     region_sum <- apply(pred[region_rows,]/exp(log_offset_5min) * 1000000 ,2,sum,na.rm = TRUE)
+    #     
+    #   }
+    #   
+    #   region_estimates <- rbind(region_estimates,
+    #                             data.frame(Region = region,
+    #                                        
+    #                                        mean = mean(region_sum),
+    #                                        q025 = quantile(region_sum,0.025),
+    #                                        q500 = quantile(region_sum,0.500),
+    #                                        q975 = quantile(region_sum,0.975),
+    #                                        SE = sd(region_sum),
+    #                                        CV = sd(region_sum)/mean(region_sum),
+    #                                        var_logN = var(log(region_sum))))
+    #   
+    #   
+    # }
+    # 
+    # BCR_PROV_species <- BCR_PROV %>% 
+    #   mutate(BCR = as.character(BCR)) %>%
+    #   full_join(subset(region_estimates, Region != "PROVINCIAL"), by = c("BCR" = "Region")) 
+    # 
+    # BCR_centroid <- st_centroid(BCR_PROV_species)
+    # BCR_centroid$label <- paste0("BCR ",BCR_centroid$BCR,":\nSum = ",round(BCR_centroid$q500) %>% comma(), "\n95% CI = ",round(BCR_centroid$q025) %>% comma()," to ",round(BCR_centroid$q975) %>% comma())
+    # 
+    # prov_total <- subset(region_estimates, Region == "PROVINCIAL")
+    # plot_regional <- plot_q50 + 
+    #   geom_sf_label(data = BCR_centroid, aes(label = label), fill = "white", col = "black", fontface = "bold", alpha = 0.9)+
+    #   ggtitle(paste0("\nTotal ",sp_code," in Ontario: ",round(prov_total$q500)%>% comma(), " (",round(prov_total$q025) %>% comma()," to ",round(prov_total$q975)%>% comma(),")"))
+    # png(paste0("../Output/Prediction_Maps/Density/",sp_code,"_regional_total.png"), width=10, height=6.5, units="in", res=1000, type="cairo")
+    # print(plot_regional)
+    # dev.off()
     
     # ------------------------------------------------
     # ------------------------------------------------
@@ -843,69 +845,70 @@ for (sp_code in species_list){
     # ------------------------------------------------
     
     BAM_raster_path <- paste0("../../../Data/Spatial/BAM_density_raster/pred-",sp_code,"-CAN-Mean.tif")
-    BAM_rast <- rast(BAM_raster_path) %>% 
-      crop(st_transform(ONBoundary_buffer,crs(.))) %>% 
-      project(AEA_proj, res = 1000) %>%
-      mask(vect(ONBoundary))
-  
-    BAM_dens <- terra::extract(BAM_rast,vect(st_centroid(ONGrid_species)))
-    ONGrid_species$BAM_dens <- BAM_dens$`pred-CAWA-CAN-Mean`
-    
-    colscale_relabund <-c("#FEFEFE", "#FBF7E2", "#FCF8D0", "#EEF7C2", "#CEF2B0", "#94E5A0", "#51C987", "#18A065", "#008C59", "#007F53", "#006344")
-    colpal_relabund <- colorRampPalette(colscale_relabund)
-    
-    lower_bound <- 0.01
-    upper_bound <- quantile(ONGrid_species$density_per_ha_q50,0.99,na.rm = TRUE) %>% signif(2)
-    if (lower_bound >= (upper_bound/5)) lower_bound <- (upper_bound/5) %>% signif(2)
-    
-    sp_cut <- cut.fn(df = ONGrid_species,
-                     target_raster = target_raster,
-                     column_name = "BAM_dens",
-                     lower_bound = lower_bound,
-                     upper_bound = upper_bound)
-    
-    raster_BAM <- sp_cut$raster
-    
-    # Median of posterior
-    plot_BAM <- ggplot() +
+    if(file.exists(BAM_raster_path)){
+      BAM_rast <- rast(BAM_raster_path) %>% 
+        crop(st_transform(ONBoundary_buffer,crs(.))) %>% 
+        project(AEA_proj, res = 1000) %>%
+        mask(vect(ONBoundary))
       
-      geom_stars(data = raster_BAM) +
-      scale_fill_manual(name = "<span style='font-size:13pt'>Density</span><br><span style='font-size:7pt'>Males per hectare</span><br><span style='font-size:7pt'>BAM</span>",
-                        values = colpal_relabund(length(levels(raster_BAM$levs))), drop=FALSE,na.translate=FALSE)+
+      BAM_dens <- terra::extract(BAM_rast,vect(st_centroid(ONGrid_species)))
+      ONGrid_species$BAM_dens <- BAM_dens$`pred-CAWA-CAN-Mean`
       
-      # BCR boundaries
-      geom_sf(data = BCR_PROV, fill = "transparent", col = "gray20", linewidth = 0.5)+
+      colscale_relabund <-c("#FEFEFE", "#FBF7E2", "#FCF8D0", "#EEF7C2", "#CEF2B0", "#94E5A0", "#51C987", "#18A065", "#008C59", "#007F53", "#006344")
+      colpal_relabund <- colorRampPalette(colscale_relabund)
       
-      # Surveyed squares
-      geom_sf(data = subset(ONSquares_centroids, !is.na(PC_detected)), col = "gray70", size=0.4,stroke = 0, shape = 16)+
+      lower_bound <- 0.01
+      upper_bound <- quantile(ONGrid_species$density_per_ha_q50,0.99,na.rm = TRUE) %>% signif(2)
+      if (lower_bound >= (upper_bound/5)) lower_bound <- (upper_bound/5) %>% signif(2)
       
-      # Point count detections
-      geom_sf(data = subset(ONSquares_centroids, !is.na(PC_detected) & PC_detected > 0), col = "black",size=0.5,stroke = 0, shape = 16)+
+      sp_cut <- cut.fn(df = ONGrid_species,
+                       target_raster = target_raster,
+                       column_name = "BAM_dens",
+                       lower_bound = lower_bound,
+                       upper_bound = upper_bound)
       
-      geom_sf(data = ONBoundary,colour="black",fill=NA,lwd=0.3,show.legend = F) +
-      coord_sf(clip = "off",xlim = range(as.data.frame(st_coordinates(ONBoundary))$X))+
-      theme(panel.background = element_blank(),
-            panel.grid.major = element_blank(), 
-            panel.grid.minor = element_blank())+
-      theme(axis.title.x=element_blank(), axis.text.x=element_blank(), axis.ticks.x=element_blank())+
-      theme(axis.title.y=element_blank(), axis.text.y=element_blank(), axis.ticks.y=element_blank())+
-      theme(plot.margin = unit(c(0, 0, 0, 0), "cm"))+
-      theme(legend.margin=margin(0,0,0,0),
-            legend.box.margin=margin(5,10,5,-20),
-            legend.title.align=0.5,
-            legend.title = element_markdown(lineheight=.9,hjust = "left"))+
-      theme(legend.key = element_rect(fill = "transparent", colour = "transparent"))+
+      raster_BAM <- sp_cut$raster
       
-      annotate(geom="text",x=1050000,y=1500000, label= paste0(species_label),lineheight = .85,hjust = 0,size=6,fontface =2) +
-      annotate(geom="text",x=1050000,y=680000, label= paste0("Prepared on ",Sys.Date()),size=2,lineheight = .75,hjust = 0,color="gray75")+
+      # Median of posterior
+      plot_BAM <- ggplot() +
+        
+        geom_stars(data = raster_BAM) +
+        scale_fill_manual(name = "<span style='font-size:13pt'>Density</span><br><span style='font-size:7pt'>Males per hectare</span><br><span style='font-size:7pt'>BAM</span>",
+                          values = colpal_relabund(length(levels(raster_BAM$levs))), drop=FALSE,na.translate=FALSE)+
+        
+        # BCR boundaries
+        geom_sf(data = BCR_PROV, fill = "transparent", col = "gray20", linewidth = 0.5)+
+        
+        # Surveyed squares
+        geom_sf(data = subset(ONSquares_centroids, !is.na(PC_detected)), col = "gray70", size=0.4,stroke = 0, shape = 16)+
+        
+        # Point count detections
+        geom_sf(data = subset(ONSquares_centroids, !is.na(PC_detected) & PC_detected > 0), col = "black",size=0.5,stroke = 0, shape = 16)+
+        
+        geom_sf(data = ONBoundary,colour="black",fill=NA,lwd=0.3,show.legend = F) +
+        coord_sf(clip = "off",xlim = range(as.data.frame(st_coordinates(ONBoundary))$X))+
+        theme(panel.background = element_blank(),
+              panel.grid.major = element_blank(), 
+              panel.grid.minor = element_blank())+
+        theme(axis.title.x=element_blank(), axis.text.x=element_blank(), axis.ticks.x=element_blank())+
+        theme(axis.title.y=element_blank(), axis.text.y=element_blank(), axis.ticks.y=element_blank())+
+        theme(plot.margin = unit(c(0, 0, 0, 0), "cm"))+
+        theme(legend.margin=margin(0,0,0,0),
+              legend.box.margin=margin(5,10,5,-20),
+              legend.title.align=0.5,
+              legend.title = element_markdown(lineheight=.9,hjust = "left"))+
+        theme(legend.key = element_rect(fill = "transparent", colour = "transparent"))+
+        
+        annotate(geom="text",x=1050000,y=1500000, label= paste0(species_label),lineheight = .85,hjust = 0,size=6,fontface =2) +
+        annotate(geom="text",x=1050000,y=680000, label= paste0("Prepared on ",Sys.Date()),size=2,lineheight = .75,hjust = 0,color="gray75")+
+        
+        guides(fill = guide_legend(order = 1), 
+               size = guide_legend(order = 2))
       
-      guides(fill = guide_legend(order = 1), 
-             size = guide_legend(order = 2))
-    
-    png(paste0("../Output/Prediction_Maps/Density/",sp_code,"_density_BAM.png"), width=10, height=6.5, units="in", res=1000, type="cairo")
-    print(plot_BAM)
-    dev.off()
-    
+      png(paste0("../Output/Prediction_Maps/Density/",sp_code,"_density_BAM.png"), width=10, height=6.5, units="in", res=1000, type="cairo")
+      print(plot_BAM)
+      dev.off()
+    }
   }
   
   

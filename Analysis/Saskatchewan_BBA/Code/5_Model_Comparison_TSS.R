@@ -31,7 +31,7 @@ rm(list=ls())
 # }
 # 
 # dirname <- thisPath()
-dirname <- "C:/Users/IlesD/OneDrive - EC-EC/Iles/Backup/2023-11-09/SDM_ECCC/Analysis/Saskatchewan/Code"
+dirname <- "C:/Users/IlesD/OneDrive - EC-EC/Iles/Projects/Landbirds/Landbird-Distribution-Modeling-ECCC/Analysis/Saskatchewan_BBA/Code"
 setwd(dirname)
 
 `%!in%` <- Negate(`%in%`)
@@ -134,7 +134,7 @@ species_for_crossval <- n_detections %>%
   as.data.frame()
 
 results <- data.frame()
-results_path <- "../Output/Crossvalidation/Crossval_results_TSS2.rds"
+results_path <- "../Output/Crossvalidation/Crossval_results_TSS.rds"
 
 for (sp_code in rev(species_for_crossval$Species_Code_BSC)){
   
@@ -161,11 +161,14 @@ for (sp_code in rev(species_for_crossval$Species_Code_BSC)){
   # Generate QPAD offsets for each survey based on NAPOPS
   # --------------------------------
   
-  removal_models <- napops::coef_removal(species = sp_code)[c(1,4,5),]
-  best <- c(1,4,5)[which.min(removal_models$AIC)]
-  
+  # Distance model
   EDR <- edr(species = sp_code,road = FALSE, forest = 0.5,model = 1)[3] %>% as.numeric()
   A_metres <- pi*EDR^2
+  
+  # Removal model
+  # Calculate offsets from best removal model
+  removal_models <- napops::coef_removal(species = sp_code)[c(1,4,5),]
+  best <- c(1,4,5)[which.min(removal_models$AIC)]
   
   cue_rate_TSS <- cue_rate(species = sp_code,
                            model=best,
@@ -175,7 +178,7 @@ for (sp_code in rev(species_for_crossval$Species_Code_BSC)){
   p <- 1-exp(-sp_dat$Survey_Duration_Minutes*cue_rate_TSS)
   sp_dat$log_QPAD_offset_TSS <- log(A_metres * p)
   
-  # Assume intercept-only
+  # Calculate offset from intercept-only model
   cue_rate_intercept <- cue_rate(species = sp_code,
                                  model=1,
                                  od = 153,
@@ -184,14 +187,6 @@ for (sp_code in rev(species_for_crossval$Species_Code_BSC)){
   p <- 1-exp(-sp_dat$Survey_Duration_Minutes*cue_rate_intercept)
   sp_dat$log_QPAD_offset <- log(A_metres * p)
   
-  # # ------------------------------------------------
-  # # Standardize 'time since sunrise' covariate (TSS)
-  # # ------------------------------------------------
-  # sp_dat$TSS_unscaled <- as.data.frame(sp_dat$Hours_Since_Sunrise)[,1] %>% as.numeric()
-  # TSS_mean <- mean(sp_dat$TSS_unscaled)
-  # TSS_sd <- sd(sp_dat$TSS_unscaled)
-  # sp_dat$Hours_Since_Sunrise <- as.data.frame(sp_dat$Hours_Since_Sunrise)[,1] %>% scale()
-  # 
   for (xval_fold in 1:n_folds){
     
     print(sp_code)
@@ -338,6 +333,7 @@ for (sp_code in rev(species_for_crossval$Species_Code_BSC)){
     lppd_METHOD1 <- sum(dnbinom(validation_data$count,mu=pred_METHOD1 ,size=size,log = TRUE))
     WAIC_METHOD1 <- fit_METHOD1$waic$waic
     
+    
     # ********************************************************
     # ********************************************************
     # Fit using only NAPOPS correction
@@ -423,65 +419,66 @@ for (sp_code in rev(species_for_crossval$Species_Code_BSC)){
     # Plot estimated relationships with Time Since Sunrise
     # ********************************************************
     # ********************************************************
-    # 
-    # pred_TSSR <- data.frame(Hours_Since_Sunrise = seq(min(sp_dat$Hours_Since_Sunrise) %>% as.numeric(),
-    #                                                   max(sp_dat$Hours_Since_Sunrise) %>% as.numeric(),
-    #                                                   length.out = 100))
-    # 
-    # # Offset under intercept-only model
-    # cue_rate_intercept <- cue_rate(species = sp_code,
-    #                                model=1,
-    #                                od = 153,
-    #                                tssr=0)$CR_est
-    # pred_TSSR$log_QPAD_offset <- log(A_metres * (1-exp(-5*cue_rate_intercept)))[1]
-    # 
-    # # Offset under best NAPOPS model
-    # cue_rate_TSS <- cue_rate(species = sp_code,
-    #                            model=best,
-    #                            od = 153,
-    #                            tssr=as.numeric(pred_TSSR$Hours_Since_Sunrise))$CR_est
-    # 
-    # pred_TSSR$cue_rate <- cue_rate_TSS
-    # pred_TSSR$log_QPAD_offset_TSSR <- log(A_metres * (1-exp(-5*cue_rate_TSS)))
-    # 
-    # # predictions based on method 1 (flexible)
-    # pred1 <- generate(fit_METHOD1,
-    #                   pred_TSSR,
-    #                   formula =  as.formula(' ~ Intercept_PC + TSS +log_QPAD_offset'),
-    #                   n.samples = 1000)
-    # 
-    # # predictions based on method 2
-    # pred2 <- generate(fit_METHOD2,
-    #                   pred_TSSR,
-    #                   formula =  as.formula(' ~ Intercept_PC + log_QPAD_offset_TSSR'),
-    #                   n.samples = 1000)
-    # 
-    # pred1 <- pred1
-    # pred2 <- pred2
-    # 
-    # # Expected count under method 1
-    # pred_TSSR$Pred_METHOD1_q025 <- apply(pred1,1,function(x)quantile(x,0.05))
-    # pred_TSSR$Pred_METHOD1_q500 <- apply(pred1,1,function(x)quantile(x,0.5))
-    # pred_TSSR$Pred_METHOD1_q975 <- apply(pred1,1,function(x)quantile(x,0.95))
-    # 
-    # # Expected count under method 2
-    # pred_TSSR$Pred_METHOD2_q025 <- apply(pred2,1,function(x)quantile(x,0.05))
-    # pred_TSSR$Pred_METHOD2_q500 <- apply(pred2,1,function(x)quantile(x,0.5))
-    # pred_TSSR$Pred_METHOD2_q975 <- apply(pred2,1,function(x)quantile(x,0.95))
-    # 
-    # ggplot(data = pred_TSSR)+
-    #   geom_ribbon(aes(x = Hours_Since_Sunrise, ymin = exp(Pred_METHOD1_q025),ymax = exp(Pred_METHOD1_q975)), alpha = 0.5, fill = "dodgerblue")+
-    #   geom_line(aes(x = Hours_Since_Sunrise, y = exp(Pred_METHOD1_q500)), col = "dodgerblue")+
-    # 
-    #   geom_ribbon(aes(x = Hours_Since_Sunrise, ymin = exp(Pred_METHOD2_q025),ymax = exp(Pred_METHOD2_q975)), alpha = 0.5, fill = "orangered")+
-    #   geom_line(aes(x = Hours_Since_Sunrise, y = exp(Pred_METHOD2_q500)), col = "orangered")+
-    # 
-    #   theme_bw()+
-    #   ylab("Predicted count")+
-    #   xlab("Hours since sunrise")+
-    #   scale_y_continuous(label = scales::comma, trans = "log10")+
-    #   ggtitle(sp_code)
-    # 
+
+    pred_TSSR <- data.frame(Hours_Since_Sunrise = seq(min(sp_dat$Hours_Since_Sunrise) %>% as.numeric(),
+                                                      max(sp_dat$Hours_Since_Sunrise) %>% as.numeric(),
+                                                      length.out = 100))
+
+    # Offset under intercept-only model
+    cue_rate_intercept <- cue_rate(species = sp_code,
+                                   model=1,
+                                   od = 153,
+                                   tssr=0)$CR_est
+    pred_TSSR$log_QPAD_offset <- log(A_metres * (1-exp(-5*cue_rate_intercept)))[1]
+
+    # Offset under best NAPOPS model
+    cue_rate_TSS <- cue_rate(species = sp_code,
+                               model=best,
+                               od = 153,
+                               tssr=as.numeric(pred_TSSR$Hours_Since_Sunrise))$CR_est
+
+    pred_TSSR$cue_rate <- cue_rate_TSS
+    pred_TSSR$log_QPAD_offset_TSSR <- log(A_metres * (1-exp(-5*cue_rate_TSS)))
+
+    # predictions based on method 1 (flexible)
+    pred1 <- generate(fit_METHOD1,
+                      pred_TSSR,
+                      formula =  as.formula(' ~ TSS +log_QPAD_offset'),
+                      n.samples = 1000)
+
+    # predictions based on method 2
+    pred2 <- generate(fit_METHOD2,
+                      pred_TSSR,
+                      formula =  as.formula(' ~ log_QPAD_offset_TSSR'),
+                      n.samples = 1000)
+
+    pred1 <- pred1
+    pred2 <- pred2
+
+    # Expected count under method 1
+    pred_TSSR$Pred_METHOD1_q025 <- apply(pred1,1,function(x)quantile(x,0.05))
+    pred_TSSR$Pred_METHOD1_q500 <- apply(pred1,1,function(x)quantile(x,0.5))
+    pred_TSSR$Pred_METHOD1_q975 <- apply(pred1,1,function(x)quantile(x,0.95))
+
+    # Expected count under method 2
+    pred_TSSR$Pred_METHOD2_q025 <- apply(pred2,1,function(x)quantile(x,0.05))
+    pred_TSSR$Pred_METHOD2_q500 <- apply(pred2,1,function(x)quantile(x,0.5))
+    pred_TSSR$Pred_METHOD2_q975 <- apply(pred2,1,function(x)quantile(x,0.95))
+
+    ggplot(data = pred_TSSR)+
+      geom_ribbon(aes(x = Hours_Since_Sunrise, ymin = exp(Pred_METHOD1_q025),ymax = exp(Pred_METHOD1_q975)), alpha = 0.5, fill = "dodgerblue")+
+      geom_line(aes(x = Hours_Since_Sunrise, y = exp(Pred_METHOD1_q500)), col = "dodgerblue")+
+
+      geom_ribbon(aes(x = Hours_Since_Sunrise, ymin = exp(Pred_METHOD2_q025),ymax = exp(Pred_METHOD2_q975)), alpha = 0.5, fill = "orangered")+
+      geom_line(aes(x = Hours_Since_Sunrise, y = exp(Pred_METHOD2_q500)), col = "orangered")+
+
+      theme_bw()+
+      ylab("Predicted count")+
+      xlab("Hours since sunrise")+
+      scale_y_continuous(label = scales::comma)+
+      ggtitle(sp_code)
+
+    
     # *********************************************************************
     # Save results
     # *********************************************************************
@@ -541,7 +538,7 @@ fitplot <- ggplot(results_summary)+
   theme_bw()+
   xlab("Change in Deviance\n\nPositive values indicate flexible model is better")+
   scale_color_manual(values = c("dodgerblue","orangered"), guide = "none")+
-  ggtitle("Cross-validation Deviance\n\n'Flexible TSSR model' vs. 'Top model' from NAPOPS")
+  ggtitle("Cross-validation Deviance\n\n'Flexible TSSR model' vs. Top model from NAPOPS")
 fitplot
 
 # # Does INLA increase AUC relative to BRT?

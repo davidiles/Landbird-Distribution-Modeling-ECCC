@@ -189,8 +189,9 @@ population_sums <- data.frame()
 species_to_model <- species_to_model %>%
   arrange(n_squares,n_detections) 
 
-for (sp_code in (species_to_model$Species_Code_BSC)){
-  
+
+#for (sp_code in (species_to_model$Species_Code_BSC)){
+for (sp_code in c("OSFL")){  
   print(sp_code)
   
   map_file <- paste0("../Output/Prediction_Maps/Relative_Abundance/",sp_code,"_q50.png")
@@ -205,6 +206,7 @@ for (sp_code in (species_to_model$Species_Code_BSC)){
     # Only select point counts
     subset(Survey_Type %in% c("Point_Count","ARU_SPT","ARU_SPM"))
   
+  # At how many locations was the species detected (squares and individual points)?
   n_det_sq <- subset(sp_dat,count>0) %>%
     as.data.frame() %>%
     
@@ -259,7 +261,7 @@ for (sp_code in (species_to_model$Species_Code_BSC)){
   )
   mesh_spatial <- fm_mesh_2d_inla(
     boundary = hull, 
-    max.edge = c(50000, 100000), # km inside and outside
+    max.edge = c(30000, 100000), # km inside and outside
     cutoff = 5000, 
     crs = fm_crs(sp_dat)
   ) # cutoff is min edge
@@ -281,17 +283,16 @@ for (sp_code in (species_to_model$Species_Code_BSC)){
   TSS_meshpoints <- seq(TSS_range[1]-0.1,TSS_range[2]+0.1,length.out = 11)
   TSS_mesh1D = inla.mesh.1d(TSS_meshpoints,boundary="free")
   TSS_spde = inla.spde2.pcmatern(TSS_mesh1D,
-                                 prior.range = c(6,0.1),
+                                 prior.range = c(6,0.1), # 10% range is smaller than 6
                                  prior.sigma = c(1,0.1)) # 10% chance sd is larger than 1
   
   # ------------------------------------------------
   # Model formulas
   # ------------------------------------------------
   
-  covariates_to_include <- paste0("PC",1:8)
+  covariates_to_include <- paste0("PC",1:6)
   
-  #sd_linear <- 0.25
-  sd_linear <- 1
+  sd_linear <- 1 # 0.25
   prec_linear <-  c(1/sd_linear^2,1/(sd_linear/2)^2)
   model_components = as.formula(paste0('~
             Intercept_PC(1)+
@@ -344,7 +345,7 @@ for (sp_code in (species_to_model$Species_Code_BSC)){
   # ****************************************************************************
   # ****************************************************************************
   
-  # For every pixel on landscape, extract distance from eBird range limit
+  # For every pixel on landscape, extract distance (in km) from eBird range limit
   SaskGrid_species <- SaskGrid %>%
     mutate(distance_from_range = (st_centroid(.) %>% 
                                     st_distance( . , range) %>% 

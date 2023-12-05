@@ -187,9 +187,9 @@ SaskSquares <- st_read("../../../Data/Spatial/Saskatchewan/SaskSquares/SaskSquar
 population_sums <- data.frame()
 
 species_to_model <- species_to_model %>%
-  arrange(n_squares,n_detections)
+  arrange(n_squares,n_detections) 
 
-for (sp_code in rev(species_to_model$Species_Code_BSC)){
+for (sp_code in (species_to_model$Species_Code_BSC)){
   
   print(sp_code)
   
@@ -211,7 +211,7 @@ for (sp_code in rev(species_to_model$Species_Code_BSC)){
     summarize(n_sq = length(unique(sq_id)),
               n_det = sum(count>0))
   
-  #if (n_det_sq$n_sq < 30 | n_det_sq$n_det < 60) next
+  if (n_det_sq$n_sq < 25 | n_det_sq$n_det < 60) next
   
   # ------------------------------------------------
   # Extract ebird range for this species (if it exists); prepared by 4_Prep_Analysis.R
@@ -226,29 +226,6 @@ for (sp_code in rev(species_to_model$Species_Code_BSC)){
   } else{
     sp_dat$distance_from_range <- 0
   }
-  
-  # ------------------------------------------------
-  # # Standardize 'time since sunrise' covariate (TSS)
-  # ------------------------------------------------
-  
-  #sp_dat$Hours_Since_Sunrise <- as.data.frame(sp_dat$Hours_Since_Sunrise)[,1] %>% scale()
-  
-  # ------------------------------------------------
-  # Prepare iid random effects
-  # ------------------------------------------------
-  
-  # Define 'square ID' covariate which will be treated as a random effect
-  sp_dat$sq_idx <- factor(sp_dat$sq_id) %>% as.numeric()
-  
-  # Define 'square-day' covariate which will be treated as a random effect
-  sp_dat$square_day <- paste0(sp_dat$sq_id,"-",yday(sp_dat$Date_Time)) %>% factor() %>% as.numeric()
-  
-  # Define unique survey location / year covariate
-  coords <- st_coordinates(sp_dat) %>% round() %>% as.data.frame()
-  X <- coords$X
-  Y <- coords$Y
-  Year <- year(sp_dat$Date_Time)
-  sp_dat$loc_year <- paste0(Year,"-",X,"-",Y) %>% factor() %>% as.numeric()
   
   # --------------------------------
   # Generate QPAD offsets for each survey (assumes unlimited distance point counts)
@@ -270,25 +247,24 @@ for (sp_code in rev(species_to_model$Species_Code_BSC)){
   # ****************************************************************************
   # ****************************************************************************
   
-  covariates_to_include <- paste0("PC",1:8)
-  
   # ------------------------------------------------
   # Create a spatial mesh, which is used to fit the residual spatial field
   # ------------------------------------------------
   
-  # Note: mesh developed using tutorial at: https://rpubs.com/jafet089/886687
-  max.edge = diff(range(st_coordinates(sp_dat)[,1]))/10
-  bound.outer = diff(range(st_coordinates(sp_dat)[,1]))/3
-  cutoff = max.edge/5
-  bound.outer = diff(range(st_coordinates(sp_dat)[,1]))/3
-  
-  mesh_spatial <- inla.mesh.2d(loc = st_coordinates(sp_dat),
-                               cutoff = max.edge/2,
-                               max.edge = c(1,2)*max.edge,
-                               offset=c(max.edge, bound.outer))
+  # make a two extension hulls and mesh for spatial model
+  hull <- fm_extensions(
+    SaskBoundary,
+    convex = c(50000, 200000),
+    concave = c(350000, 500000)
+  )
+  mesh_spatial <- fm_mesh_2d_inla(
+    boundary = hull, 
+    max.edge = c(50000, 100000), # km inside and outside
+    cutoff = 5000, 
+    crs = fm_crs(sp_dat)
+  ) # cutoff is min edge
   mesh_locs <- mesh_spatial$loc[,c(1,2)] %>% as.data.frame()
   dim(mesh_locs)
-  #plot(mesh_spatial)
   
   prior_range <- c(300000,0.1) # 10% chance range is smaller than 300000
   prior_sigma <- c(0.5,0.1) # 10% chance sd is larger than 0.5
@@ -311,6 +287,8 @@ for (sp_code in rev(species_to_model$Species_Code_BSC)){
   # ------------------------------------------------
   # Model formulas
   # ------------------------------------------------
+  
+  covariates_to_include <- paste0("PC",1:8)
   
   #sd_linear <- 0.25
   sd_linear <- 1

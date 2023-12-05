@@ -18,7 +18,8 @@ my_packs = c('tidyverse',
              'naturecounts',
              'terra',
              'exactextractr',
-             'magrittr')
+             'magrittr',
+             'circular')
 
 if (any(!my_packs %in% installed.packages()[, 'Package'])) {install.packages(my_packs[which(!my_packs %in% installed.packages()[, 'Package'])],dependencies = TRUE)}
 lapply(my_packs, require, character.only = TRUE)
@@ -54,6 +55,13 @@ dirname <- thisPath()
 setwd(dirname)
 
 `%!in%` <- Negate(`%in%`)
+
+my.wt.circ.mean <- function(aspect, slope) {
+  sinr <- sum(sin(rad(aspect)) * slope,na.rm=T)
+  cosr <- sum(cos(rad(aspect)) * slope,na.rm=T)
+  circmean <- atan2(sinr, cosr)
+  return(deg(circmean) %% 360)
+}
 
 # ******************************************************************
 # PART 1: Select data meeting criteria for inclusion (dates, time since sunrise, etc)
@@ -214,6 +222,14 @@ SaskBoundary_buffer <- SaskBoundary %>% st_buffer(20000)
 elevation <- rast(paste0(covar_folder,"Saskatchewan/SaskElevation/Sask_Elevation.tif")) %>%  
   project(st_as_sf(SaskBoundary_buffer), res = 250)
 
+# Slope
+slope <- rast(paste0(covar_folder,"Saskatchewan/SaskSlope/SaskSlope.tif")) %>%  
+  project(st_as_sf(SaskBoundary_buffer), res = 250)
+
+# Aspect
+aspect <- rast(paste0(covar_folder,"Saskatchewan/SaskAspect/SaskAspect.tif")) %>%  
+  project(st_as_sf(SaskBoundary_buffer), res = 250)
+
 # Annual mean temperature
 AMT <- rast(paste0(covar_folder,"National/AnnualMeanTemperature/wc2.1_30s_bio_1.tif")) %>% 
   crop(st_transform(SaskBoundary_buffer,crs(.))) %>%  
@@ -260,6 +276,13 @@ prop_LCC_1km <- prop_LCC_1km %>%
 prop_LCC_1km$Obs_Index <- all_surveys_1km$Obs_Index
 all_surveys_1km <- left_join(all_surveys_1km,prop_LCC_1km)
 
+# Calculate sin and cos elements of aspect (this is code originally provided by Birds Canada)
+grid_aspect_list <- exact_extract(aspect,all_surveys_1km)
+grid_slope_list <- exact_extract(slope,all_surveys_1km)
+for (i in 1:nrow(all_surveys_1km)) all_surveys_1km$aspect_mean[i] <- my.wt.circ.mean(grid_aspect_list[[i]]$value,grid_slope_list[[i]]$value)
+all_surveys_1km$asp_sinr <- with(all_surveys_1km, sin(rad(aspect_mean)))
+all_surveys_1km$asp_cosr <- with(all_surveys_1km, cos(rad(aspect_mean)))
+
 # Select covariate columns
 all_surveys_1km <- all_surveys_1km %>%
   as.data.frame() %>%
@@ -301,6 +324,13 @@ prop_LCC_1km$point_id <- SaskGrid_1km$point_id
 
 SaskGrid_1km <- left_join(SaskGrid_1km,prop_LCC_1km)
 
+# Calculate sin and cos elements of aspect (this is code originally provided by Birds Canada)
+grid_aspect_list <- exact_extract(aspect,SaskGrid_1km)
+grid_slope_list <- exact_extract(slope,SaskGrid_1km)
+for (i in 1:nrow(SaskGrid_1km)) SaskGrid_1km$aspect_mean[i] <- my.wt.circ.mean(grid_aspect_list[[i]]$value,grid_slope_list[[i]]$value)
+SaskGrid_1km$asp_sinr <- with(SaskGrid_1km, sin(rad(aspect_mean)))
+SaskGrid_1km$asp_cosr <- with(SaskGrid_1km, cos(rad(aspect_mean)))
+
 # Join with SaskGrid
 SaskGrid <- SaskGrid %>% left_join(as.data.frame(SaskGrid_1km) %>% dplyr::select(-x))
 
@@ -310,7 +340,7 @@ SaskGrid <- SaskGrid %>% left_join(as.data.frame(SaskGrid_1km) %>% dplyr::select
 
 covars_for_PCA <- all_surveys_covariates %>%
   as.data.frame() %>%
-  dplyr::select(elevation_1km:Water_1km)
+  dplyr::select(elevation_1km:Water_1km, -aspect_mean)
 
 pca <- prcomp(covars_for_PCA, scale = TRUE)
 
@@ -323,7 +353,7 @@ fviz_eig(pca)  # Scree plot (first 5 axes explain 85% of variation in habitat be
 pca            # Variable loadings
 
 fviz_pca_var(pca,
-             axes = c(3,4),
+             axes = c(1,2),
              col.var = "contrib", # Color by contributions to the PC
              gradient.cols = viridis(10),
              repel = TRUE     # Avoid text overlapping
@@ -407,7 +437,8 @@ species_to_model <- left_join(n_detections,BSC_species %>% dplyr::select(-index)
                               by = c("Species_Code_BSC" = "BSC_spcd")) %>%
   
   # Remove erroneous observations
-  subset(english_name %!in% c("passerine sp.",
+  subset(english_name %!in% c("Accipiter sp." ,
+                              "passerine sp.",
                               "duck sp.",
                               "new world sparrow sp.",
                               "new world warbler sp.",
@@ -418,9 +449,19 @@ species_to_model <- left_join(n_detections,BSC_species %>% dplyr::select(-index)
                               "vireo sp.",
                               "Catharus sp.",
                               "Worthen's Sparrow",
-                              "woodpecker sp."))
+                              "Buteo sp.",
+                              "Bat sp.",
+                              "woodpecker sp.",
+                              "falcon sp.",
+                              "finch sp.",
+                              "owl sp.",
+                              "peep sp.",
+                              "swan sp.",
+                              "tern sp.",
+                              "wren sp.",
+                              "new world flycatcher sp."))
 
-dim(species_to_model) # 175 species
+dim(species_to_model)
 species_to_model$english_name %>% sort()
 
 # ******************************************************************
@@ -486,7 +527,7 @@ usethis::edit_r_environ()
 
 # This should read:
 # EBIRDST_KEY='ntqm1ha68fov'
-# EBIRDST_DATA_DIR='D:/Working_Files/1_Projects/Landbirds/SK_BBA_analysis/SaskAtlas/!Data/!Spatial/eBird/'
+# EBIRDST_DATA_DIR='C:/Users/IlesD/OneDrive - EC-EC/Iles/Projects/Landbirds/Landbird-Distribution-Modeling-ECCC/Data/Spatial/eBird/'
 
 # Spatial layers for SK
 SK_BCR <- st_read("../../../Data/Spatial/National/BCR/BCR_Terrestrial_master.shp")  %>%

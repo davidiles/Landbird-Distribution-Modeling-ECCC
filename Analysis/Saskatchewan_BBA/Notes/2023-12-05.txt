@@ -1,0 +1,5 @@
+Meeting with Birds Canada on 2023-12-05
+
+- Dave to adjust model to predict counts for 15 point counts
+- Add integrated model component
+- Share code with Dean

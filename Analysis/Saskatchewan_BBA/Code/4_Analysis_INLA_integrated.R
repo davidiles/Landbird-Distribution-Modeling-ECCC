@@ -144,17 +144,20 @@ for (sp_code in (species_to_model$Species_Code_BSC)){
   # ----------------------------------------------------
   
   print(sp_code)
-  map_file <- paste0("../Output/Prediction_Maps/Relative_Abundance/",sp_code,"_q50.png")
+  map_file <- paste0("../Output/Prediction_Maps/Relative_Abundance/",sp_code,"_q50_integrated.png")
   
   # Skip this species if already run
   #if (file.exists(map_file)) next
   
   # Prepare data for this species
   sp_dat <- all_surveys %>% 
-    mutate(count = full_count_matrix[,sp_code]) %>%
+    mutate(count = full_count_matrix[,sp_code],
+           presence = as.numeric(full_count_matrix[,sp_code]>0)) %>%
     
     # Only select point counts
-    subset(Survey_Type %in% c("Point_Count","ARU_SPT","ARU_SPM"))
+    subset(Survey_Type %in% c("Point_Count","ARU_SPT","ARU_SPM",
+                              "Breeding Bird Atlas",
+                              "Linear transect"))
   
   # ----------------------------------------------------
   # Extract ebird range for this species (if it exists); prepared by 4_Prep_Analysis.R
@@ -183,6 +186,25 @@ for (sp_code in (species_to_model$Species_Code_BSC)){
     p <- 1-exp(-sp_dat$Survey_Duration_Minutes*species_offsets$cue_rate)
     sp_dat$log_QPAD_offset <- log(A_metres * p)
   }
+  
+  # ----------------------------------------------------
+  # Separate Data types
+  # ----------------------------------------------------
+  
+  # Prepare point count data for this species
+  PC_dat <- subset(sp_dat,Survey_Type == "Point_Count") %>% as('Spatial')
+  
+  # Prepare ARU data for this species
+  ARU_dat <- subset(sp_dat,Survey_Type %in% c("ARU_SPT","ARU_SPM"))  %>% as('Spatial')
+  
+  # Stationary counts
+  SC_dat <- subset(sp_dat, Survey_Type == "Breeding Bird Atlas") %>% mutate(presence = as.numeric(count>0)) %>% as('Spatial')
+  
+  # Linear transects
+  LT_dat <- subset(sp_dat, Survey_Type == "Linear transect") %>% mutate(presence = as.numeric(count>0)) %>% as('Spatial')
+  
+  sum(PC_dat$count)
+  sum(LT_dat$presence)
   
   # ----------------------------------------------------
   # Create a spatial mesh, which is used to fit the residual spatial field
@@ -217,7 +239,8 @@ for (sp_code in (species_to_model$Species_Code_BSC)){
   prior_sigma <- c(0.5,0.1)    # 10% chance sd is larger than 0.5
   matern_coarse <- inla.spde2.pcmatern(mesh_spatial,
                                        prior.range = prior_range, 
-                                       prior.sigma = prior_sigma 
+                                       prior.sigma = prior_sigma,
+                                       constr = TRUE
   )
   
   # ----------------------------------------------------
@@ -233,9 +256,31 @@ for (sp_code in (species_to_model$Species_Code_BSC)){
                                  prior.range = c(6,0.1), # 10% range is smaller than 6
                                  prior.sigma = c(1,0.1)) # 10% chance sd is larger than 1
   
-  # ----------------------------------------------------
+  # ------------------------------------------------
+  # Create mesh to model effect of checklist duration
+  # ------------------------------------------------
+  # 
+  # SC_duration_meshpoints <- seq(min(SC_dat$SC_duration)-0.1,max(SC_dat$SC_duration)+0.1,length.out = 11)
+  # SC_duration_mesh1D = inla.mesh.1d(SC_duration_meshpoints,boundary="free")
+  # SC_duration_spde = inla.spde2.pcmatern(SC_duration_mesh1D,
+  #                                        prior.range = c(1,0.5),
+  #                                        prior.sigma = c(2,0.1)) # 10% chance sd is larger than 2
+  # 
+  LT_duration_meshpoints <- seq(min(LT_dat$Survey_Duration_Minutes)-10,max(LT_dat$Survey_Duration_Minutes)+10,length.out = 11)
+  LT_duration_mesh1D = inla.mesh.1d(LT_duration_meshpoints,boundary="free")
+  LT_duration_spde = inla.spde2.pcmatern(LT_duration_mesh1D,
+                                         prior.range = c(60,0.1),
+                                         prior.sigma = c(1,0.5))
+  
+  LT_distance_meshpoints <- seq(min(LT_dat$Travel_Distance_Metres)-1000,max(LT_dat$Travel_Distance_Metres)+1000,length.out = 11)
+  LT_distance_mesh1D = inla.mesh.1d(LT_distance_meshpoints,boundary="free")
+  LT_distance_spde = inla.spde2.pcmatern(LT_distance_mesh1D,
+                                         prior.range = c(5000,0.1),
+                                         prior.sigma = c(1,0.5))
+  
+  # ***************************************************************
   # Model formulas
-  # ----------------------------------------------------
+  # ***************************************************************
   
   # Names of covariates to include in model. Ideally, covariates should be uncorrelated with each other.
   # Each covariate will include a quadratic effect to allow for 'intermediate optimum' effects
@@ -247,6 +292,11 @@ for (sp_code in (species_to_model$Species_Code_BSC)){
   
   model_components = as.formula(paste0('~
             Intercept_PC(1)+
+            Intercept_LT(1)+
+            
+            LT_duration(main = Survey_Duration_Minutes,model = LT_duration_spde) +
+            LT_distance(main = Travel_Distance_Metres,model = LT_distance_spde) +
+            
             range_effect(1,model="linear", mean.linear = -0.046, prec.linear = 10000)+
             TSS(main = Hours_Since_Sunrise,model = TSS_spde) +
             spde_coarse(main = coordinates, model = matern_coarse) +',
@@ -264,11 +314,29 @@ for (sp_code in (species_to_model$Species_Code_BSC)){
                                        '+',
                                        paste0("Beta2_",covariates_to_include,'*',covariates_to_include, collapse = " + ")))
   
+  # model_formula_SC = as.formula(paste0('count ~
+  #                 Intercept_SC +
+  #                 log_QPAD_offset +
+  #                 TSS +
+  #                 range_effect * distance_from_range +
+  #                 spde_coarse +',
+  #                                      paste0("Beta1_",covariates_to_include,'*',covariates_to_include, collapse = " + "),
+  #                                      '+',
+  #                                      paste0("Beta2_",covariates_to_include,'*',covariates_to_include, collapse = " + ")))
+  # 
+  model_formula_LT = as.formula(paste0('presence ~ log(1/exp(-exp(
+                  Intercept_LT +
+                  TSS +
+                  spde_coarse +
+                  LT_distance +
+                  LT_duration +
+                  range_effect * distance_from_range +',
+                                       paste0("Beta1_",covariates_to_include,'*',covariates_to_include, collapse = " + "),"))-1)"))
+  
   # ----------------------------------------------------------------------------
   # Fit model to point counts and ARUs with negative binomial error
   # ----------------------------------------------------------------------------
   
-  PC_sp <- sp_dat %>% as('Spatial')
   start <- Sys.time()
   fit_INLA <- NULL
   while(is.null(fit_INLA)){
@@ -276,7 +344,15 @@ for (sp_code in (species_to_model$Species_Code_BSC)){
                     
                     like(family = "nbinomial",
                          formula = model_formula_PC,
-                         data = PC_sp),
+                         data = PC_dat),
+                    
+                    # like(family = "nbinomial",
+                    #      formula = model_formula_SC,
+                    #      data = SC_dat),
+                    
+                    like(family = "binomial",
+                         formula = model_formula_LT,
+                         data = LT_dat),
                     
                     options = list(
                       control.compute = list(waic = FALSE, cpo = FALSE),
@@ -286,7 +362,7 @@ for (sp_code in (species_to_model$Species_Code_BSC)){
   
   end <- Sys.time()
   runtime_INLA <- difftime( end,start, units="mins") %>% round(2)
-  print(paste0(sp_code," - ",runtime_INLA," min to fit model")) # 3 min
+  print(paste0(sp_code," - ",runtime_INLA," min to fit model")) # 2 min
   
   # ****************************************************************************
   # ****************************************************************************
@@ -466,7 +542,7 @@ for (sp_code in (species_to_model$Species_Code_BSC)){
   colscale_uncertainty <- c("#FEFEFE", "#FFF4B3", "#F5D271", "#F2B647", "#EC8E00", "#CA302A")
   colpal_uncertainty <- colorRampPalette(colscale_uncertainty)
   
-  lower_bound <- 0.01
+  lower_bound <- 0.15
   upper_bound <- quantile(SaskGrid_species$pred_CI_width_90,0.99,na.rm = TRUE) %>% signif(2)
   if (lower_bound >= (upper_bound/5)) lower_bound <- (upper_bound/5) %>% signif(2)
   
@@ -495,7 +571,7 @@ for (sp_code in (species_to_model$Species_Code_BSC)){
     geom_sf(data = subset(SaskSquares_centroids, !is.na(PC_detected) & PC_detected > 0), col = "black", pch = 19, size = 0.2)+
     
     # Checklist detections
-    #geom_sf(data = subset(SaskSquares_centroids, !is.na(CL_detected) & CL_detected > 0), col = "black", pch = 4, size = 0.2)+
+    geom_sf(data = subset(SaskSquares_centroids, !is.na(CL_detected) & CL_detected > 0), col = "black", pch = 4, size = 0.2)+
     
     coord_sf(clip = "off",xlim = range(as.data.frame(st_coordinates(SaskBoundary))$X))+
     theme(panel.background = element_blank(),panel.grid.major = element_blank(), panel.grid.minor = element_blank())+
@@ -506,8 +582,9 @@ for (sp_code in (species_to_model$Species_Code_BSC)){
           legend.title = element_markdown(lineheight=.9,hjust = "left"))+
     annotate(geom="text",x=346000,y=1850000, label= paste0(species_label),lineheight = .85,hjust = 0,size=6,fontface =2) +
     annotate(geom="text",x=346000,y=1400000, label= paste0("Prepared on ",Sys.Date()),size=3,lineheight = .75,hjust = 0,color="#3b3b3b")
+  print(plot_CI_width_90)
   
-  png(paste0("../Output/Prediction_Maps/Uncertainty/",sp_code,"_CI_width_90.png"), width=6.5, height=8, units="in", res=300, type="cairo")
+  png(paste0("../Output/Prediction_Maps/Uncertainty/",sp_code,"_CI_width_90_integrated.png"), width=6.5, height=8, units="in", res=300, type="cairo")
   print(plot_CI_width_90)
   dev.off()
   
@@ -550,7 +627,7 @@ for (sp_code in (species_to_model$Species_Code_BSC)){
     geom_sf(data = subset(SaskSquares_centroids, !is.na(PC_detected) & PC_detected > 0), col = "black", pch = 19, size = 0.2)+
     
     # Checklist detections
-    #geom_sf(data = subset(SaskSquares_centroids, !is.na(CL_detected) & CL_detected > 0), col = "black", pch = 4, size = 0.2)+
+    geom_sf(data = subset(SaskSquares_centroids, !is.na(CL_detected) & CL_detected > 0), col = "black", pch = 4, size = 0.2)+
     
     coord_sf(clip = "off",xlim = range(as.data.frame(st_coordinates(SaskBoundary))$X))+
     theme(panel.background = element_blank(),
@@ -566,7 +643,7 @@ for (sp_code in (species_to_model$Species_Code_BSC)){
     annotate(geom="text",x=346000,y=1850000, label= paste0(species_label),lineheight = .85,hjust = 0,size=6,fontface =2) +
     annotate(geom="text",x=346000,y=1400000, label= paste0("Prepared on ",Sys.Date()),size=3,lineheight = .75,hjust = 0,color="#3b3b3b")
   
-  png(paste0("../Output/Prediction_Maps/PObs/",sp_code,"_PObs.png"), width=6.5, height=8, units="in", res=300, type="cairo")
+  png(paste0("../Output/Prediction_Maps/PObs/",sp_code,"_PObs_integrated.png"), width=6.5, height=8, units="in", res=300, type="cairo")
   print(plot_pObs)
   dev.off()
   

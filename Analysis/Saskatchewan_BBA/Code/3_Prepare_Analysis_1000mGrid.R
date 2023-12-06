@@ -199,13 +199,13 @@ SaskBoundary <- st_read("../../../Data/Spatial/National/BCR/BCR_Terrestrial_mast
 SaskBoundary_buffer <- SaskBoundary %>% st_buffer(10000)
 
 # ---------------------------------------------------
-# 500 m x 500 m grid
+# 'target raster' will have desired properties for grid on which predictions will be made
 # ---------------------------------------------------
 
 # Example raster with target properties
 target_raster <- rast("../../../Data/Spatial/National/AnnualMeanTemperature/wc2.1_30s_bio_1.tif") %>% 
   crop(st_transform(SaskBoundary_buffer,crs(.))) %>% 
-  project(target_crs, res = 500)
+  project(target_crs, res = 1000)
 
 # Convert to sf object
 SaskGrid <- st_as_stars(target_raster) %>%
@@ -351,7 +351,7 @@ prop_LCC_1km$point_id <- SaskGrid_1km$point_id
 SaskGrid_1km <- left_join(SaskGrid_1km,prop_LCC_1km)
 
 # Join with SaskGrid
-SaskGrid <- SaskGrid %>% left_join(as.data.frame(SaskGrid_1km) %>% dplyr::select(-x))
+SaskGrid <- SaskGrid %>% left_join(as.data.frame(SaskGrid_1km) %>% dplyr::select(-geometry))
 
 # --------------------------------
 # Conduct Principal Components Analysis on covariates to identify axes of major variation in habitat
@@ -434,13 +434,16 @@ for (i in 1:nrow(Sask_spcd)) {
 }
 
 # ------------------------------------------
-# Only fit models for species detected in at least 50 atlas squares)
+# Summary of number of detections (in point counts/ARUs) for each species
 # ------------------------------------------
 
 BSC_species <- readRDS("../Data_Cleaned/BSC_species.RDS")
 
+PC_surveys <- which(all_surveys$Survey_Type %in% c("Point_Count","ARU_SPM","ARU_SPT"))
 n_detections <- full_count_matrix
 rownames(n_detections) <- all_surveys$sq_id
+n_detections <- n_detections[PC_surveys,]
+
 n_detections <- n_detections %>% 
   reshape2::melt() %>%
   dplyr::rename(sq_id = Var1, Species_Code_BSC = Var2, detected = value) %>%
@@ -448,8 +451,6 @@ n_detections <- n_detections %>%
   group_by(Species_Code_BSC) %>%
   summarize(n_squares = length(unique(sq_id)),
             n_detections = sum(detected>0)) 
-
-
 
 species_to_model <- left_join(n_detections,BSC_species %>% dplyr::select(-index),
                               by = c("Species_Code_BSC" = "BSC_spcd")) %>%

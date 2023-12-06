@@ -137,7 +137,7 @@ species_to_model <- species_to_model %>%
   arrange(desc(n_squares),n_detections) %>%
   subset(n_squares >= 25)
 
-for (sp_code in (species_to_model$Species_Code_BSC)){
+for (sp_code in rev(species_to_model$Species_Code_BSC)){
  
   # ----------------------------------------------------
   # Extract counts/data for this species

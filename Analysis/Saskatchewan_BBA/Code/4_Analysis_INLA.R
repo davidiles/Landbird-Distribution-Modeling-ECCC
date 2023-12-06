@@ -466,7 +466,7 @@ for (sp_code in (species_to_model$Species_Code_BSC)){
   colscale_uncertainty <- c("#FEFEFE", "#FFF4B3", "#F5D271", "#F2B647", "#EC8E00", "#CA302A")
   colpal_uncertainty <- colorRampPalette(colscale_uncertainty)
   
-  lower_bound <- 0.01
+  lower_bound <- 0.15
   upper_bound <- quantile(SaskGrid_species$pred_CI_width_90,0.99,na.rm = TRUE) %>% signif(2)
   if (lower_bound >= (upper_bound/5)) lower_bound <- (upper_bound/5) %>% signif(2)
   

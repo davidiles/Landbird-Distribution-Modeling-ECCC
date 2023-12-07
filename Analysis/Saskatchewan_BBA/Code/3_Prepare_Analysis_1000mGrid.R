@@ -75,81 +75,6 @@ analysis_data <- readRDS(file = "../Data_Cleaned/analysis_data.rds")
 all_surveys <- analysis_data$all_surveys %>% mutate(Obs_Index = 1:nrow(.))
 full_count_matrix <- analysis_data$full_count_matrix
 
-all_surveys$Survey_Type[all_surveys$Survey_Type == "IN_PERSON"] <- "Point_Count"
-all_surveys$Survey_Type[all_surveys$Survey_Type %in% c("ARU_SM2","ARU_BAR_LT","ARU_SM_UNKN",
-                                                       "ARU_SM4","ZOOM_H2N","ARU_IRIVER_E",
-                                                       "ARU_MARANTZ","ARU_IRIVER","ARU_UNKNOWN")] <- "ARU_SPT"
-
-
-# ------------------------------------------
-# Select Point Counts / ARUs to use
-# ------------------------------------------
-
-PC_to_use <- subset(all_surveys,
-                    Survey_Type %in% c("Point_Count","ARU_SPT","ARU_SPM") &
-                      
-                      Survey_Duration_Minutes > 1 &
-                      Survey_Duration_Minutes <= 10 &
-                      
-                      Hours_Since_Sunrise >= -2 &
-                      Hours_Since_Sunrise <= 4 &
-                      
-                      yday(Date_Time) >= yday(ymd("2022-05-28")) &
-                      yday(Date_Time) <= yday(ymd("2022-07-07")) &
-                      
-                      year(Date_Time) >= 2017 &
-                      year(Date_Time) <= 2021
-)
-
-# ------------------------------------------
-# Select STATIONARY COUNT data to use (assuming these are 'breeding bird atlas' checklists; vast majority do not have distance)
-# ------------------------------------------
-
-# Select stationary counts to use
-SC_to_use <- subset(all_surveys,
-                    
-                    Survey_Type %in% c("Breeding Bird Atlas") & 
-                      
-                      Hours_Since_Sunrise >= -2 &
-                      Hours_Since_Sunrise <= 4 &
-                      
-                      Survey_Duration_Minutes >= 1 &
-                      Survey_Duration_Minutes <= 10 &
-                      
-                      yday(Date_Time) >= yday(ymd("2022-05-28")) &
-                      yday(Date_Time) <= yday(ymd("2022-07-07")) & 
-                      
-                      year(Date_Time) >= 2017 &
-                      year(Date_Time) <= 2021)
-
-# ------------------------------------------
-# Select LINEAR TRANSECT data to use
-# ------------------------------------------
-
-LT_to_use <- subset(all_surveys,
-                    Survey_Type %in% c("Linear transect") & 
-                      
-                      Hours_Since_Sunrise >= -2 &
-                      Hours_Since_Sunrise <= 15 &
-                      
-                      Survey_Duration_Minutes > 10 &
-                      Survey_Duration_Minutes <= 120 &
-                      Travel_Distance_Metres <= 10000 &
-                      
-                      yday(Date_Time) >= yday(ymd("2022-05-28")) &
-                      yday(Date_Time) <= yday(ymd("2022-07-07")) &
-                      
-                      year(Date_Time) >= 2017 &
-                      year(Date_Time) <= 2021)
-
-# ------------------------------------------
-# Subset
-# ------------------------------------------
-
-surveys_to_use <- c(PC_to_use$Obs_Index, SC_to_use$Obs_Index, LT_to_use$Obs_Index)
-all_surveys <- subset(all_surveys, Obs_Index %in% surveys_to_use)
-full_count_matrix <- full_count_matrix[surveys_to_use,]
-
 # ------------------------------------------
 # Atlas Squares in which each survey is located
 # ------------------------------------------
@@ -174,7 +99,6 @@ all_surveys$Obs_Index <- 1:nrow(all_surveys)
 target_crs <- "+proj=aea +lat_1=50 +lat_2=70 +lat_0=40 +lon_0=-106 +x_0=0 +y_0=0 +ellps=GRS80 +datum=NAD83 +units=m +no_defs "
 
 all_surveys <- st_transform(all_surveys,target_crs)
-
 
 # ******************************************************************
 # ******************************************************************
@@ -403,6 +327,7 @@ all_surveys_covariates <- all_surveys_covariates %>%
 
 all_surveys <- full_join(all_surveys,all_surveys_covariates)
 SaskGrid <- bind_cols(SaskGrid,SaskGrid_PCA)
+
 
 # ******************************************************************
 # PART 3: Identify list of species to run analysis for

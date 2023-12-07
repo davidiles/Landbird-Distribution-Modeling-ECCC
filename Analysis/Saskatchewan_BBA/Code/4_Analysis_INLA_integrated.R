@@ -89,13 +89,18 @@ cut.fn <- function(df = NA,
   return(list(raster = tmp,cut_levs = cut_levs))
 }
 
-# ------------------------------------------------
-# LOAD DATA
-# ------------------------------------------------
+# ******************************************************************
+# LOAD AND SUBSET BIRD DATA BASED ON SPECIFIC CRITERIA (DATE RANGES, ETC.)
+# ******************************************************************
 
 analysis_data <- readRDS("../Data_Cleaned/analysis_data_package.rds")
 attach(analysis_data)
 
+# Fix survey type labels
+all_surveys$Survey_Type[all_surveys$Survey_Type == "IN_PERSON"] <- "Point_Count"
+all_surveys$Survey_Type[all_surveys$Survey_Type %in% c("ARU_SM2","ARU_BAR_LT","ARU_SM_UNKN",
+                                                       "ARU_SM4","ZOOM_H2N","ARU_IRIVER_E",
+                                                       "ARU_MARANTZ","ARU_IRIVER","ARU_UNKNOWN")] <- "ARU_SPT"
 AEA_proj <- "+proj=aea +lat_1=50 +lat_2=70 +lat_0=40 +lon_0=-106 +x_0=0 +y_0=0 +ellps=GRS80 +datum=NAD83 +units=m +no_defs "
 
 SaskBoundary <- st_read("../../../Data/Spatial/National/BCR/BCR_Terrestrial_master.shp")  %>%
@@ -127,17 +132,114 @@ SaskSquares <- st_read("../../../Data/Spatial/Saskatchewan/SaskSquares/SaskSquar
 SaskGrid <- SaskGrid %>%
   st_intersection(SaskBoundary)
 
-# ------------------------------------------------
+# ------------------------------------------
+# Select Point Counts / ARUs to use
+# ------------------------------------------
+
+PC_to_use <- subset(all_surveys,
+                    Survey_Type %in% c("Point_Count","ARU_SPT","ARU_SPM") &
+                      
+                      Survey_Duration_Minutes > 1 &
+                      Survey_Duration_Minutes <= 10 &
+                      
+                      Hours_Since_Sunrise >= -2 &
+                      Hours_Since_Sunrise <= 4 &
+                      
+                      yday(Date_Time) >= yday(ymd("2022-05-28")) &
+                      yday(Date_Time) <= yday(ymd("2022-07-07")) &
+                      
+                      year(Date_Time) >= 2017 &
+                      year(Date_Time) <= 2021
+)
+
+# ------------------------------------------
+# Select STATIONARY COUNT data to use (assuming these are 'breeding bird atlas' checklists; vast majority do not have distance)
+# ------------------------------------------
+
+# Select stationary counts to use
+SC_to_use <- subset(all_surveys,
+                    
+                    Survey_Type %in% c("Breeding Bird Atlas") &
+                      
+                      Hours_Since_Sunrise >= -2 &
+                      Hours_Since_Sunrise <= 8 &
+                      
+                      Survey_Duration_Minutes >= 1 &
+                      Survey_Duration_Minutes <= 120 &
+                      
+                      yday(Date_Time) >= yday(ymd("2022-05-28")) &
+                      yday(Date_Time) <= yday(ymd("2022-07-07")) &
+                      
+                      year(Date_Time) >= 2017 &
+                      year(Date_Time) <= 2021)
+
+# ------------------------------------------
+# Select LINEAR TRANSECT data to use
+# ------------------------------------------
+
+LT_to_use <- subset(all_surveys,
+                    Survey_Type %in% c("Linear transect") &
+                      
+                      Hours_Since_Sunrise >= -2 &
+                      Hours_Since_Sunrise <= 8 &
+                      
+                      Survey_Duration_Minutes > 10 &
+                      Survey_Duration_Minutes <= 120 &
+                      Travel_Distance_Metres <= 10000 &
+                      
+                      yday(Date_Time) >= yday(ymd("2022-05-28")) &
+                      yday(Date_Time) <= yday(ymd("2022-07-07")) &
+                      
+                      year(Date_Time) >= 2017 &
+                      year(Date_Time) <= 2021)
+
+# ------------------------------------------
+# Subset
+# ------------------------------------------
+
+surveys_to_use <- c(PC_to_use$Obs_Index, SC_to_use$Obs_Index, LT_to_use$Obs_Index)
+all_surveys <- subset(all_surveys, Obs_Index %in% surveys_to_use) %>% arrange(Obs_Index)
+full_count_matrix <- full_count_matrix[all_surveys$Obs_Index,]
+
+# ------------------------------------------
+# Calculate number of squares in which each species was detected, using each survey type
+# ------------------------------------------
+
+species_summary <- data.frame()
+
+for (sp_code in colnames(full_count_matrix)){
+  
+  species_detections <- all_surveys %>% 
+    as.data.frame() %>%
+    mutate(count = full_count_matrix[,sp_code]) %>%
+    mutate(Survey_Type = replace(Survey_Type, Survey_Type %in% c("Point_Count","ARU_SPT","ARU_SPM"), "PC/ARU")) %>%
+    group_by(sq_id, Survey_Type) %>%
+    summarize(n = sum(count>0,na.rm = TRUE))%>%
+    group_by(Survey_Type) %>%
+    subset(n>0)%>%
+    summarize(n_squares = length(unique(sq_id))) %>%
+    pivot_wider(names_from = Survey_Type, values_from = n_squares) %>%
+    mutate(sp_code = sp_code) %>%
+    relocate(sp_code)
+  
+  species_summary <- bind_rows(species_summary,species_detections)
+  
+}
+species_summary[is.na(species_summary)] <- 0
+
+# Number of squares in which each species was detected, with each survey type
+species_summary <- species_summary %>% arrange(desc(`PC/ARU`))
+head(species_summary)
+
+# ******************************************************************
 # Loop through species, fit models, generate maps
-# ------------------------------------------------
+# ******************************************************************
 
 population_sums <- data.frame()
 
-species_to_model <- species_to_model %>%
-  arrange(desc(n_squares),n_detections) %>%
-  subset(n_squares >= 25)
+species_summary <- species_summary %>% subset(`PC/ARU` >=20)
 
-for (sp_code in rev(species_to_model$Species_Code_BSC)){
+for (sp_code in rev(species_summary$sp_code)){
  
   # ----------------------------------------------------
   # Extract counts/data for this species
@@ -154,7 +256,6 @@ for (sp_code in rev(species_to_model$Species_Code_BSC)){
     mutate(count = full_count_matrix[,sp_code],
            presence = as.numeric(full_count_matrix[,sp_code]>0)) %>%
     
-    # Only select point counts
     subset(Survey_Type %in% c("Point_Count","ARU_SPT","ARU_SPM",
                               "Breeding Bird Atlas",
                               "Linear transect"))
@@ -178,6 +279,7 @@ for (sp_code in rev(species_to_model$Species_Code_BSC)){
   # ----------------------------------------------------
   
   species_offsets <- subset(species_to_model, Species_Code_BSC == sp_code)
+  if (nrow(species_offsets)==0) next
   
   if (species_offsets$offset_exists == FALSE) sp_dat$log_QPAD_offset <- 0
   
@@ -191,20 +293,14 @@ for (sp_code in rev(species_to_model$Species_Code_BSC)){
   # Separate Data types
   # ----------------------------------------------------
   
-  # Prepare point count data for this species
-  PC_dat <- subset(sp_dat,Survey_Type == "Point_Count") %>% as('Spatial')
-  
-  # Prepare ARU data for this species
-  ARU_dat <- subset(sp_dat,Survey_Type %in% c("ARU_SPT","ARU_SPM"))  %>% as('Spatial')
-  
+  # Point count and ARU data treated as the same thing in this analysis
+  PC_dat <- subset(sp_dat,Survey_Type %in% c("Point_Count","ARU_SPT","ARU_SPM")) %>% as('Spatial')
+
   # Stationary counts
   SC_dat <- subset(sp_dat, Survey_Type == "Breeding Bird Atlas") %>% mutate(presence = as.numeric(count>0)) %>% as('Spatial')
   
   # Linear transects
   LT_dat <- subset(sp_dat, Survey_Type == "Linear transect") %>% mutate(presence = as.numeric(count>0)) %>% as('Spatial')
-  
-  sum(PC_dat$count)
-  sum(LT_dat$presence)
   
   # ----------------------------------------------------
   # Create a spatial mesh, which is used to fit the residual spatial field
@@ -224,7 +320,7 @@ for (sp_code in rev(species_to_model$Species_Code_BSC)){
   # Setting max.edge = c(50000,100000) allows the model to fit much more quickly (3.5 min), though possibly with reduced accuracy
   mesh_spatial <- fm_mesh_2d_inla(
     boundary = hull, 
-    max.edge = c(40000, 100000), # km inside and outside
+    max.edge = c(50000, 100000), # km inside and outside
     cutoff = 5000, 
     crs = fm_crs(sp_dat)
   )
@@ -259,13 +355,13 @@ for (sp_code in rev(species_to_model$Species_Code_BSC)){
   # ------------------------------------------------
   # Create mesh to model effect of checklist duration
   # ------------------------------------------------
-  # 
-  # SC_duration_meshpoints <- seq(min(SC_dat$SC_duration)-0.1,max(SC_dat$SC_duration)+0.1,length.out = 11)
-  # SC_duration_mesh1D = inla.mesh.1d(SC_duration_meshpoints,boundary="free")
-  # SC_duration_spde = inla.spde2.pcmatern(SC_duration_mesh1D,
-  #                                        prior.range = c(1,0.5),
-  #                                        prior.sigma = c(2,0.1)) # 10% chance sd is larger than 2
-  # 
+
+  SC_duration_meshpoints <- seq(min(SC_dat$Survey_Duration_Minutes)-0.1,max(SC_dat$Survey_Duration_Minutes)+0.1,length.out = 11)
+  SC_duration_mesh1D = inla.mesh.1d(SC_duration_meshpoints,boundary="free")
+  SC_duration_spde = inla.spde2.pcmatern(SC_duration_mesh1D,
+                                         prior.range = c(60,0.1),
+                                         prior.sigma = c(1,0.5))
+
   LT_duration_meshpoints <- seq(min(LT_dat$Survey_Duration_Minutes)-10,max(LT_dat$Survey_Duration_Minutes)+10,length.out = 11)
   LT_duration_mesh1D = inla.mesh.1d(LT_duration_meshpoints,boundary="free")
   LT_duration_spde = inla.spde2.pcmatern(LT_duration_mesh1D,
@@ -290,9 +386,12 @@ for (sp_code in rev(species_to_model$Species_Code_BSC)){
   sd_linear <- 1 # Change to smaller value (e.g., 0.1), if you want to heavily shrink covariate effects and potentially create smoother surfaces
   prec_linear <-  c(1/sd_linear^2,1/(sd_linear/2)^2)
   
+  #SC_duration(main = Survey_Duration_Minutes,model = SC_duration_spde) +
+  #Intercept_SC(1)+
   model_components = as.formula(paste0('~
             Intercept_PC(1)+
             Intercept_LT(1)+
+            
             
             LT_duration(main = Survey_Duration_Minutes,model = LT_duration_spde) +
             LT_distance(main = Travel_Distance_Metres,model = LT_distance_spde) +
@@ -314,16 +413,17 @@ for (sp_code in rev(species_to_model$Species_Code_BSC)){
                                        '+',
                                        paste0("Beta2_",covariates_to_include,'*',covariates_to_include, collapse = " + ")))
   
-  # model_formula_SC = as.formula(paste0('count ~
-  #                 Intercept_SC +
-  #                 log_QPAD_offset +
-  #                 TSS +
-  #                 range_effect * distance_from_range +
-  #                 spde_coarse +',
-  #                                      paste0("Beta1_",covariates_to_include,'*',covariates_to_include, collapse = " + "),
-  #                                      '+',
-  #                                      paste0("Beta2_",covariates_to_include,'*',covariates_to_include, collapse = " + ")))
-  # 
+  model_formula_SC = as.formula(paste0('count ~
+                  Intercept_SC +
+                  log_QPAD_offset +
+                  TSS +
+                  SC_duration +
+                  range_effect * distance_from_range +
+                  spde_coarse +',
+                                       paste0("Beta1_",covariates_to_include,'*',covariates_to_include, collapse = " + "),
+                                       '+',
+                                       paste0("Beta2_",covariates_to_include,'*',covariates_to_include, collapse = " + ")))
+
   model_formula_LT = as.formula(paste0('presence ~ log(1/exp(-exp(
                   Intercept_LT +
                   TSS +
@@ -331,7 +431,9 @@ for (sp_code in rev(species_to_model$Species_Code_BSC)){
                   LT_distance +
                   LT_duration +
                   range_effect * distance_from_range +',
-                                       paste0("Beta1_",covariates_to_include,'*',covariates_to_include, collapse = " + "),"))-1)"))
+                                       paste0("Beta1_",covariates_to_include,'*',covariates_to_include, collapse = " + "),
+                                       '+',
+                                       paste0("Beta2_",covariates_to_include,'*',covariates_to_include, collapse = " + "),"))-1)"))
   
   # ----------------------------------------------------------------------------
   # Fit model to point counts and ARUs with negative binomial error
@@ -345,10 +447,10 @@ for (sp_code in rev(species_to_model$Species_Code_BSC)){
                     like(family = "nbinomial",
                          formula = model_formula_PC,
                          data = PC_dat),
-                    
-                    # like(family = "nbinomial",
-                    #      formula = model_formula_SC,
-                    #      data = SC_dat),
+                     # 
+                     # like(family = "nbinomial",
+                     #      formula = model_formula_SC,
+                     #      data = SC_dat),
                     
                     like(family = "binomial",
                          formula = model_formula_LT,
@@ -440,7 +542,7 @@ for (sp_code in rev(species_to_model$Species_Code_BSC)){
               PC_mean_count = mean(count) %>% round(2))
   
   CL_detected <- sp_dat %>%
-    subset(Survey_Type %in% c("Breeding Bird Atlas","Linear transect")) %>%
+    subset(Survey_Type %in% c("Linear transect")) %>%
     as.data.frame() %>%
     group_by(sq_id) %>%
     summarize(CL_detected = as.numeric(sum(count)>0),
@@ -479,7 +581,7 @@ for (sp_code in rev(species_to_model$Species_Code_BSC)){
   colpal_relabund <- colorRampPalette(colscale_relabund)
 
   lower_bound <- 0.15
-  upper_bound <- quantile(SaskGrid_species$pred_q50,0.95,na.rm = TRUE) %>% signif(2)
+  upper_bound <- quantile(SaskGrid_species$pred_q50,0.99,na.rm = TRUE) %>% signif(2)
   if (lower_bound >= (upper_bound/5)) lower_bound <- (upper_bound/5) %>% signif(2)
   
   sp_cut <- cut.fn(df = SaskGrid_species,
@@ -509,7 +611,7 @@ for (sp_code in rev(species_to_model$Species_Code_BSC)){
     geom_sf(data = subset(SaskSquares_centroids, !is.na(PC_detected) & PC_detected > 0), col = "black", pch = 19, size = 0.2)+
     
     # Checklist detections
-    #geom_sf(data = subset(SaskSquares_centroids, !is.na(CL_detected) & CL_detected > 0), col = "black", pch = 4, size = 0.2)+
+    geom_sf(data = subset(SaskSquares_species, !is.na(CL_detected) & CL_detected > 0), col = "black", size = 0.2, fill = "transparent")+
     
     
     coord_sf(clip = "off",xlim = range(as.data.frame(st_coordinates(SaskBoundary))$X))+

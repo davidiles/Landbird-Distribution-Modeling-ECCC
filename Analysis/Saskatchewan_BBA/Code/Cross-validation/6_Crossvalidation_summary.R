@@ -5,8 +5,8 @@ setwd("C:/Users/IlesD/OneDrive - EC-EC/Iles/Projects/Landbirds/Landbird-Distribu
 
 results_PConly <- readRDS("../Output/Crossvalidation/Crossval_results_PConly.rds") %>%
   dplyr::select(-mean_count_val_pred)
-results_integrated <- readRDS("../Output/Crossvalidation/Crossval_results_integrated.rds")%>%
-  dplyr::select(-mean_count_val_pred)
+results_integrated <- readRDS("../Output/Crossvalidation/Crossval_results_integrated_LT.rds") %>%
+  dplyr::select(-mean_count_val_pred) %>% rename(lppd_integrated = lppd_integrated_LT)
 
 results <- full_join(results_PConly,results_integrated) %>%
   na.omit() %>%
@@ -20,6 +20,6 @@ ggplot(results, aes(y = sp_code, yend = sp_code, x = 0, xend = lppd_integrated -
   
   
   theme_bw()+
-  xlab("Cross-validation likelihood")+
+  xlab("Likelihood(integrated) - Likelihood(PConly)")+
   scale_color_manual(values = c("dodgerblue","orangered"), guide = "none")+
-  ggtitle("Difference in cross-validation likelihood")
+  ggtitle("Likelihood of integrated model versus PConly model")

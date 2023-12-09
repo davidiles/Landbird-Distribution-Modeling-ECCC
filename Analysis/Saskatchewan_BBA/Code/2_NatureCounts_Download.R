@@ -216,7 +216,12 @@ PCData %<>%  filter(!is.na(ObservationCount))
 # Construct a dataset that contains JUST survey information (not counts)
 PC_surveyinfo <- PCData %>% 
   as.data.frame() %>%
-  dplyr::select(surveyID,Locality,DecimalLatitude,DecimalLongitude,ObservationDate,TimeCollected,DurationInMinutes,EffortMeasurement1) %>%
+  dplyr::select(surveyID,Locality,DecimalLatitude,
+                DecimalLongitude,ObservationDate,TimeCollected,
+                DurationInMinutes,
+                EffortMeasurement1
+                
+  ) %>%
   distinct() %>%
   rename(sq_id = Locality) %>%
   st_as_sf(.,coords = c("DecimalLongitude","DecimalLatitude"), crs = st_crs(4326), remove = FALSE)
@@ -245,7 +250,9 @@ NC_PC_surveyinfo <- PC_surveyinfo %>%
          Latitude = DecimalLatitude, 
          Longitude = DecimalLongitude,
          Survey_Duration_Minutes = DurationInMinutes,
-         Survey_Type = EffortMeasurement1) %>%
+         Survey_Type = EffortMeasurement1
+         
+  ) %>%
   
   mutate(Max_Distance_Metres = Inf, 
          Date_Time = ymd(ObservationDate) + hours(floor(TimeCollected)) + minutes(round(60*(TimeCollected-floor(TimeCollected)))),
@@ -342,7 +349,10 @@ DO_surveyinfo <- DOData %>%
   st_as_sf(.,coords = c("Longitude","Latitude"), crs = st_crs(4326), remove = FALSE) %>%
   subset(!is.na(Date_Time)) %>% 
   dplyr::select(Data_Source,Project_Name,Survey_Type,survey_ID,Latitude,Longitude,
-                Date_Time,Survey_Duration_Minutes,Travel_Distance_Metres,n_Species_Detected,n_Birds_Detected,IncludesPointCounts,geometry)
+                Date_Time,Survey_Duration_Minutes,Travel_Distance_Metres,
+                n_Species_Detected,n_Birds_Detected,
+                IncludesPointCounts,AllSpeciesReported,AllIndividualsReported,
+                geometry)
 
 # ---------------------------------------------------------
 # Create matrix of species counts (each row corresponds to one in DO_surveyinfo)
@@ -360,59 +370,6 @@ close(pb)
 
 # Remove columns (species) that were never observed to save storage space
 DO_matrix <- DO_matrix[,-which(colSums(DO_matrix,na.rm = TRUE)==0)]
-
-# ************************************************************
-# ************************************************************
-# CHECK FOR OVERLAP BETWEEN NATURECOUNTS AND WILDTRAX POINT COUNT DATASETS
-#
-# - assume ARU data in WildTrax data is 'authoritative' because it can be reviewed/updated more often
-#
-# - assume Human Point counts in NatureCounts are authoritative because they have been thoroughly QA/QC'd
-# ************************************************************
-# ************************************************************
-
-NC_PC_surveyinfo <- NC_PC_surveyinfo %>% st_transform(crs = AEA_proj)
-
-# Identify NatureCounts point counts that are within 10 m of WildTrax locations
-WT_buff <- st_buffer(WT_surveyinfo,10) %>% st_union()
-
-NC_PC_surveyinfo$to_evaluate <- FALSE
-NC_PC_surveyinfo$to_evaluate[which(as.matrix(st_intersects(NC_PC_surveyinfo,WT_buff)))] <- TRUE
-
-distance_matrix <- st_distance(subset(NC_PC_surveyinfo, to_evaluate),WT_surveyinfo)
-
-# Flags for which observations to remove
-NC_PC_surveyinfo$Obs_Index <- 1:nrow(NC_PC_surveyinfo)
-WT_surveyinfo$Obs_Index <- 1:nrow(WT_surveyinfo)
-NC_PC_surveyinfo$to_remove <- FALSE
-WT_surveyinfo$to_remove <- FALSE
-
-# Check for and flag overlap
-for (i in 1:nrow(subset(NC_PC_surveyinfo, to_evaluate))){
-  
-  obs_to_evaluate <- subset(NC_PC_surveyinfo, to_evaluate)[i,]
-  dists <- distance_matrix[i,]
-  WT_within_5m <- WT_surveyinfo[which(dists <= units::set_units(5,"m")),]
-  time_diff <- abs(difftime(obs_to_evaluate$Date_Time, WT_within_5m$Date_Time, units='mins')) %>% as.numeric()
-  
-  # If the survey was ARU-based, use WildTrax as authoritative
-  if (min(time_diff)<=10 & obs_to_evaluate$Survey_Type != "IN_PERSON") NC_PC_surveyinfo$to_remove[which(NC_PC_surveyinfo$Obs_Index == obs_to_evaluate$Obs_Index)] <- TRUE
-  
-  # If the survey was Human-based, use NatureCounts as authoritative
-  if (min(time_diff)<=10 & obs_to_evaluate$Survey_Type == "IN_PERSON") WT_surveyinfo$to_remove[which(WT_surveyinfo$survey_ID %in% WT_within_5m[which(time_diff<=10),]$survey_ID)] <- TRUE
-}
-
-# Remove duplicated records from NatureCounts dataset
-PC_removed <- subset(NC_PC_surveyinfo,to_remove)
-NC_PC_surveyinfo <- subset(NC_PC_surveyinfo,!to_remove)
-NC_PC_matrix <- PC_matrix[NC_PC_surveyinfo$Obs_Index,]
-NC_PC_surveyinfo <- NC_PC_surveyinfo %>% dplyr::select(-Obs_Index,-to_evaluate, -to_remove)
-
-# Remove duplicated records from WildTrax dataset
-WT_removed <- subset(WT_surveyinfo,to_remove)
-WT_surveyinfo <- subset(WT_surveyinfo,!to_remove)
-WT_matrix <- WT_matrix[WT_surveyinfo$Obs_Index,]
-WT_surveyinfo <- WT_surveyinfo %>% dplyr::select(-Obs_Index, -to_remove)
 
 # ************************************************************
 # ************************************************************
@@ -468,30 +425,84 @@ full_count_matrix <- matrix(0, nrow=nrow(all_surveys), ncol = length(species_com
 for (spp in species_combined){
   
   if (spp %in% colnames(WT_matrix)) full_count_matrix[which(all_surveys$Survey_Class == "WT"),spp] <- WT_matrix[,spp] 
-  if (spp %in% colnames(PC_matrix)) full_count_matrix[which(all_surveys$Survey_Class == "NC_PC"),spp] <- NC_PC_matrix[,spp] 
+  if (spp %in% colnames(PC_matrix)) full_count_matrix[which(all_surveys$Survey_Class == "NC_PC"),spp] <- PC_matrix[,spp] 
   if (spp %in% colnames(DO_matrix)) full_count_matrix[which(all_surveys$Survey_Class == "DO"),spp] <- DO_matrix[,spp] 
   
 }
 
-# ************************************************************
-# ************************************************************
-# CHECK FOR OVERLAP BETWEEN STATIONARY COUNT CHECKLISTS AND POINT COUNTS
-# - REMOVE DUPLICATES
-# ************************************************************
-# ************************************************************
+all_surveys$Obs_Index <- 1:nrow(all_surveys)
 
-# all_surveys$Obs_Index <- 1:nrow(all_surveys)
-# 
-# point_counts <- subset(all_surveys, Survey_Type %in% c("Point_Count","IN_PERSON",
-#                                                        
-#                                                        "ARU_SPT","ARU_SPM",
-#                                                        "ARU_SM2","ARU_BAR_LT","ARU_SM_UNKN",
-#                                                        "ARU_SM4","ZOOM_H2N","ARU_IRIVER_E",
-#                                                        "ARU_MARANTZ","ARU_IRIVER","ARU_UNKNOWN"))
-# 
-# stationary_counts <- subset(all_surveys, Survey_Type %in% c("Breeding Bird Atlas")) 
 # -----------------------------------------------
-# Save 
+# Fix labels
+# -----------------------------------------------
+
+# Fix survey type labels
+all_surveys$Survey_Type[all_surveys$Survey_Type == "IN_PERSON"] <- "Point_Count"
+all_surveys$Survey_Type[all_surveys$Survey_Type %in% c("ARU_SM2","ARU_BAR_LT","ARU_SM_UNKN",
+                                                       "ARU_SM4","ZOOM_H2N","ARU_IRIVER_E",
+                                                       "ARU_MARANTZ","ARU_IRIVER","ARU_UNKNOWN")] <- "ARU_SPT"
+
+# ------------------------------------------------------------------------
+# Remove stationary count checklists that overlap spatially (within 50 m) and temporally (within 10 min) with point counts
+#  - assume ARU data in WildTrax data is 'authoritative' because it can be reviewed/updated more often
+#  - assume Human Point counts in NatureCounts are authoritative because they have been thoroughly QA/QC'd
+# ------------------------------------------------------------------------
+
+WT_PC <- subset(all_surveys, Survey_Type %in% c("Point_Count","ARU_SPM","ARU_SPT") & Data_Source == "WildTrax")
+NC_PC <- subset(all_surveys, Survey_Type %in% c("Point_Count","ARU_SPM","ARU_SPT") & Data_Source == "NatureCounts")
+
+# Create 50m buffer around WildTrax surveys. Flag any Naturecounts surveys within that buffer for closer inspection
+WT_buff <- st_buffer(WT_PC,50) %>% st_union()
+NC_PC$to_evaluate <- FALSE
+NC_PC$to_evaluate[which(as.matrix(st_intersects(NC_PC,WT_buff)))] <- TRUE
+NC_PC <- subset(NC_PC, to_evaluate)
+
+# Create 50m buffer around NatureCounts surveys. Flag any WildTrax surveys within that buffer for closer inspection
+NC_buff <- st_buffer(NC_PC,50) %>% st_union()
+WT_PC$to_evaluate <- FALSE
+WT_PC$to_evaluate[which(as.matrix(st_intersects(WT_PC,NC_buff)))] <- TRUE
+WT_PC <- subset(WT_PC, to_evaluate)
+
+distance_matrix <- st_distance(NC_PC,WT_PC)
+
+sum(WT_PC$to_evaluate)
+sum(NC_PC$to_evaluate)
+dim(distance_matrix) # nrow(NC_PC) x nrow(WT_PC)
+
+# Flags for which observations to remove
+NC_PC$to_remove <- FALSE
+WT_PC$to_remove <- FALSE
+
+# Check for and flag overlap
+pb = txtProgressBar(min = 0, max = nrow(NC_PC), initial = 0, style = 3) 
+for (i in 1:nrow(NC_PC)){
+  
+  dists <- distance_matrix[i,]
+  WT_within_50m <- WT_PC[which(dists <= units::set_units(50,"m")),]
+  time_diff <- abs(difftime(NC_PC$Date_Time[i], WT_within_50m$Date_Time, units='mins')) %>% as.numeric()
+  
+  # If the survey was ARU-based, use WildTrax as authoritative
+  if (min(time_diff)<=10 & NC_PC$Survey_Type[i] != "Point_Count") NC_PC$to_remove[i] <- TRUE
+  
+  # If the survey was Human-based, use NatureCounts as authoritative
+  if (min(time_diff)<=10 & NC_PC$Survey_Type[i] == "Point_Count") WT_PC$to_remove[which(WT_PC$Obs_Index %in% WT_within_50m[which(time_diff<=10),]$Obs_Index)] <- TRUE
+  setTxtProgressBar(pb,i)
+}
+close(pb)
+
+# Observations to be removed
+WT_PC$to_remove %>% sum()
+NC_PC$to_remove %>% sum()
+
+obs_to_remove <- c( WT_PC$Obs_Index[WT_PC$to_remove] , NC_PC$Obs_Index[NC_PC$to_remove] )
+
+all_surveys <- all_surveys[-obs_to_remove,]
+full_count_matrix <- full_count_matrix[-obs_to_remove,]
+
+all_surveys$Obs_Index <- 1:nrow(all_surveys)
+
+# -----------------------------------------------
+# Save data for analysis
 # -----------------------------------------------
 
 analysis_data <- list(all_surveys = all_surveys,

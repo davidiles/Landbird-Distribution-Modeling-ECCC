@@ -238,15 +238,17 @@ Crossval_Grid <- st_make_grid(
 all_surveys$Obs_Index <- 1:nrow(all_surveys)
 all_surveys <- all_surveys %>% st_intersection(Crossval_Grid) %>% arrange(Obs_Index)
 
+results_PConly <- results <- readRDS("../Output/Crossvalidation/Crossval_results_PConly.rds")
+
 results <- data.frame()
-results_path <- "../Output/Crossvalidation/Crossval_results_PConly.rds"
+results_path <- "../Output/Crossvalidation/Crossval_results_integrated_SC.rds"
 
 set.seed(999)
-species_summary <- sample_n(species_summary,25)
+species_summary <- subset(species_summary, sp_code %in% results_PConly$sp_code)
 
-for (xval_fold in 1:n_folds){
-for (sp_code in species_summary$sp_code){
-    
+
+for (xval_fold in 1:n_folds){ 
+  for (sp_code in species_summary$sp_code){
     if (file.exists(results_path)){
       
       results <- readRDS(results_path)
@@ -396,10 +398,16 @@ for (sp_code in species_summary$sp_code){
     sd_linear <- 1 # Change to smaller value (e.g., 0.1), if you want to heavily shrink covariate effects and potentially create smoother surfaces
     prec_linear <-  c(1/sd_linear^2,1/(sd_linear/2)^2)
     
-    #SC_duration(main = Survey_Duration_Minutes,model = SC_duration_spde) +
-    #Intercept_SC(1)+
+    #LT_duration(main = Survey_Duration_Minutes,model = LT_duration_spde) +
+    #  LT_distance(main = Travel_Distance_Metres,model = LT_distance_spde) +
     model_components = as.formula(paste0('~
             Intercept_PC(1)+
+            Intercept_LT(1)+
+            Intercept_SC(1)+
+            
+            SC_duration(main = Survey_Duration_Minutes,model = SC_duration_spde) +
+            
+            
             range_effect(1,model="linear", mean.linear = -0.046, prec.linear = 10000)+
             TSS(main = Hours_Since_Sunrise,model = TSS_spde) +
             spde_coarse(main = coordinates, model = matern_coarse) +',
@@ -451,11 +459,11 @@ for (sp_code in species_summary$sp_code){
                       like(family = "nbinomial",
                            formula = model_formula_PC,
                            data = PC_dat),
+                       
+                       like(family = "nbinomial",
+                            formula = model_formula_SC,
+                            data = SC_dat),
                       # 
-                      # like(family = "nbinomial",
-                      #      formula = model_formula_SC,
-                      #      data = SC_dat),
-                      
                       # like(family = "binomial",
                       #      formula = model_formula_LT,
                       #      data = LT_dat),
@@ -493,6 +501,7 @@ for (sp_code in species_summary$sp_code){
                      n.samples = 1000)
     
     pred <- exp(pred)
+    a = pred
     pred <- apply(pred,1,function(x) median(x))
     
     # Parameters defining the negative binomial distribution
@@ -506,6 +515,7 @@ for (sp_code in species_summary$sp_code){
     # Cross-validation statistics
     AUC <- auc(response = validation_data$presence,predictor = prob_nonzero)
     lppd <- sum(dnbinom(validation_data$count,mu=pred,size=size,log = TRUE))
+    mean(pred)
     
     # *********************************************************************
     # Save results
@@ -516,8 +526,8 @@ for (sp_code in species_summary$sp_code){
                               mean_count_val_obs = mean(validation_data$count),
                               mean_count_val_pred = mean(pred),
                               Crossval_Fold = xval_fold,
-                              lppd_PConly = lppd,
-                              AUC_PConly = AUC)
+                              lppd_integrated_SC = lppd,
+                              AUC_integrated_SC = AUC)
     
     if (file.exists(results_path)) results <- readRDS(results_path)
     
@@ -527,5 +537,3 @@ for (sp_code in species_summary$sp_code){
     
   } # close species loop
 } # close xval loop
-
-

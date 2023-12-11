@@ -153,8 +153,8 @@ SC_to_use <- subset(all_surveys,
                       Hours_Since_Sunrise >= -2 &
                       Hours_Since_Sunrise <= 8 &
                       
-                      Survey_Duration_Minutes > 1 &
-                      Survey_Duration_Minutes <= 60 &
+                      Survey_Duration_Minutes > 10 &
+                      Survey_Duration_Minutes <= 120 &
                       
                       yday(Date_Time) >= yday(ymd("2022-05-28")) &
                       yday(Date_Time) <= yday(ymd("2022-07-07")) &
@@ -163,7 +163,8 @@ SC_to_use <- subset(all_surveys,
                       year(Date_Time) <= 2021 &
                       
                       IncludesPointCounts == 0)
-dim(SC_to_use) # 9616
+
+dim(SC_to_use)
 
 # ------------------------------------------
 # Select LINEAR TRANSECT data to use
@@ -189,6 +190,7 @@ LT_to_use <- subset(all_surveys,
                       
                       year(Date_Time) >= 2017 &
                       year(Date_Time) <= 2021)
+dim(LT_to_use)
 
 # ------------------------------------------
 # Subset
@@ -258,13 +260,13 @@ all_surveys <- all_surveys %>% st_intersection(Crossval_Grid) %>% arrange(Obs_In
 results_PConly <- readRDS("../Output/Crossvalidation/Crossval_results_PConly.rds")
 
 results <- data.frame()
-results_path <- "../Output/Crossvalidation/Crossval_results_integrated_SC.rds"
+results_path <- "../Output/Crossvalidation/Crossval_results_integrated_SC_longchecklist.rds"
 
 species_summary <- subset(species_summary, sp_code %in% results_PConly$sp_code)
 
-for (xval_fold in rev(1:n_folds)){ 
-  for (sp_code in rev(species_summary$sp_code)){
-    
+for (xval_fold in (1:n_folds)){ 
+  #for (sp_code in (species_summary$sp_code)){
+  for (sp_code in c("HOLA","PAWA","YBSA","FOSP")){
     if (file.exists(results_path)){
       
       results <- readRDS(results_path)
@@ -418,7 +420,7 @@ for (xval_fold in rev(1:n_folds)){
     
     model_components = as.formula(paste0('~
             Intercept_PC(1)+
-            SC_effect(1,model="linear", mean.linear = 0, prec.linear = 1)+
+            Intercept_SC(1)+
             range_effect(1,model="linear", mean.linear = -0.046, prec.linear = 10000)+
             TSS(main = Hours_Since_Sunrise,model = TSS_spde) +
             SC_duration(main = Survey_Duration_Minutes,model = SC_duration_spde) +
@@ -437,18 +439,27 @@ for (xval_fold in rev(1:n_folds)){
                                          '+',
                                          paste0("Beta2_",covariates_to_include,'*',covariates_to_include, collapse = " + ")))
     
-    
-    model_formula_SC = as.formula(paste0('presence ~ log(1/exp(-exp(
-                  Intercept_PC +
-                  SC_effect +
+    model_formula_SC = as.formula(paste0('count ~
+                  Intercept_SC +
                   SC_duration +
                   TSS +
                   range_effect * distance_from_range +
                   spde_coarse +',
                                          paste0("Beta1_",covariates_to_include,'*',covariates_to_include, collapse = " + "),
                                          '+',
-                                         paste0("Beta2_",covariates_to_include,'*',covariates_to_include, collapse = " + "),"))-1)"))
+                                         paste0("Beta2_",covariates_to_include,'*',covariates_to_include, collapse = " + ")))
     
+    # model_formula_SC = as.formula(paste0('presence ~ log(1/exp(-exp(
+    #               Intercept_PC +
+    #               SC_effect +
+    #               SC_duration +
+    #               TSS +
+    #               range_effect * distance_from_range +
+    #               spde_coarse +',
+    #                                      paste0("Beta1_",covariates_to_include,'*',covariates_to_include, collapse = " + "),
+    #                                      '+',
+    #                                      paste0("Beta2_",covariates_to_include,'*',covariates_to_include, collapse = " + "),"))-1)"))
+    # 
     model_formula_LT = as.formula(paste0('presence ~ log(1/exp(-exp(
                   Intercept_LT +
                   TSS +
@@ -475,7 +486,7 @@ for (xval_fold in rev(1:n_folds)){
                                   formula = model_formula_PC,
                                   data = PC_dat),
                              
-                             like(family = "binomial",
+                             like(family = "nbinomial",
                                   formula = model_formula_SC,
                                   data = SC_dat),
                              

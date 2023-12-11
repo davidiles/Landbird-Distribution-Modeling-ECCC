@@ -30,7 +30,7 @@ require(ggtext)
 library(pROC)
 
 # Timeout INLA after 10 minutes (if it has not fit by then, it has likely stalled)
-inla.setOption(inla.timeout = 60*10)
+inla.setOption(inla.timeout = 60*5)
 
 # ------------------------------------------------
 # Function to rasterize a series of spatial predictions (needed for plotting)
@@ -525,6 +525,7 @@ for (sp_code in species_summary$sp_code){
     print(results)
     saveRDS(results,results_path)
     
+    rm(fit_INLA,pred)
   } # close species loop
 } # close xval loop
 

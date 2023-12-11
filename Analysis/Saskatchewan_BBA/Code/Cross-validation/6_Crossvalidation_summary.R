@@ -22,4 +22,6 @@ ggplot(results, aes(y = sp_code, yend = sp_code, x = 0, xend = lppd_integrated -
   theme_bw()+
   xlab("Likelihood(integrated) - Likelihood(PConly)")+
   scale_color_manual(values = c("dodgerblue","orangered"), guide = "none")+
-  ggtitle("Likelihood of integrated model versus PConly model")
+  ggtitle("Likelihood of integrated model versus PConly model")+
+  coord_cartesian(xlim=c(-100,100))
+

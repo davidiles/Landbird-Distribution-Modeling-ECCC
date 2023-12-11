@@ -32,43 +32,6 @@ library(pROC)
 # Timeout INLA after 10 minutes (if it has not fit by then, it has likely stalled)
 inla.setOption(inla.timeout = 60*10)
 
-# ------------------------------------------------
-# Function to rasterize a series of spatial predictions (needed for plotting)
-# ------------------------------------------------
-
-cut.fn <- function(df = NA, 
-                   target_raster = NA, 
-                   column_name = NA, 
-                   lower_bound = NA, 
-                   upper_bound = NA){
-  
-  max_val <- upper_bound
-  max_val <- ifelse(is.na(max_val), 0, max_val)
-  max_lev <- ifelse(max_val > 1.6, 4,ifelse(max_val > 0.8, 4, 3))
-  
-  cut_levs <- signif(max_val/(2^((max_lev-1):0)), 2)
-  cut_levs <- unique(cut_levs)
-  cut_levs <- ifelse(is.na(cut_levs), 0, cut_levs)
-  
-  if (lower_bound %in% cut_levs) cut_levs <- cut_levs[-which(cut_levs == lower_bound)]
-  if (lower_bound > min(cut_levs)) cut_levs = cut_levs[-which(cut_levs < lower_bound)]
-  
-  max_lev <- length(cut_levs)
-  
-  cut_levs_labs <- c(paste0("0-",lower_bound),
-                     paste(lower_bound, cut_levs[1], sep="-"),
-                     paste(cut_levs[-max_lev], cut_levs[-1], sep="-"),
-                     paste(cut_levs[max_lev], "+"))
-  
-  cut_levs <- c(-1, lower_bound, cut_levs, 1000) %>% unique()
-  
-  df$levs <- cut(as.data.frame(df)[,column_name], cut_levs, labels=cut_levs_labs)
-  
-  tmp = stars::st_rasterize(df %>% dplyr::select(levs, geometry))
-  
-  return(list(raster = tmp,cut_levs = cut_levs))
-}
-
 # ******************************************************************
 # LOAD AND SUBSET BIRD DATA BASED ON SPECIFIC CRITERIA (DATE RANGES, ETC.)
 # ******************************************************************
@@ -83,50 +46,49 @@ all_surveys$Survey_Type[all_surveys$Survey_Type %in% c("ARU_SM2","ARU_BAR_LT","A
                                                        "ARU_MARANTZ","ARU_IRIVER","ARU_UNKNOWN")] <- "ARU_SPT"
 
 # ------------------------------------------------------------------------
-# Remove stationary count checklists that overlap spatially (within 500 m) and temporally (within 2 hours) with point counts
+# Remove stationary count checklists that overlap spatially (within 250 m) and temporally (within 2 hours) with point counts
 # ------------------------------------------------------------------------
 
-SC_dat <- subset(all_surveys, Survey_Type == "Breeding Bird Atlas")
-PC_dat <- subset(all_surveys, Survey_Type %in% c("Point_Count","ARU_SPM","ARU_SPT"))
-
-PC_buff <- st_buffer(PC_dat,500) %>% st_union()
-SC_dat$to_evaluate <- FALSE
-SC_dat$to_evaluate[which(as.matrix(st_intersects(SC_dat,PC_buff)))] <- TRUE
-SC_dat <- subset(SC_dat, to_evaluate)
-
-SC_buff <- st_buffer(SC_dat,500) %>% st_union()
-PC_dat$to_evaluate <- FALSE
-PC_dat$to_evaluate[which(as.matrix(st_intersects(PC_dat,SC_buff)))] <- TRUE
-PC_dat <- subset(PC_dat, to_evaluate)
-
-distance_matrix <- st_distance(SC_dat,PC_dat)
-
-# Flags for which observations to remove
-SC_dat$to_remove <- FALSE
-
-# Check for and flag overlap
-for (i in 1:nrow(SC_dat)){
-  
-  obs_to_evaluate <- SC_dat[i,]
-  dists <- distance_matrix[i,]
-  PC_within_500m <- PC_dat[which(dists <= units::set_units(500,"m")),]
-  time_diff <- abs(difftime(obs_to_evaluate$Date_Time, PC_within_500m$Date_Time, units='mins')) %>% as.numeric()
-  
-  # If the checklist was conducted within 12 hours of the point count, remove it
-  if (min(time_diff)<=(60*12)) SC_dat$to_remove[i] <- TRUE
-}
-
-# SC to remove (approx 76% of spatially overlapping checklists)
-mean(SC_dat$to_remove)
-SC_to_remove <- subset(SC_dat,to_remove)$Obs_Index
-SC_removed <- all_surveys[SC_to_remove,]
-
-
-
-all_surveys <- all_surveys[-SC_to_remove,]
-full_count_matrix <- full_count_matrix[-SC_to_remove,]
+# SC_dat <- subset(all_surveys, Survey_Type == "Breeding Bird Atlas")
+# PC_dat <- subset(all_surveys, Survey_Type %in% c("Point_Count","ARU_SPM","ARU_SPT"))
+# 
+# PC_buff <- st_buffer(PC_dat,250) %>% st_union()
+# SC_dat$to_evaluate <- FALSE
+# SC_dat$to_evaluate[which(as.matrix(st_intersects(SC_dat,PC_buff)))] <- TRUE
+# SC_dat <- subset(SC_dat, to_evaluate)
+# 
+# SC_buff <- st_buffer(SC_dat,250) %>% st_union()
+# PC_dat$to_evaluate <- FALSE
+# PC_dat$to_evaluate[which(as.matrix(st_intersects(PC_dat,SC_buff)))] <- TRUE
+# PC_dat <- subset(PC_dat, to_evaluate)
+# 
+# distance_matrix <- st_distance(SC_dat,PC_dat)
+# 
+# # Flags for which observations to remove
+# SC_dat$to_remove <- FALSE
+# 
+# # Check for and flag overlap
+# for (i in 1:nrow(SC_dat)){
+#   
+#   obs_to_evaluate <- SC_dat[i,]
+#   dists <- distance_matrix[i,]
+#   PC_within_250m <- PC_dat[which(dists <= units::set_units(250,"m")),]
+#   time_diff <- abs(difftime(obs_to_evaluate$Date_Time, PC_within_250m$Date_Time, units='mins')) %>% as.numeric()
+#   
+#   # If the checklist was conducted within 2 hours of the point count, remove it
+#   if (min(time_diff)<=(60*2)) SC_dat$to_remove[i] <- TRUE
+# }
+# 
+# # SC to remove (approx 71% of spatially overlapping checklists)
+# mean(SC_dat$to_remove)
+# SC_to_remove <- subset(SC_dat,to_remove)$Obs_Index
+# SC_removed <- all_surveys[SC_to_remove,]
+# 
+# all_surveys <- all_surveys[-SC_to_remove,]
+# full_count_matrix <- full_count_matrix[-SC_to_remove,]
 
 all_surveys$Obs_Index <- 1:nrow(all_surveys)
+
 
 # ------------------------------------------------------------------------
 # Spatial operations
@@ -189,15 +151,19 @@ SC_to_use <- subset(all_surveys,
                     Survey_Type %in% c("Breeding Bird Atlas") &
                       
                       Hours_Since_Sunrise >= -2 &
-                      Hours_Since_Sunrise <= 4 &
+                      Hours_Since_Sunrise <= 8 &
                       
-                      Survey_Duration_Minutes > 10 &
+                      Survey_Duration_Minutes > 1 &
+                      Survey_Duration_Minutes <= 60 &
                       
                       yday(Date_Time) >= yday(ymd("2022-05-28")) &
                       yday(Date_Time) <= yday(ymd("2022-07-07")) &
                       
                       year(Date_Time) >= 2017 &
-                      year(Date_Time) <= 2021)
+                      year(Date_Time) <= 2021 &
+                      
+                      IncludesPointCounts == 0)
+dim(SC_to_use) # 9616
 
 # ------------------------------------------
 # Select LINEAR TRANSECT data to use
@@ -211,7 +177,12 @@ LT_to_use <- subset(all_surveys,
                       
                       Survey_Duration_Minutes > 10 &
                       Survey_Duration_Minutes <= 120 &
+                      
+                      Travel_Distance_Metres > 250 &
                       Travel_Distance_Metres <= 10000 &
+                      
+                      # Ensure speed is less than 3 metres per second
+                      (Travel_Distance_Metres / (Survey_Duration_Minutes * 60)) <= 3 &
                       
                       yday(Date_Time) >= yday(ymd("2022-05-28")) &
                       yday(Date_Time) <= yday(ymd("2022-07-07")) &
@@ -287,14 +258,13 @@ all_surveys <- all_surveys %>% st_intersection(Crossval_Grid) %>% arrange(Obs_In
 results_PConly <- readRDS("../Output/Crossvalidation/Crossval_results_PConly.rds")
 
 results <- data.frame()
-results_path <- "../Output/Crossvalidation/Crossval_results_integrated_SC_RemoveOverlap.rds"
+results_path <- "../Output/Crossvalidation/Crossval_results_integrated_SC_LT.rds"
 
-set.seed(999)
 species_summary <- subset(species_summary, sp_code %in% results_PConly$sp_code)
 
-for (xval_fold in 1:n_folds){ 
-  for (sp_code in species_summary$sp_code){
-      
+for (xval_fold in rev(1:n_folds)){ 
+  for (sp_code in rev(species_summary$sp_code)){
+    
     if (file.exists(results_path)){
       
       results <- readRDS(results_path)
@@ -385,9 +355,6 @@ for (xval_fold in 1:n_folds){
     
     mesh_locs <- mesh_spatial$loc[,c(1,2)] %>% as.data.frame()
     
-    # dim(mesh_locs)
-    # plot(mesh_spatial)
-    
     # Controls the 'residual spatial field'.  This can be adjusted to create smoother surfaces.
     prior_range <- c(300000,0.1) # 10% chance range is smaller than 300000
     prior_sigma <- c(0.5,0.1)    # 10% chance sd is larger than 0.5
@@ -417,7 +384,7 @@ for (xval_fold in 1:n_folds){
     SC_duration_meshpoints <- seq(min(SC_dat$Survey_Duration_Minutes)-0.1,max(SC_dat$Survey_Duration_Minutes)+0.1,length.out = 11)
     SC_duration_mesh1D = inla.mesh.1d(SC_duration_meshpoints,boundary="free")
     SC_duration_spde = inla.spde2.pcmatern(SC_duration_mesh1D,
-                                           prior.range = c(30,0.1),
+                                           prior.range = c(60,0.1),
                                            prior.sigma = c(1,0.5))
     
     LT_duration_meshpoints <- seq(min(LT_dat$Survey_Duration_Minutes)-10,max(LT_dat$Survey_Duration_Minutes)+10,length.out = 11)
@@ -444,14 +411,17 @@ for (xval_fold in 1:n_folds){
     sd_linear <- 1 # Change to smaller value (e.g., 0.1), if you want to heavily shrink covariate effects and potentially create smoother surfaces
     prec_linear <-  c(1/sd_linear^2,1/(sd_linear/2)^2)
     
-    #LT_duration(main = Survey_Duration_Minutes,model = LT_duration_spde) +
-    #  LT_distance(main = Travel_Distance_Metres,model = LT_distance_spde) +
     model_components = as.formula(paste0('~
             Intercept_PC(1)+
-            Intercept_SC(1)+
-            
+            Intercept_LT(1)+
+            SC_effect(1,model="linear", mean.linear = 0, prec.linear = 1)+
             range_effect(1,model="linear", mean.linear = -0.046, prec.linear = 10000)+
             TSS(main = Hours_Since_Sunrise,model = TSS_spde) +
+            
+            LT_duration(main = Survey_Duration_Minutes,model = LT_duration_spde) +
+            LT_distance(main = Travel_Distance_Metres,model = LT_distance_spde) +
+            
+            SC_duration(main = Survey_Duration_Minutes,model = SC_duration_spde) +
             spde_coarse(main = coordinates, model = matern_coarse) +',
                                          paste0("Beta1_",covariates_to_include,'(1,model="linear", mean.linear = 0, prec.linear = ', prec_linear[1],')', collapse = " + "),
                                          '+',
@@ -467,15 +437,17 @@ for (xval_fold in 1:n_folds){
                                          '+',
                                          paste0("Beta2_",covariates_to_include,'*',covariates_to_include, collapse = " + ")))
     
-    model_formula_SC = as.formula(paste0('count ~
-                  Intercept_SC +
-                  log_QPAD_offset +
+    
+    model_formula_SC = as.formula(paste0('presence ~ log(1/exp(-exp(
+                  Intercept_PC +
+                  SC_effect +
+                  SC_duration +
                   TSS +
                   range_effect * distance_from_range +
                   spde_coarse +',
                                          paste0("Beta1_",covariates_to_include,'*',covariates_to_include, collapse = " + "),
                                          '+',
-                                         paste0("Beta2_",covariates_to_include,'*',covariates_to_include, collapse = " + ")))
+                                         paste0("Beta2_",covariates_to_include,'*',covariates_to_include, collapse = " + "),"))-1)"))
     
     model_formula_LT = as.formula(paste0('presence ~ log(1/exp(-exp(
                   Intercept_LT +
@@ -495,19 +467,32 @@ for (xval_fold in 1:n_folds){
     start <- Sys.time()
     fit_INLA <- NULL
     while(is.null(fit_INLA)){
-      fit_INLA <- bru(components = model_components,
-                      
-                      like(family = "nbinomial",
-                           formula = model_formula_PC,
-                           data = PC_dat),
-                       
-                       like(family = "nbinomial",
-                            formula = model_formula_SC,
-                            data = SC_dat),
-                      
-                      options = list(
-                        control.compute = list(waic = FALSE, cpo = FALSE),
-                        bru_verbose = 4))
+      
+      fit_model <- function(){
+        tryCatch(expr = {bru(components = model_components,
+                             
+                             like(family = "nbinomial",
+                                  formula = model_formula_PC,
+                                  data = PC_dat),
+                             
+                             like(family = "binomial",
+                                  formula = model_formula_SC,
+                                  data = SC_dat),
+                             
+                             like(family = "binomial",
+                                  formula = model_formula_LT,
+                                  data = LT_dat),
+                             
+                             options = list(bru_initial = list(lsig = 2,
+                                                               Intercept_PC = -10,
+                                                               Intercept_LT = 0,
+                                                               SC_effect = 0),
+                                            control.compute = list(waic = FALSE, cpo = FALSE),
+                                            bru_verbose = 4))},
+                 error = function(e){NULL})
+      }
+      fit_INLA <- fit_model()
+      
       if ("try-error" %in% class(fit_INLA)) fit_INLA <- NULL
     }
     
@@ -562,8 +547,8 @@ for (xval_fold in 1:n_folds){
                               mean_count_val_obs = mean(validation_data$count),
                               mean_count_val_pred = mean(pred),
                               Crossval_Fold = xval_fold,
-                              lppd_integrated_SC = lppd,
-                              AUC_integrated_SC = AUC)
+                              lppd_integrated_SC_LT = lppd,
+                              AUC_integrated_SC_LT = AUC)
     
     if (file.exists(results_path)) results <- readRDS(results_path)
     

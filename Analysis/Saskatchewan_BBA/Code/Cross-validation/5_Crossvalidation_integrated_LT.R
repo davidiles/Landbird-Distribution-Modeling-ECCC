@@ -32,43 +32,6 @@ library(pROC)
 # Timeout INLA after 10 minutes (if it has not fit by then, it has likely stalled)
 inla.setOption(inla.timeout = 60*10)
 
-# ------------------------------------------------
-# Function to rasterize a series of spatial predictions (needed for plotting)
-# ------------------------------------------------
-
-cut.fn <- function(df = NA, 
-                   target_raster = NA, 
-                   column_name = NA, 
-                   lower_bound = NA, 
-                   upper_bound = NA){
-  
-  max_val <- upper_bound
-  max_val <- ifelse(is.na(max_val), 0, max_val)
-  max_lev <- ifelse(max_val > 1.6, 4,ifelse(max_val > 0.8, 4, 3))
-  
-  cut_levs <- signif(max_val/(2^((max_lev-1):0)), 2)
-  cut_levs <- unique(cut_levs)
-  cut_levs <- ifelse(is.na(cut_levs), 0, cut_levs)
-  
-  if (lower_bound %in% cut_levs) cut_levs <- cut_levs[-which(cut_levs == lower_bound)]
-  if (lower_bound > min(cut_levs)) cut_levs = cut_levs[-which(cut_levs < lower_bound)]
-  
-  max_lev <- length(cut_levs)
-  
-  cut_levs_labs <- c(paste0("0-",lower_bound),
-                     paste(lower_bound, cut_levs[1], sep="-"),
-                     paste(cut_levs[-max_lev], cut_levs[-1], sep="-"),
-                     paste(cut_levs[max_lev], "+"))
-  
-  cut_levs <- c(-1, lower_bound, cut_levs, 1000) %>% unique()
-  
-  df$levs <- cut(as.data.frame(df)[,column_name], cut_levs, labels=cut_levs_labs)
-  
-  tmp = stars::st_rasterize(df %>% dplyr::select(levs, geometry))
-  
-  return(list(raster = tmp,cut_levs = cut_levs))
-}
-
 # ******************************************************************
 # LOAD AND SUBSET BIRD DATA BASED ON SPECIFIC CRITERIA (DATE RANGES, ETC.)
 # ******************************************************************
@@ -166,7 +129,7 @@ LT_to_use <- subset(all_surveys,
                       Survey_Duration_Minutes > 10 &
                       Survey_Duration_Minutes <= 120 &
                       
-                      Travel_Distance_Metres > 500 &
+                      Travel_Distance_Metres > 250 &
                       Travel_Distance_Metres <= 10000 &
                       
                       # Ensure speed is less than 3 metres per second
@@ -537,6 +500,8 @@ for (xval_fold in 1:n_folds){
     print(results)
     saveRDS(results,results_path)
     
+    
+    rm(fit_INLA,pred)
   } # close species loop
 } # close xval loop
 

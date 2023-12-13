@@ -95,12 +95,21 @@ cut.fn <- function(df = NA,
 
 analysis_data <- readRDS("../Data_Cleaned/analysis_data_package.rds")
 attach(analysis_data)
+all_surveys$Hours_Since_Sunrise <- as.numeric(all_surveys$Hours_Since_Sunrise)
 
-# Fix survey type labels
-all_surveys$Survey_Type[all_surveys$Survey_Type == "IN_PERSON"] <- "Point_Count"
-all_surveys$Survey_Type[all_surveys$Survey_Type %in% c("ARU_SM2","ARU_BAR_LT","ARU_SM_UNKN",
-                                                       "ARU_SM4","ZOOM_H2N","ARU_IRIVER_E",
-                                                       "ARU_MARANTZ","ARU_IRIVER","ARU_UNKNOWN")] <- "ARU_SPT"
+table(as.data.frame(all_surveys)[,c("Survey_Type","Project_Name")])
+
+survey_summary <- all_surveys %>%
+  subset(year(Date_Time) >= 2017 &
+           year(Date_Time) <= 2021) %>%
+  as.data.frame() %>%
+  group_by(Survey_Type,Project_Name) %>%
+  summarize(n = n()) %>%
+  pivot_wider(names_from = Survey_Type, values_from = n) %>%
+  mutate(Total = rowSums(across(where(is.numeric)), na.rm = TRUE)) %>%
+  relocate(Project_Name,Total,Point_Count,ARU_SPT) %>%
+  arrange(desc(Total))
+
 AEA_proj <- "+proj=aea +lat_1=50 +lat_2=70 +lat_0=40 +lon_0=-106 +x_0=0 +y_0=0 +ellps=GRS80 +datum=NAD83 +units=m +no_defs "
 
 SaskBoundary <- st_read("../../../Data/Spatial/National/BCR/BCR_Terrestrial_master.shp")  %>%
@@ -108,8 +117,7 @@ SaskBoundary <- st_read("../../../Data/Spatial/National/BCR/BCR_Terrestrial_mast
   st_make_valid() %>%
   st_union() %>%
   st_transform(st_crs(AEA_proj))
-
-SaskBoundary_buffer <- SaskBoundary %>% st_buffer(20000)
+SaskGrid <- SaskGrid %>% st_intersection(SaskBoundary)
 
 # Raster with target properties
 target_raster <- rast("../../../Data/Spatial/National/AnnualMeanTemperature/wc2.1_30s_bio_1.tif") %>% 
@@ -118,10 +126,9 @@ target_raster <- rast("../../../Data/Spatial/National/AnnualMeanTemperature/wc2.
   mask(vect(SaskBoundary))
 
 SaskWater <- read_sf("../../../Data/Spatial/Saskatchewan/SaskWater/SaskWaterClip.shp") %>% 
-  st_transform(st_crs(target_raster))
-SaskWater$area <- st_area(SaskWater)
-SaskWater$area <- as.numeric(SaskWater$area)
-SaskWater <- SaskWater[SaskWater$area>2.580e+06 ,]
+  st_transform(st_crs(target_raster)) %>%
+  mutate(area = as.numeric(st_area(.))) %>%
+  subset(area > 2.580e+06)
 
 # Atlas Squares
 SaskSquares <- st_read("../../../Data/Spatial/Saskatchewan/SaskSquares/SaskSquares.shp") %>%
@@ -129,15 +136,12 @@ SaskSquares <- st_read("../../../Data/Spatial/Saskatchewan/SaskSquares/SaskSquar
   dplyr::select(SQUARE_ID) %>%
   rename(sq_id = SQUARE_ID)
 
-SaskGrid <- SaskGrid %>%
-  st_intersection(SaskBoundary)
-
 # ------------------------------------------
 # Select Point Counts / ARUs to use
 # ------------------------------------------
 
 PC_to_use <- subset(all_surveys,
-                    Survey_Type %in% c("Point_Count","ARU_SPT","ARU_SPM") &
+                    Survey_Type %in% c("Point_Count","ARU_SPT") &
                       
                       Survey_Duration_Minutes > 1 &
                       Survey_Duration_Minutes <= 10 &
@@ -152,6 +156,8 @@ PC_to_use <- subset(all_surveys,
                       year(Date_Time) <= 2021
 )
 
+dim(PC_to_use) # 20735
+
 # ------------------------------------------
 # Select STATIONARY COUNT data to use (assuming these are 'breeding bird atlas' checklists; vast majority do not have distance)
 # ------------------------------------------
@@ -164,14 +170,17 @@ SC_to_use <- subset(all_surveys,
                       Hours_Since_Sunrise >= -2 &
                       Hours_Since_Sunrise <= 8 &
                       
-                      Survey_Duration_Minutes >= 1 &
+                      Survey_Duration_Minutes >= 10 &
                       Survey_Duration_Minutes <= 120 &
                       
                       yday(Date_Time) >= yday(ymd("2022-05-28")) &
                       yday(Date_Time) <= yday(ymd("2022-07-07")) &
                       
                       year(Date_Time) >= 2017 &
-                      year(Date_Time) <= 2021)
+                      year(Date_Time) <= 2021 &
+                      IncludesPointCounts == 0)
+
+dim(SC_to_use) # 2340
 
 # ------------------------------------------
 # Select LINEAR TRANSECT data to use
@@ -185,13 +194,21 @@ LT_to_use <- subset(all_surveys,
                       
                       Survey_Duration_Minutes > 10 &
                       Survey_Duration_Minutes <= 120 &
+                      
+                      Travel_Distance_Metres > 250 &
                       Travel_Distance_Metres <= 10000 &
+                      
+                      # Ensure speed is less than 3 metres per second
+                      (Travel_Distance_Metres / (Survey_Duration_Minutes * 60)) <= 3 &
                       
                       yday(Date_Time) >= yday(ymd("2022-05-28")) &
                       yday(Date_Time) <= yday(ymd("2022-07-07")) &
                       
                       year(Date_Time) >= 2017 &
-                      year(Date_Time) <= 2021)
+                      year(Date_Time) <= 2021 &
+                      IncludesPointCounts == 0)
+
+dim(LT_to_use) # 1995
 
 # ------------------------------------------
 # Subset
@@ -235,11 +252,9 @@ head(species_summary)
 # Loop through species, fit models, generate maps
 # ******************************************************************
 
-population_sums <- data.frame()
-
 species_summary <- species_summary %>% subset(`PC/ARU` >=20)
 
-for (sp_code in rev(species_summary$sp_code)){
+for (sp_code in (species_summary$sp_code)){
  
   # ----------------------------------------------------
   # Extract counts/data for this species
@@ -355,13 +370,13 @@ for (sp_code in rev(species_summary$sp_code)){
   # ------------------------------------------------
   # Create mesh to model effect of checklist duration
   # ------------------------------------------------
-
+  
   SC_duration_meshpoints <- seq(min(SC_dat$Survey_Duration_Minutes)-0.1,max(SC_dat$Survey_Duration_Minutes)+0.1,length.out = 11)
   SC_duration_mesh1D = inla.mesh.1d(SC_duration_meshpoints,boundary="free")
   SC_duration_spde = inla.spde2.pcmatern(SC_duration_mesh1D,
                                          prior.range = c(60,0.1),
                                          prior.sigma = c(1,0.5))
-
+  
   LT_duration_meshpoints <- seq(min(LT_dat$Survey_Duration_Minutes)-10,max(LT_dat$Survey_Duration_Minutes)+10,length.out = 11)
   LT_duration_mesh1D = inla.mesh.1d(LT_duration_meshpoints,boundary="free")
   LT_duration_spde = inla.spde2.pcmatern(LT_duration_mesh1D,
@@ -386,18 +401,20 @@ for (sp_code in rev(species_summary$sp_code)){
   sd_linear <- 1 # Change to smaller value (e.g., 0.1), if you want to heavily shrink covariate effects and potentially create smoother surfaces
   prec_linear <-  c(1/sd_linear^2,1/(sd_linear/2)^2)
   
-  #SC_duration(main = Survey_Duration_Minutes,model = SC_duration_spde) +
   #Intercept_SC(1)+
+  #  SC_duration(main = Survey_Duration_Minutes,model = SC_duration_spde) +
   model_components = as.formula(paste0('~
             Intercept_PC(1)+
+           
             Intercept_LT(1)+
+            
+            range_effect(1,model="linear", mean.linear = -0.046, prec.linear = 10000)+
+            TSS(main = Hours_Since_Sunrise,model = TSS_spde) +
             
             
             LT_duration(main = Survey_Duration_Minutes,model = LT_duration_spde) +
             LT_distance(main = Travel_Distance_Metres,model = LT_distance_spde) +
             
-            range_effect(1,model="linear", mean.linear = -0.046, prec.linear = 10000)+
-            TSS(main = Hours_Since_Sunrise,model = TSS_spde) +
             spde_coarse(main = coordinates, model = matern_coarse) +',
                                        paste0("Beta1_",covariates_to_include,'(1,model="linear", mean.linear = 0, prec.linear = ', prec_linear[1],')', collapse = " + "),
                                        '+',
@@ -413,23 +430,23 @@ for (sp_code in rev(species_summary$sp_code)){
                                        '+',
                                        paste0("Beta2_",covariates_to_include,'*',covariates_to_include, collapse = " + ")))
   
-  model_formula_SC = as.formula(paste0('count ~
+  
+  model_formula_SC = as.formula(paste0('presence ~ log(1/exp(-exp(
                   Intercept_SC +
-                  log_QPAD_offset +
-                  TSS +
                   SC_duration +
+                  TSS +
                   range_effect * distance_from_range +
                   spde_coarse +',
                                        paste0("Beta1_",covariates_to_include,'*',covariates_to_include, collapse = " + "),
                                        '+',
-                                       paste0("Beta2_",covariates_to_include,'*',covariates_to_include, collapse = " + ")))
-
+                                       paste0("Beta2_",covariates_to_include,'*',covariates_to_include, collapse = " + "),"))-1)"))
+  
   model_formula_LT = as.formula(paste0('presence ~ log(1/exp(-exp(
                   Intercept_LT +
-                  TSS +
-                  spde_coarse +
                   LT_distance +
                   LT_duration +
+                  TSS +
+                  spde_coarse +
                   range_effect * distance_from_range +',
                                        paste0("Beta1_",covariates_to_include,'*',covariates_to_include, collapse = " + "),
                                        '+',
@@ -442,29 +459,38 @@ for (sp_code in rev(species_summary$sp_code)){
   start <- Sys.time()
   fit_INLA <- NULL
   while(is.null(fit_INLA)){
-    fit_INLA <- bru(components = model_components,
-                    
-                    like(family = "nbinomial",
-                         formula = model_formula_PC,
-                         data = PC_dat),
-                     # 
-                     # like(family = "nbinomial",
-                     #      formula = model_formula_SC,
-                     #      data = SC_dat),
-                    
-                    like(family = "binomial",
-                         formula = model_formula_LT,
-                         data = LT_dat),
-                    
-                    options = list(
-                      control.compute = list(waic = FALSE, cpo = FALSE),
-                      bru_verbose = 4))
+    
+    fit_model <- function(){
+      tryCatch(expr = {bru(components = model_components,
+                           
+                           like(family = "nbinomial",
+                                formula = model_formula_PC,
+                                data = PC_dat),
+                           
+                           # like(family = "binomial",
+                           #       formula = model_formula_SC,
+                           #       data = SC_dat),
+                           
+                           like(family = "binomial",
+                                formula = model_formula_LT,
+                                data = LT_dat),
+                           
+                           options = list(bru_initial = list(lsig = 2,
+                                                             Intercept_PC = -10,
+                                                             Intercept_LT = 0,
+                                                             Intercept_SC = 0),
+                                          control.compute = list(waic = FALSE, cpo = FALSE),
+                                          bru_verbose = 4))},
+               error = function(e){NULL})
+    }
+    fit_INLA <- fit_model()
+    
     if ("try-error" %in% class(fit_INLA)) fit_INLA <- NULL
   }
   
   end <- Sys.time()
   runtime_INLA <- difftime( end,start, units="mins") %>% round(2)
-  print(paste0(sp_code," - ",runtime_INLA," min to fit model")) # 2 min
+  print(paste0(sp_code," - ",runtime_INLA," min to fit model")) 
   
   # ****************************************************************************
   # ****************************************************************************

@@ -1,7 +1,5 @@
 # ************************************************************************
-# Prepare data for analysis
-#  - select date / time windows for survey inclusion
-#  - merge in covariates
+# Prepare spatial layers for analysis
 # ************************************************************************
 
 # ------------------------------------------------
@@ -20,7 +18,9 @@ my_packs = c('tidyverse',
              'exactextractr',
              'magrittr',
              'circular',
-             'stars')
+             'stars',
+             'corrplot',
+             'ggpubr')
 
 if (any(!my_packs %in% installed.packages()[, 'Package'])) {install.packages(my_packs[which(!my_packs %in% installed.packages()[, 'Package'])],dependencies = TRUE)}
 lapply(my_packs, require, character.only = TRUE)
@@ -64,53 +64,15 @@ my.wt.circ.mean <- function(aspect, slope) {
   return(deg(circmean) %% 360)
 }
 
-# ******************************************************************
-# PART 1: Select data meeting criteria for inclusion (dates, time since sunrise, etc)
-# ******************************************************************
-
-AEA_proj <- "+proj=aea +lat_1=50 +lat_2=70 +lat_0=40 +lon_0=-106 +x_0=0 +y_0=0 +ellps=GRS80 +datum=NAD83 +units=m +no_defs "
-
-analysis_data <- readRDS(file = "../Data_Cleaned/analysis_data.rds")
-
-all_surveys <- analysis_data$all_surveys %>% mutate(Obs_Index = 1:nrow(.))
-full_count_matrix <- analysis_data$full_count_matrix
-
-# ------------------------------------------
-# Atlas Squares in which each survey is located
-# ------------------------------------------
-
-SaskSquares <- st_read("../../../Data/Spatial/Saskatchewan/SaskSquares/SaskSquares.shp") %>%
-  st_transform(st_crs(all_surveys)) %>%
-  dplyr::select(SQUARE_ID) %>%
-  rename(sq_id = SQUARE_ID)
-
-all_surveys <- all_surveys %>% 
-  mutate(Obs_Index = 1:nrow(.)) %>%
-  st_intersection(SaskSquares)
-full_count_matrix <- full_count_matrix[all_surveys$Obs_Index,]
-
-all_surveys$Obs_Index <- 1:nrow(all_surveys)
-
-# ------------------------------------------
-# CONVERT TO APPROPRIATE CRS (of eventual map projection)
-# ------------------------------------------
-
-# Raster with target properties
-target_crs <- "+proj=aea +lat_1=50 +lat_2=70 +lat_0=40 +lon_0=-106 +x_0=0 +y_0=0 +ellps=GRS80 +datum=NAD83 +units=m +no_defs "
-
-all_surveys <- st_transform(all_surveys,target_crs)
-
-# ******************************************************************
-# ******************************************************************
-# PART 2: SELECT COVARIATES FOR ANALYSIS
-# ******************************************************************
-# ******************************************************************
-
-# Dataframe to store covariates
-all_surveys_covariates <- all_surveys %>% dplyr::select(Obs_Index)
 
 # ---------------------------------------------------
-# Prepare a grid on which maps/predictions will eventually be made
+# CRS in which maps will be produced
+# ---------------------------------------------------
+
+target_crs <- "+proj=aea +lat_1=50 +lat_2=70 +lat_0=40 +lon_0=-106 +x_0=0 +y_0=0 +ellps=GRS80 +datum=NAD83 +units=m +no_defs "
+
+# ---------------------------------------------------
+# Boundary of Saskatchewan
 # ---------------------------------------------------
 
 SaskBoundary <- st_read("../../../Data/Spatial/National/BCR/BCR_Terrestrial_master.shp")  %>%
@@ -119,36 +81,25 @@ SaskBoundary <- st_read("../../../Data/Spatial/National/BCR/BCR_Terrestrial_mast
   st_union() %>%
   st_transform(target_crs)
 
-# Add 10 km buffer so that covariates can extend outside province if possible (for landscape-scale covariates)
-SaskBoundary_buffer <- SaskBoundary %>% st_buffer(10000)
+SaskBoundary_buffer <- st_buffer(SaskBoundary,10000)
 
-# ---------------------------------------------------
-# 'target raster' will have desired properties for grid on which predictions will be made
-# ---------------------------------------------------
-
-# Example raster with target properties
-target_raster <- rast("../../../Data/Spatial/National/AnnualMeanTemperature/wc2.1_30s_bio_1.tif") %>% 
-  crop(st_transform(SaskBoundary_buffer,crs(.))) %>% 
-  project(target_crs, res = 1000)
-
-# Convert to sf object
-SaskGrid <- st_as_stars(target_raster) %>%
-  st_as_sf(., as_points = FALSE, merge = FALSE) %>%
-  dplyr::select(geometry)
-
-# Convert to sf object
-SaskGrid_centroid <- st_as_stars(target_raster) %>%
-  st_as_sf(., as_points = TRUE, merge = FALSE) %>%
-  dplyr::select(geometry)
-
-SaskGrid$point_id <- SaskGrid_centroid$point_id <- 1:nrow(SaskGrid)
-
-# ---------------------------------------------------
-# Load covariate layers
-# ---------------------------------------------------
+# *******************************************************************
+# *******************************************************************
+# Relevant shapefiles
+# *******************************************************************
+# *******************************************************************
 
 # Path to spatial covariates
 covar_folder <- "../../../Data/Spatial/"
+
+# Example raster with target properties
+target_raster <- rast(paste0(covar_folder,"/National/AnnualMeanTemperature/wc2.1_30s_bio_1.tif")) %>% 
+  crop(st_transform(SaskBoundary_buffer ,crs(.))) %>% 
+  project(target_crs, res = 1000)
+
+# ---------------------------------------------------
+# Geographic covariates
+# ---------------------------------------------------
 
 # Elevation
 elevation <- rast(paste0(covar_folder,"Saskatchewan/SaskElevation/Sask_Elevation.tif")) %>%  
@@ -165,96 +116,99 @@ aspect <- rast(paste0(covar_folder,"Saskatchewan/SaskAspect/SaskAspect.tif")) %>
   project(target_raster, align = TRUE, method = "bilinear")%>%
   resample(y = target_raster,method="bilinear")
 
-# Annual mean temperature
-AMT <- rast(paste0(covar_folder,"National/AnnualMeanTemperature/wc2.1_30s_bio_1.tif")) %>% 
-  crop(st_transform(SaskBoundary_buffer,crs(.))) %>%  
+# ---------------------------------------------------
+# Vegetation / land cover / habitat
+# ---------------------------------------------------
+
+# LCC2020 - NOTE THAT THIS IS NOT SCALED UP TO 1KM X 1KM PIXELS
+lcc2020 <- rast(paste0(covar_folder,"National/LandCoverCanada2020/landcover-2020-classification.tif")) %>% 
+  crop(st_transform(SaskBoundary_buffer,crs(.)))
+
+# Percent broadleaf
+prcBroadLeaf <- rast(paste0(covar_folder,"Saskatchewan/SaskSCANFI/SK_and_prairies_SCANFI_sps_prcB_SW_2020_v1.tif")) %>%  
+  project(target_raster, align = TRUE, method = "bilinear")%>%
+  resample(y = target_raster,method="bilinear")
+
+# Percent conifer
+prcConifer <- rast(paste0(covar_folder,"Saskatchewan/SaskSCANFI/SK_and_prairies_SCANFI_sps_prcC_other_SW_2020_v1.tif")) %>%  
+  project(target_raster, align = TRUE, method = "bilinear")%>%
+  resample(y = target_raster,method="bilinear")
+
+# Biomass
+biomass <- rast(paste0(covar_folder,"Saskatchewan/SaskSCANFI/SK_and_prairies_SCANFI_att_biomass_SW_2020_v1.tif")) %>%  
+  project(target_raster, align = TRUE, method = "bilinear")%>%
+  resample(y = target_raster,method="bilinear")
+
+# Canopy height
+height <- rast(paste0(covar_folder,"Saskatchewan/SaskSCANFI/SK_and_prairies_SCANFI_att_height_SW_2020_v1.tif")) %>%  
   project(target_raster, align = TRUE, method = "bilinear")%>%
   resample(y = target_raster,method="bilinear")
 
 # Stand canopy closure
-SCC <- rast(paste0(covar_folder,"National/NationalForestInventory/NFI_MODIS250m_2011_kNN_Structure_Stand_CrownClosure_v1.tif")) %>% 
-  crop(st_transform(SaskBoundary_buffer,crs(.))) %>%  
+closure <- rast(paste0(covar_folder,"Saskatchewan/SaskSCANFI/SK_and_prairies_SCANFI_att_closure_SW_2020_v1.tif")) %>%  
   project(target_raster, align = TRUE, method = "bilinear")%>%
   resample(y = target_raster,method="bilinear")
 
-# Land cover of Canada 2020 (not reprojected... faster to reproject grid)
-lcc2020 <- rast(paste0(covar_folder,"National/LandCoverCanada2020/landcover-2020-classification.tif")) %>% 
-  crop(st_transform(SaskBoundary_buffer,crs(.))) %>%
-  project(target_raster, method = "near", align = TRUE)%>%
+# Distance to H20
+dist2water <- rast(paste0(covar_folder,"Saskatchewan/SaskDist2Water/Dist_to_H20resample.tif")) %>%  
+  project(target_raster, align = TRUE, method = "bilinear")%>%
   resample(y = target_raster,method="bilinear")
 
+# Wetland recurrence index
+wetland_recurr <- rast(paste0(covar_folder,"Saskatchewan/SaskWetland/wetland_recurr_Sask.tif")) %>%  
+  project(target_raster, align = TRUE, method = "bilinear")%>%
+  resample(y = target_raster,method="bilinear")
+
+# ---------------------------------------------------
+# Climate
+# ---------------------------------------------------
+
+# Mean Annual Temperature
+MAT <- rast(paste0(covar_folder,"National/Bioclimate/Normal_1991_2020_MAT.tif")) %>% 
+  crop(st_transform(SaskBoundary_buffer,crs(.))) %>%
+  project(target_raster, align = TRUE, method = "bilinear")%>%
+  resample(y = target_raster,method="bilinear")
+
+# Mean Annual Precipitation
+MAP <- rast(paste0(covar_folder,"National/Bioclimate/Normal_1991_2020_MAP.tif")) %>% 
+  crop(st_transform(SaskBoundary_buffer,crs(.))) %>%
+  project(target_raster, align = TRUE, method = "bilinear")%>%
+  resample(y = target_raster,method="bilinear")
+
+# ---------------------------------------------------
 # Combine into single raster stack
-raster_list <- list(elevation,slope, aspect,AMT,SCC,lcc2020)
+# ---------------------------------------------------
+
+raster_list <- list(elevation,slope, aspect,
+                    prcBroadLeaf,prcConifer,biomass,height,closure,dist2water,wetland_recurr,
+                    MAT,MAP)
 raster_stack <- rast(raster_list)
-names(raster_stack) = c("elevation","slope","aspect","AMT","SCC","lcc2020")
+names(raster_stack) = c("elevation","slope","aspect","prcBroadLeaf","prcConifer","biomass","height","closure","dist2water","wetland_recurr",
+                        "MAT","MAP")
 
-# ---------------------------------------------------
-# For each survey, extract covariates within 1 km of location
-# ---------------------------------------------------
+plot(raster_stack, col = viridis(10))
 
-# Mean values for CONTINOUS COVARIATES within 1 km
-all_surveys_1km <- all_surveys %>% 
-  st_buffer(1000) %>%
-  mutate(elevation_1km = exact_extract(raster_stack$elevation, ., 'mean'),
-         AMT_1km = exact_extract(raster_stack$AMT, ., 'mean'),
-         SCC_1km = exact_extract(raster_stack$SCC, ., 'mean'))
 
-# Calculate sin and cos elements of aspect (this is code originally provided by Birds Canada)
-grid_aspect_list <- exact_extract(raster_stack$aspect,all_surveys_1km)
-grid_slope_list <- exact_extract(raster_stack$slope,all_surveys_1km)
-for (i in 1:nrow(all_surveys_1km)) all_surveys_1km$aspect_mean[i] <- my.wt.circ.mean(grid_aspect_list[[i]]$value,grid_slope_list[[i]]$value)
-all_surveys_1km$asp_sinr <- with(all_surveys_1km, sin(rad(aspect_mean)))
-all_surveys_1km$asp_cosr <- with(all_surveys_1km, cos(rad(aspect_mean)))
+# *******************************************************************
+# *******************************************************************
+# Create grid across study area
+# *******************************************************************
+# *******************************************************************
 
-# Proportion of each land cover class
-prop_LCC_1km <- exact_extract(raster_stack$lcc2020,all_surveys_1km,"frac") %>% suppressWarnings()
-names(prop_LCC_1km) <- paste0(str_replace(names(prop_LCC_1km),"frac","LCC"),"_1km")
-prop_LCC_1km[setdiff(paste0("LCC_",seq(1,18),"_1km"),names(prop_LCC_1km))] <- 0
-prop_LCC_1km %<>% dplyr::select(sort(names(.)))
+# Polygons for every 1km x 1km pixel
+SaskGrid <- st_as_stars(raster_stack) %>% st_as_sf(., as_points = FALSE, merge = FALSE)
 
-# Combine land cover classes
-prop_LCC_1km <- prop_LCC_1km %>%
-  mutate(
-    Needleleaf_forest_1km = LCC_1_1km + LCC_2_1km,
-    Mixed_forest_1km = LCC_5_1km + LCC_6_1km,
-    Grass_shrub_1km = LCC_8_1km + LCC_10_1km,
-    Crop_1km = LCC_15_1km,
-    Urban_1km = LCC_17_1km,
-    Wetland_1km = LCC_14_1km,
-    Water_1km = LCC_18_1km) %>%
-  dplyr::select(Needleleaf_forest_1km:Water_1km)
-
-prop_LCC_1km$Obs_Index <- all_surveys_1km$Obs_Index
-all_surveys_1km <- left_join(all_surveys_1km,prop_LCC_1km)
-
-# Select covariate columns
-all_surveys_1km <- all_surveys_1km %>%
-  as.data.frame() %>%
-  dplyr::select(Obs_Index,colnames(all_surveys_1km)[colnames(all_surveys_1km) %!in% colnames(all_surveys)])
-
-# Join with survey dataset
-all_surveys_covariates <- all_surveys_covariates %>% left_join(all_surveys_1km)
+# Centroids of every pixel
+SaskGrid_centroid <- st_as_stars(raster_stack) %>% st_as_sf(., as_points = TRUE, merge = FALSE)
 
 # ---------------------------------------------------
 # For each point in SaskGrid, extract covariates within 1 km of location
 # ---------------------------------------------------
 
-# Continuous covariates
-SaskGrid_1km <- SaskGrid_centroid %>%
-  st_buffer(1000) %>%
-  mutate(elevation_1km = exact_extract(raster_stack$elevation, ., 'mean'),
-         AMT_1km = exact_extract(raster_stack$AMT, ., 'mean'),
-         SCC_1km = exact_extract(raster_stack$SCC, ., 'mean'))
+SaskGrid_1km <- SaskGrid_centroid %>% st_buffer(1000) 
 
-# Calculate sin and cos elements of aspect (this is code originally provided by Birds Canada)
-grid_aspect_list <- exact_extract(raster_stack$aspect,SaskGrid_1km)
-grid_slope_list <- exact_extract(raster_stack$slope,SaskGrid_1km)
-for (i in 1:nrow(SaskGrid_1km)) SaskGrid_1km$aspect_mean[i] <- my.wt.circ.mean(grid_aspect_list[[i]]$value,grid_slope_list[[i]]$value)
-SaskGrid_1km$asp_sinr <- with(SaskGrid_1km, sin(rad(aspect_mean)))
-SaskGrid_1km$asp_cosr <- with(SaskGrid_1km, cos(rad(aspect_mean)))
-
-# Proportion of each land cover class
-prop_LCC_1km <- exact_extract(raster_stack$lcc2020,SaskGrid_1km,"frac") %>% suppressWarnings()
+# Proportion of each land cover class from lcc 2020
+prop_LCC_1km <- exact_extract(lcc2020,SaskGrid_1km,"frac") %>% suppressWarnings()
 names(prop_LCC_1km) <- paste0(str_replace(names(prop_LCC_1km),"frac","LCC"),"_1km")
 prop_LCC_1km[setdiff(paste0("LCC_",seq(1,18),"_1km"),names(prop_LCC_1km))] <- 0
 prop_LCC_1km %<>% dplyr::select(sort(names(.)))
@@ -271,21 +225,123 @@ prop_LCC_1km <- prop_LCC_1km %>%
     Water_1km = LCC_18_1km) %>%
   dplyr::select(Needleleaf_forest_1km:Water_1km)
 
-prop_LCC_1km$point_id <- SaskGrid_1km$point_id
-SaskGrid_1km <- left_join(SaskGrid_1km,prop_LCC_1km)
+SaskGrid <- bind_cols(SaskGrid,prop_LCC_1km)
 
-# Join with SaskGrid
-SaskGrid <- SaskGrid %>% left_join(as.data.frame(SaskGrid_1km) %>% dplyr::select(-geometry))
+saveRDS(SaskGrid,file="../Data_Cleaned/Spatial/SaskGrid.RDS")
 
-# --------------------------------
-# Conduct Principal Components Analysis on covariates to identify axes of major variation in habitat
-# --------------------------------
 
-covars_for_PCA <- all_surveys_covariates %>%
+# *******************************************************************
+# *******************************************************************
+# Extract covariates at each survey location
+# *******************************************************************
+# *******************************************************************
+
+analysis_data <- readRDS(file = "../Data_Cleaned/analysis_data.rds")
+all_surveys <- analysis_data$all_surveys
+full_count_matrix <- analysis_data$full_count_matrix
+
+# ------------------------------------------
+# Atlas Squares in which each survey is located
+# ------------------------------------------
+
+SaskSquares <- st_read("../../../Data/Spatial/Saskatchewan/SaskSquares/SaskSquares.shp") %>%
+  st_transform(st_crs(all_surveys)) %>%
+  dplyr::select(SQUARE_ID) %>%
+  rename(sq_id = SQUARE_ID)
+
+all_surveys <- all_surveys %>% 
+  mutate(Obs_Index = 1:nrow(.)) %>%
+  st_intersection(SaskSquares) %>%
+  arrange(Obs_Index)
+full_count_matrix <- full_count_matrix[all_surveys$Obs_Index,]
+
+all_surveys$Obs_Index <- 1:nrow(all_surveys)
+
+# ---------------------------------------------------
+# Extract covariates for each survey from raster stack
+# ---------------------------------------------------
+
+all_surveys = terra::extract(raster_stack,vect(all_surveys) , bind = TRUE) %>% st_as_sf()
+
+all_surveys_1km <- all_surveys %>% st_buffer(1000)
+
+# Proportion of each land cover class from lcc2020
+prop_LCC_1km <- exact_extract(lcc2020,all_surveys_1km,"frac") %>% suppressWarnings()
+names(prop_LCC_1km) <- paste0(str_replace(names(prop_LCC_1km),"frac","LCC"),"_1km")
+prop_LCC_1km[setdiff(paste0("LCC_",seq(1,18),"_1km"),names(prop_LCC_1km))] <- 0
+prop_LCC_1km %<>% dplyr::select(sort(names(.)))
+
+# Combine land cover classes
+prop_LCC_1km <- prop_LCC_1km %>%
+  mutate(
+    Needleleaf_forest_1km = LCC_1_1km + LCC_2_1km,
+    Mixed_forest_1km = LCC_5_1km + LCC_6_1km,
+    Grass_shrub_1km = LCC_8_1km + LCC_10_1km,
+    Crop_1km = LCC_15_1km,
+    Urban_1km = LCC_17_1km,
+    Wetland_1km = LCC_14_1km,
+    Water_1km = LCC_18_1km) %>%
+  dplyr::select(Needleleaf_forest_1km:Water_1km)
+
+all_surveys <- bind_cols(all_surveys,prop_LCC_1km)
+
+# Remove several surveys with missing covariate information
+all_surveys <- all_surveys %>%
+  mutate(Obs_Index = 1:nrow(all_surveys)) %>%
+  drop_na(elevation:Water_1km)
+
+full_count_matrix <- full_count_matrix[all_surveys$Obs_Index,]
+all_surveys$Obs_Index <- 1:nrow(all_surveys)
+
+# *******************************************************************
+# *******************************************************************
+# Evaluate correlations between covariates
+# *******************************************************************
+# *******************************************************************
+
+M = as.data.frame(all_surveys) %>%
+  select(elevation:Water_1km,-aspect) %>%
+  cor()
+
+corrplot(M, method = 'number', type = "upper", order = 'hclust',
+         addrect = 3, rect.col = 'blue', rect.lwd = 3, tl.pos = 'd')
+
+# height, biomass, and closure are extremely tightly related.  
+
+covars_for_PCA <- c("Urban_1km",
+                    "Crop_1km",
+                    "elevation",
+                    "MAT",
+                    "MAP",
+                    "prcConifer",
+                    "prcBroadLeaf",
+                    "closure",
+                    "dist2water",
+                    "Needleleaf_forest_1km",
+                    "Wetland_1km",
+                    "wetland_recurr",
+                    "slope",
+                    "Grass_shrub_1km")
+
+M = as.data.frame(all_surveys) %>%
+  select(covars_for_PCA) %>%
+  cor()
+
+corrplot(M, method = 'number', type = "upper", order = 'hclust',
+         addrect = 3, rect.col = 'blue', rect.lwd = 3, tl.pos = 'd')
+
+
+# *******************************************************************
+# *******************************************************************
+# Conduct principal components analysis
+# *******************************************************************
+# *******************************************************************
+
+dat_for_PCA <- all_surveys %>%
   as.data.frame() %>%
-  dplyr::select(elevation_1km:Water_1km, -aspect_mean)
+  dplyr::select(covars_for_PCA)
 
-pca <- prcomp(covars_for_PCA, scale = TRUE)
+pca <- prcomp(dat_for_PCA, scale = TRUE)
 
 # ------------------------------------------
 # Interpretation of specific axes (e.g., axes 1 and 2)
@@ -296,18 +352,17 @@ fviz_eig(pca)  # Scree plot (first 5 axes explain 85% of variation in habitat be
 pca            # Variable loadings
 
 fviz_pca_var(pca,
-             axes = c(1,2),
+             axes = c(1,12),
              col.var = "contrib", # Color by contributions to the PC
              gradient.cols = viridis(10),
              repel = TRUE     # Avoid text overlapping
 )
 
-
 # ------------------------------------------
 # Predict PCA values for each survey location and standardize (mean = 0, sd = 1)
 # ------------------------------------------
 
-all_surveys_PCA <- predict(pca, newdata = as.data.frame(all_surveys_covariates)[,names(pca$center)])
+all_surveys_PCA <- predict(pca, newdata = as.data.frame(all_surveys)[,names(pca$center)])
 SaskGrid_PCA <- predict(pca, newdata = as.data.frame(SaskGrid)[,names(pca$center)])
 
 for (covar in colnames(all_surveys_PCA)){
@@ -320,17 +375,41 @@ for (covar in colnames(all_surveys_PCA)){
   
 }
 
-all_surveys_covariates <- all_surveys_covariates %>%
-  as.data.frame() %>%
-  dplyr::select(-geometry) %>%
-  bind_cols(all_surveys_PCA)
-
-all_surveys <- full_join(all_surveys,all_surveys_covariates)
+all_surveys <- all_surveys %>% bind_cols(all_surveys_PCA)
 SaskGrid <- bind_cols(SaskGrid,SaskGrid_PCA)
+
+# ------------------------------------------
+# Plot maps of covariates
+# ------------------------------------------
+
+SaskRast <- SaskGrid %>% 
+  dplyr::select(covars_for_PCA,PC1:PC14) %>%
+  stars::st_rasterize()
+
+covar_to_plot <- names(SaskRast)
+
+covar_plotlist <- list()
+
+for (covar in covar_to_plot){
+  cplot <- ggplot() + geom_stars(data = SaskRast, aes(fill = !!sym(covar)))+
+    scale_fill_gradientn(colours = viridis(10), name = covar)+
+    geom_sf(data = SaskBoundary,colour="black",fill=NA,lwd=0.3,show.legend = F)+
+    ggtitle(covar)+
+    theme_bw()+
+    xlab("")+ylab("")
+  
+  covar_plotlist[[covar]] <- cplot
+}
+
+covar_plots <- ggarrange(plotlist = covar_plotlist,nrow=2,ncol=length(covars_for_PCA))
+
+png("../Output/Covariate_Maps/Covariate_Maps.png", width=60, height=10, units="in", res=300, type="cairo")
+print(covar_plots)
+dev.off()
 
 
 # ******************************************************************
-# PART 3: Identify list of species to run analysis for
+# Prepare species names
 # ******************************************************************
 
 # ------------------------------------------

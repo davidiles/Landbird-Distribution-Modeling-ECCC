@@ -5,8 +5,8 @@ setwd("C:/Users/IlesD/OneDrive - EC-EC/Iles/Projects/Landbirds/Landbird-Distribu
 
 results_PConly <- readRDS("../Output/Crossvalidation/Crossval_results_PConly.rds") %>%
   dplyr::select(-mean_count_val_pred)
-results_integrated <- readRDS("../Output/Crossvalidation/Crossval_results_integrated_LT.rds") %>%
-  dplyr::select(-mean_count_val_pred) %>% rename(lppd_integrated = lppd_integrated_LT)
+results_integrated <- readRDS("../Output/Crossvalidation/Crossval_results_integrated_SC.rds") %>%
+  dplyr::select(-mean_count_val_pred) %>% rename(lppd_integrated = lppd_integrated_SC)
 
 results <- full_join(results_PConly,results_integrated) %>%
   na.omit() %>%

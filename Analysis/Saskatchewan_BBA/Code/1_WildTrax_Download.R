@@ -78,17 +78,19 @@ Study_Area <- st_read("../../../Data/Spatial/National/BCR/BCR_Terrestrial_master
 
 wt_auth() # Need your wildtrax username
 
-# ---------------------------------------------------------
-# Identify projects that are part of the BBMP
-# ---------------------------------------------------------
-
-ARU_projects <- wt_get_download_summary(sensor_id = 'ARU') %>% subset(sensor == "ARU") %>% arrange(project)
+# # ---------------------------------------------------------
+# # Identify all projects we have access to
+# # ---------------------------------------------------------
+# 
+ARU_projects <- wt_get_download_summary(sensor_id = 'ARU') %>% 
+  subset(sensor == "ARU") %>% 
+  arrange(project)
 PC_projects <- wt_get_download_summary(sensor_id = 'PC') %>% subset(sensor == "PC") %>% arrange(project)
 
-# # ---------------------------------------------------------
-# # Download projects with 'ARU' data
-# # ---------------------------------------------------------
-#
+# ---------------------------------------------------------
+# Download projects with 'ARU' data
+# ---------------------------------------------------------
+# 
 # ARU_fulldat <- data.frame()
 # 
 # for (i in 1:nrow(ARU_projects)){
@@ -150,7 +152,8 @@ PC_projects <- wt_get_download_summary(sensor_id = 'PC') %>% subset(sensor == "P
 # }
 # 
 # write.csv(PC_fulldat, file = "../Data_Cleaned/WildTrax/WildTrax_PC_locations.csv", row.names = FALSE)
-# 
+#
+
 # ---------------------------------------------------------
 # Subset to data within Study Area Boundary
 # ---------------------------------------------------------
@@ -190,10 +193,10 @@ PC_summary <- PC_sf %>%
   arrange(desc(n_surveys)) %>%
   select(n_surveys,organization,project)
 
+
 # Save summary of projects within the study area boundary
 write.csv(ARU_summary,file = "../Data_Cleaned/WildTrax/WildTrax_ARU_summary.csv",row.names = FALSE)
 write.csv(PC_summary,file = "../Data_Cleaned/WildTrax/WildTrax_PC_summary.csv",row.names = FALSE)
-
 
 
 # *********************************************************
@@ -201,6 +204,29 @@ write.csv(PC_summary,file = "../Data_Cleaned/WildTrax/WildTrax_PC_summary.csv",r
 # DOWNLOAD / PROCESS ARU DATA
 # *********************************************************
 # *********************************************************
+
+projects_to_remove <- c("GRASS - Govenlock Pilot 2017",
+                        "GRASS - M.Sc. Rose 2017",
+                        "Grassland Songbird Monitoring CWS Prairie Region 2020",
+                        "Grasslands National Park Ecological Integrity Songbird Monitoring Program 2018",
+                        "Grasslands National Park Ecological Integrity Songbird Monitoring Program 2019",
+                        "Grassland Songbird Abundance Experiment 2019",
+                        "Agricultural Conversion Data 1999, 2000",
+                        "Prince Albert National Park Bird Surveys 2001",
+                        "Prince Albert Model Forest Gradient Data 1993, 1994",
+                        "Boreal Shield Bird Surveys Saskatchewan 2007",
+                        "Fragmentation Related Bird Surveys 1993",
+                        "Big River Spruce Budworm Study 1993",
+                        "La Ronge Point Counts 1995",
+                        "Meadow Lake Bird Count Data 1993",
+                        "Aspen Seismic Lines 2002")
+
+
+ARU_summary <- read.csv(file = "../Data_Cleaned/WildTrax/WildTrax_ARU_summary.csv") %>%
+  subset(project %!in% projects_to_remove)
+PC_summary  <- read.csv(file = "../Data_Cleaned/WildTrax/WildTrax_PC_summary.csv") %>%
+  subset(project %!in% projects_to_remove)
+
 
 # ---------------------------------------------------------
 # Download species records and recording info from each ARU survey
@@ -327,66 +353,67 @@ ARU_counts_SPT <- ARU_tags_SPT %>%
 # Same ordering as ARU_recordings_SPT
 mean(ARU_counts_SPT$recording_id == ARU_recordings_SPT$recording_id) # should be 1
 
-# *********************************************************
-# *********************************************************
-# PROCESS SPM TRANSCRIPTIONS (individuals can appear more than once)
-# *********************************************************
-# *********************************************************
-
-ARU_recordings_SPM <- subset(ARU_recordings, Transcription_Method == "SPM")
-
-# ---------------------------------------------------------
-# Remove duplicate rows (caused by multiple observers - records will be averaged)
-# ---------------------------------------------------------
-
-ARU_recordings_SPM <- dplyr::select(ARU_recordings_SPM,
-                                    recording_id,latitude,longitude,
-                                    Transcription_Method,Duration_Seconds,
-                                    recording_date_time,equipment,
-                                    organization,project,project_id,location,location_id
-) %>% unique()
-
-# In cases where a recording was transcribed using multiple SPM methods (occurs once), only use the first one
-ARU_recordings_SPM <- ARU_recordings_SPM[!duplicated(ARU_recordings_SPM$recording_id),]
-
-# ---------------------------------------------------------
-# Process tags (count individuals)
-# ---------------------------------------------------------
-
-# Extract correct tags (based on recording id)
-ARU_tags_SPM <- subset(ARU_tags, recording_id %in% ARU_recordings_SPM$recording_id)
-
-ARU_tags_SPM$recording_id <- factor(ARU_tags_SPM$recording_id,
-                                    levels = ARU_recordings_SPM$recording_id)
-
-
-# Total number of individuals detected per survey (sum of individual counts)
-ARU_counts_SPM <- ARU_tags_SPM %>%
-  
-  # Task ID is different observers
-  group_by(species_code,recording_id,task_id,individual_order) %>%
-  
-  # Remove repeated observations of individual birds (individual order)
-  summarize(individual_count = round(mean(individual_count))) %>%
-  
-  # Task ID is different observers
-  group_by(species_code,recording_id,task_id) %>%
-  summarize(total_count = sum(individual_count)) %>%
-  
-  # Take mean if there are multiple tasks
-  group_by(species_code,recording_id) %>%
-  summarize(mean_count = round(mean(total_count))) %>%
-  
-  as.data.frame() %>%
-  pivot_wider(names_from = species_code,
-              values_from = mean_count,
-              values_fill = 0,
-              id_expand = TRUE,
-              names_expand = TRUE) %>%
-  arrange(recording_id)
-
-# Same ordering as ARU_recordings_SPM
-mean(ARU_counts_SPM$recording_id == ARU_recordings_SPM$recording_id) # should be 1
+# # *********************************************************
+# # *********************************************************
+# # NOTE: DECISION TO OMIT ARU RECORDINGS TRANSCRIBED USING SPM PROTOCOL
+# #       CODE BELOW WOULD PROCESS SPM TRANSCRIPTIONS (individuals can appear more than once)
+# # *********************************************************
+# # *********************************************************
+# 
+# ARU_recordings_SPM <- subset(ARU_recordings, Transcription_Method == "SPM")
+# 
+# # ---------------------------------------------------------
+# # Remove duplicate rows (caused by multiple observers - records will be averaged)
+# # ---------------------------------------------------------
+# 
+# ARU_recordings_SPM <- dplyr::select(ARU_recordings_SPM,
+#                                     recording_id,latitude,longitude,
+#                                     Transcription_Method,Duration_Seconds,
+#                                     recording_date_time,equipment,
+#                                     organization,project,project_id,location,location_id
+# ) %>% unique()
+# 
+# # In cases where a recording was transcribed using multiple SPM methods (occurs once), only use the first one
+# ARU_recordings_SPM <- ARU_recordings_SPM[!duplicated(ARU_recordings_SPM$recording_id),]
+# 
+# # ---------------------------------------------------------
+# # Process tags (count individuals)
+# # ---------------------------------------------------------
+# 
+# # Extract correct tags (based on recording id)
+# ARU_tags_SPM <- subset(ARU_tags, recording_id %in% ARU_recordings_SPM$recording_id)
+# 
+# ARU_tags_SPM$recording_id <- factor(ARU_tags_SPM$recording_id,
+#                                     levels = ARU_recordings_SPM$recording_id)
+# 
+# 
+# # Total number of individuals detected per survey (sum of individual counts)
+# ARU_counts_SPM <- ARU_tags_SPM %>%
+#   
+#   # Task ID is different observers
+#   group_by(species_code,recording_id,task_id,individual_order) %>%
+#   
+#   # Remove repeated observations of individual birds (individual order)
+#   summarize(individual_count = round(mean(individual_count))) %>%
+#   
+#   # Task ID is different observers
+#   group_by(species_code,recording_id,task_id) %>%
+#   summarize(total_count = sum(individual_count)) %>%
+#   
+#   # Take mean if there are multiple tasks
+#   group_by(species_code,recording_id) %>%
+#   summarize(mean_count = round(mean(total_count))) %>%
+#   
+#   as.data.frame() %>%
+#   pivot_wider(names_from = species_code,
+#               values_from = mean_count,
+#               values_fill = 0,
+#               id_expand = TRUE,
+#               names_expand = TRUE) %>%
+#   arrange(recording_id)
+# 
+# # Same ordering as ARU_recordings_SPM
+# mean(ARU_counts_SPM$recording_id == ARU_recordings_SPM$recording_id) # should be 1
 
 
 # *********************************************************
@@ -517,7 +544,7 @@ mean(PC_counts$survey_id == PC_surveys$survey_id) # should be 1
 # *********************************************************
 
 # Combine SPT and SPM into single dataframe
-ARU_recordings_combined <- bind_rows(ARU_recordings_SPT,ARU_recordings_SPM) %>%
+ARU_recordings_combined <- ARU_recordings_SPT %>%      # bind_rows(ARU_recordings_SPT,ARU_recordings_SPM) %>%
   
   rename(Project_Name = project, 
          survey_ID = recording_id, 
@@ -585,7 +612,7 @@ WT_matrix <- matrix(0,nrow=nrow(WT_surveyinfo), ncol = length(WT_species$species
 for (spp in WT_species_codes){
   
   if (spp %in% colnames(ARU_counts_SPT)) WT_matrix[which(WT_surveyinfo$Survey_Type == "ARU_SPT"),which(colnames(WT_matrix) == spp)] <- as.data.frame(ARU_counts_SPT)[,spp]
-  if (spp %in% colnames(ARU_counts_SPM)) WT_matrix[which(WT_surveyinfo$Survey_Type == "ARU_SPM"),which(colnames(WT_matrix) == spp)] <- as.data.frame(ARU_counts_SPM)[,spp]
+  # if (spp %in% colnames(ARU_counts_SPM)) WT_matrix[which(WT_surveyinfo$Survey_Type == "ARU_SPM"),which(colnames(WT_matrix) == spp)] <- as.data.frame(ARU_counts_SPM)[,spp]
   if (spp %in% colnames(PC_counts)) WT_matrix[which(WT_surveyinfo$Survey_Type == "Point_Count"),which(colnames(WT_matrix) == spp)] <- as.data.frame(PC_counts)[,spp]
   
 }

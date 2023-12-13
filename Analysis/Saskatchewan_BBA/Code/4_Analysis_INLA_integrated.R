@@ -156,7 +156,7 @@ PC_to_use <- subset(all_surveys,
                       year(Date_Time) <= 2021
 )
 
-dim(PC_to_use) # 20735
+dim(PC_to_use) # 26228
 
 # ------------------------------------------
 # Select STATIONARY COUNT data to use (assuming these are 'breeding bird atlas' checklists; vast majority do not have distance)
@@ -178,9 +178,12 @@ SC_to_use <- subset(all_surveys,
                       
                       year(Date_Time) >= 2017 &
                       year(Date_Time) <= 2021 &
+                      
                       IncludesPointCounts == 0)
 
-dim(SC_to_use) # 2340
+dim(SC_to_use) # 2026
+
+
 
 # ------------------------------------------
 # Select LINEAR TRANSECT data to use
@@ -208,7 +211,7 @@ LT_to_use <- subset(all_surveys,
                       year(Date_Time) <= 2021 &
                       IncludesPointCounts == 0)
 
-dim(LT_to_use) # 1995
+dim(LT_to_use) # 1748
 
 # ------------------------------------------
 # Subset
@@ -346,7 +349,7 @@ for (sp_code in rev(species_summary$sp_code)){
   # plot(mesh_spatial)
   
   # Controls the 'residual spatial field'.  This can be adjusted to create smoother surfaces.
-  prior_range <- c(300000,0.1) # 10% chance range is smaller than 300000
+  prior_range <- c(300000, 0.1) # 10% chance range is smaller than 300000
   prior_sigma <- c(0.5,0.1)    # 10% chance sd is larger than 0.5
   matern_coarse <- inla.spde2.pcmatern(mesh_spatial,
                                        prior.range = prior_range, 
@@ -398,14 +401,14 @@ for (sp_code in rev(species_summary$sp_code)){
   covariates_to_include <- paste0("PC",1:7) 
   
   # How much shrinkage should be applied to covariate effects?
-  sd_linear <- 1 # Change to smaller value (e.g., 0.1), if you want to heavily shrink covariate effects and potentially create smoother surfaces
+  sd_linear <- 1  # Change to smaller value (e.g., 0.1), if you want to heavily shrink covariate effects and potentially create smoother surfaces
   prec_linear <-  c(1/sd_linear^2,1/(sd_linear/2)^2)
   
   #Intercept_SC(1)+
   #  SC_duration(main = Survey_Duration_Minutes,model = SC_duration_spde) +
+  
   model_components = as.formula(paste0('~
             Intercept_PC(1)+
-           
             Intercept_LT(1)+
             
             range_effect(1,model="linear", mean.linear = -0.046, prec.linear = 10000)+
@@ -431,15 +434,16 @@ for (sp_code in rev(species_summary$sp_code)){
                                        paste0("Beta2_",covariates_to_include,'*',covariates_to_include, collapse = " + ")))
   
   
-  model_formula_SC = as.formula(paste0('presence ~ log(1/exp(-exp(
-                  Intercept_SC +
-                  SC_duration +
-                  TSS +
-                  range_effect * distance_from_range +
-                  spde_coarse +',
-                                       paste0("Beta1_",covariates_to_include,'*',covariates_to_include, collapse = " + "),
-                                       '+',
-                                       paste0("Beta2_",covariates_to_include,'*',covariates_to_include, collapse = " + "),"))-1)"))
+  # model_formula_SC = as.formula(paste0('presence ~ log(1/exp(-exp(
+  #                 Intercept_SC +
+  #                 SC_duration +
+  #                 TSS +
+  #                 range_effect * distance_from_range +
+  #                 spde_coarse +',
+  #                                      paste0("Beta1_",covariates_to_include,'*',covariates_to_include, collapse = " + "),
+  #                                      '+',
+  #                                      paste0("Beta2_",covariates_to_include,'*',covariates_to_include, collapse = " + "),"))-1)"))
+  # 
   
   model_formula_LT = as.formula(paste0('presence ~ log(1/exp(-exp(
                   Intercept_LT +
@@ -606,8 +610,9 @@ for (sp_code in rev(species_summary$sp_code)){
   colscale_relabund <-c("#FEFEFE", "#FBF7E2", "#FCF8D0", "#EEF7C2", "#CEF2B0", "#94E5A0", "#51C987", "#18A065", "#008C59", "#007F53", "#006344")
   colpal_relabund <- colorRampPalette(colscale_relabund)
 
-  lower_bound <- 0.15
-  upper_bound <- quantile(SaskGrid_species$pred_q50,0.99,na.rm = TRUE) %>% signif(2)
+  lower_bound <- 0.01
+  upper_bound <- 9
+  #upper_bound <- quantile(SaskGrid_species$pred_q50,0.99,na.rm = TRUE) %>% signif(2)
   if (lower_bound >= (upper_bound/5)) lower_bound <- (upper_bound/5) %>% signif(2)
   
   sp_cut <- cut.fn(df = SaskGrid_species,
@@ -774,7 +779,7 @@ for (sp_code in rev(species_summary$sp_code)){
   png(paste0("../Output/Prediction_Maps/PObs/",sp_code,"_PObs_integrated.png"), width=6.5, height=8, units="in", res=300, type="cairo")
   print(plot_pObs)
   dev.off()
-  
+
 } # close species loop
 
 

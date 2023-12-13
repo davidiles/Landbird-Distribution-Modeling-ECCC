@@ -254,7 +254,7 @@ head(species_summary)
 
 species_summary <- species_summary %>% subset(`PC/ARU` >=20)
 
-for (sp_code in (species_summary$sp_code)){
+for (sp_code in rev(species_summary$sp_code)){
  
   # ----------------------------------------------------
   # Extract counts/data for this species

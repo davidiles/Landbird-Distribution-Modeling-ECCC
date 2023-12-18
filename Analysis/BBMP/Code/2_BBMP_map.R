@@ -16,7 +16,8 @@ my_packs = c('tidyverse',
              'ggspatial',
              'naturecounts',
              'suntools',
-             "readxl")
+             "readxl",
+             "viridis")
 
 if (any(!my_packs %in% installed.packages()[, 'Package'])) {install.packages(my_packs[which(!my_packs %in% installed.packages()[, 'Package'])],dependencies = TRUE)}
 lapply(my_packs, require, character.only = TRUE)
@@ -94,75 +95,6 @@ BBMP_boundary <- WT_dat$BBMP_boundary %>% st_transform(crs = AEA_proj)
 all_species <- readRDS("../Data_Cleaned/all_species.RDS")
 BSC_species <- readRDS("../Data_Cleaned/BSC_species.RDS")
 
-# ******************************************************************
-# Evaluate detections outside the species range boundary
-# ******************************************************************
-
-# ------------------------------------------------
-# Load packages
-# ------------------------------------------------
-
-require(ebirdst)
-require(terra)
-
-# Need to set access key (only once) before downloading ranges
-# ebirdst::set_ebirdst_access_key()
-
-# ------------------------------------------------
-# Ensure path is correctly set
-# ------------------------------------------------
-
-usethis::edit_r_environ()
-
-# This should read:
-# EBIRDST_KEY='ntqm1ha68fov'
-# EBIRDST_DATA_DIR='C:/Users/IlesD/OneDrive - EC-EC/Iles/Projects/Landbirds/Landbird-Distribution-Modeling-ECCC/Data/Spatial/eBird/'
-
-# List to contain sf objects for species ranges
-# species_ranges <- list()
-# 
-# for (sp_code in colnames(WT_matrix)){
-#   print(sp_code)
-# 
-#   if (file.exists("../Data_Cleaned/Spatial/eBird_ranges.RDS")) species_ranges <- readRDS("../Data_Cleaned/Spatial/eBird_ranges.RDS")
-# 
-#   if (sp_code %in% names(species_ranges)) next
-#   # ------------------------------------------------
-#   # Download and trim ebird range for this species
-#   # ------------------------------------------------
-# 
-#   species_name = BSC_species$english_name[which(BSC_species$BSC_spcd == sp_code)]
-# 
-#   # Check if species is available
-#   check <- get_species(species_name)
-#   if (length(check)==0){
-#     print(paste0(sp_code, " not available in eBird"))
-#     next
-#   }
-# 
-#   if (length(check)>0 & is.na(check)){
-#     print(paste0(sp_code, " not available in eBird"))
-#     next
-#   }
-# 
-#   ebirdst_download(species_name, pattern = "range")
-# 
-#   path <- get_species_path(species_name)
-# 
-#   range <- load_ranges(path, resolution = "mr")
-# 
-#   range <- range %>% subset(season %in% c("resident","breeding")) %>%
-#     st_transform(.,crs = st_crs(BBMP_boundary)) %>%
-#     st_union() %>%
-#     st_crop(BBMP_boundary)
-# 
-#   species_ranges[[sp_code]] <- range
-#   saveRDS(species_ranges,file="../Data_Cleaned/Spatial/eBird_ranges.RDS")
-# 
-# 
-# } # close species loop
-
-
 # ------------------------------------------------
 # Map of survey locations
 # ------------------------------------------------
@@ -224,33 +156,88 @@ BBMP_map <- ggplot() +
 
 BBMP_map
 
-
 png(paste0("../Output/Survey_Maps/BBMP_surveys.png"), width=8, height=8, units="in", res=300, type="cairo")
 print(BBMP_map)
 dev.off()
 
 
-# ------------------------------------------------
-# Tally up number of detections "out of species eBird range"
-# ------------------------------------------------
-species_ranges <- readRDS(file="../Data_Cleaned/Spatial/eBird_ranges.RDS")
-survey_dat$Obs_Index <- 1:nrow(survey_dat)
+# ******************************************************************
+# Evaluate detections outside the species range boundary
+# ******************************************************************
 
+# ------------------------------------------------
+# Load packages
+# ------------------------------------------------
+
+require(ebirdst)
+require(terra)
+
+# Need to set access key (only once) before downloading ranges
+# ebirdst::set_ebirdst_access_key()
+
+# ------------------------------------------------
+# Ensure path is correctly set
+# ------------------------------------------------
+
+usethis::edit_r_environ()
+
+# This should read:
+# EBIRDST_KEY='ntqm1ha68fov'
+# EBIRDST_DATA_DIR='C:/Users/IlesD/OneDrive - EC-EC/Iles/Projects/Landbirds/Landbird-Distribution-Modeling-ECCC/Data/Spatial/eBird/'
+# 
+
+# # Download species ranges
+# for (sp_code in colnames(WT_matrix)){
+#   
+#   species_name = BSC_species$english_name[which(BSC_species$BSC_spcd == sp_code)]
+#   
+#   # Check if species is available
+#   check <- get_species(species_name)
+#   if (length(check)==0 | is.na(check)){
+#     print(paste0(sp_code, " not available in eBird"))
+#     next
+#   }
+#   
+#   ebirdst_download_status(species = species_name, download_abundance = FALSE,download_ranges = TRUE, force = FALSE)
+# }
+
+survey_dat$Obs_Index <- 1:nrow(survey_dat)
 range_maps <- list()
 species_results <- data.frame()
 
 for (sp_code in colnames(WT_matrix)){
   
-  if (sp_code %!in% names(species_ranges)) next
+  print(sp_code)
   
+  # ------------------------------------------------
+  # Download and trim ebird range for this species
+  # ------------------------------------------------
+  
+  species_name = BSC_species$english_name[which(BSC_species$BSC_spcd == sp_code)]
+  
+  # Check if species is available
+  check <- get_species(species_name)
+  if (length(check)==0 | is.na(check)){
+    print(paste0(sp_code, " not available in eBird"))
+    next
+  }
+  
+  range <- load_ranges(species = species_name, resolution = "27km") %>%
+    subset(season %in% c("resident","breeding"))
+  
+  date_range <- yday(ymd(c(range$start_date, range$end_date))) %>% range()
+  
+  # Extract data within the appropriate (non-migratory) date range
   sp_dat <- survey_dat %>% mutate(count = WT_matrix[,sp_code]) %>%
     subset(count > 0)%>% 
     subset(
-      yday(Date_Time) >= yday(ymd("2022-06-01")) &
-        yday(Date_Time) <= yday(ymd("2022-07-15")))
+      yday(Date_Time) >= date_range[1] &
+        yday(Date_Time) <= date_range[2])
   
-  range <- species_ranges[[sp_code]] %>% st_transform(st_crs(sp_dat)) %>%
-    st_intersection(BBMP_boundary)
+  # Extract detections within and outside of date range
+  range <- range %>%  st_transform(.,crs = st_crs(BBMP_boundary)) %>%
+    st_union() %>%
+    st_crop(BBMP_boundary)
   
   in_range <- st_intersects(sp_dat,range) %>% as.numeric()
   in_range[is.na(in_range)] <- 0
@@ -263,7 +250,7 @@ for (sp_code in colnames(WT_matrix)){
                                                        n_det = n_det,
                                                        n_out = n_out))
   
-  if (n_out > 50){
+  # Plot detections
     sp_dat$in_range <- factor(sp_dat$in_range,levels = c(0,1), labels = c("No","Yes"))
     sp_map <- ggplot() +
       geom_sf(data = BCR_NA, col = "white", fill = "white")+
@@ -293,13 +280,9 @@ for (sp_code in colnames(WT_matrix)){
     png(paste0("../Output/Range_Maps/",sp_code,"_range.png"), width=8, height=6.5, units="in", res=300, type="cairo")
     print(sp_map)
     dev.off()
-    
-    range_maps[[sp_code]] <- sp_map
-    
-    print(sp_code)
-  }
-  
-}
+} # close species loop
+
+
 
 species_results$prop_out <- species_results$n_out/species_results$n_det
 species_results <- species_results %>%

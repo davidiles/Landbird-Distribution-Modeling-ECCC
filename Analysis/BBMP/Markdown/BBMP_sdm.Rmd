@@ -1,0 +1,649 @@
+---
+output:
+  html_document:
+    fig_width: 7
+    fig_height: 6
+    fig_caption: true
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  dev = "png",
+  dev.args = list(type = "cairo-png"),
+  fig.width = 6,
+  fig.height = 4,
+  eval = TRUE,
+  echo = TRUE,
+  warning = FALSE,
+  error = FALSE,
+  message = FALSE,
+  knitr::opts_knit$set(root.dir = 'C:/Users/IlesD/OneDrive - EC-EC/Iles/Projects/Landbirds/Landbird-Distribution-Modeling-ECCC/Analysis/BBMP/')
+)
+
+```
+
+```{r load-libs-data-functions, echo = FALSE, results = 'hide'}
+
+library(tidyverse)
+library(sf)
+library(terra)
+library(readxl)
+library(ggplot2)
+library(viridis)
+library(ggpubr)
+library(pROC)
+
+# ------------------------------------------------
+# ggplot theme
+# ------------------------------------------------
+
+CustomTheme <- theme_set(theme_bw())
+CustomTheme <- theme_update(legend.key = element_rect(colour = NA), 
+                            legend.key.height = unit(1.2, "line"),
+                            panel.grid.major = element_line(colour = 'gray95'),
+                            #panel.grid.minor = element_line(colour = 'transparent'),
+                            panel.border = element_rect(linetype = "solid",
+                                                        colour = "black",
+                                                        linewidth = 1, fill = NA),
+                            axis.line = element_line(colour = "black"),
+                            strip.text = element_text(size = 12, colour = "black"),
+                            strip.background = element_rect(colour = "black",
+                                                            fill = "lightblue2",
+                                                            linetype = "solid"),
+                            axis.title.y = element_text(margin = margin(0,10,0,0)),
+                            axis.title.x = element_text(margin = margin(10,0,0,0)),
+                            panel.background = element_rect(fill = "white"))
+
+# ------------------------------------------------
+# Useful functions
+# ------------------------------------------------
+
+`%!in%` <- Negate(`%in%`)
+
+```
+
+\
+
+![](../images/Environment_and_Climate_Change_Canada_logo.png)
+
+\
+
+# Boreal Bird Monitoring Program {- .tabset}
+
+## Executive Summary
+
+![](../images/banner_boreal.jpg)
+
+\
+
+ECCC's **B**oreal **B**ird **M**onitoring **P**rogram (**BBMP**) seeks to achieve 3 main goals:
+
+1) [Enhance Knowledge] of Canada's birds through filling key data gaps and improved statistical analysis,
+2) [Support Conservation] Provide critical information for species conservation and decision-making (e.g., for Species-at-Risk status assessments),
+3) [Strengthen Partnerships] between federal government, Indigenous nations, and other groups (including academia, industry, non-governmental organizations etc.)
+
+\
+
+The BBMP was developed by ____________________, in response to __________________.
+
+The Boreal Bird Monitoring Program represents a collaborative effort between federal government and _____________.
+\ 
+
+```{r current-data, echo = FALSE, results = 'hide', cache=TRUE,fig.width=10, fig.height=5, fig.cap = "Figure 1: Data availability across Canada's boreal forest over the last 10 years",fig.align = 'center'}
+library(ggspatial)
+library(colorspace)
+# Note that data are pre-prepared by other scripts in the "code" folder:
+# 1_WildTrax_Download.R - reads in WildTrax data
+# 2_Compile_Data.R - Merges with BAM dataset and extracts covariates
+
+analysis_data_package <- readRDS(file = "Data_Cleaned/analysis_data_package.RDS")
+attach(analysis_data_package)
+
+# ----------------------------------------------------
+# Distinguish between different sources of data
+# ----------------------------------------------------
+
+alldat$Data_Source = "Other"
+alldat$Data_Source[alldat$project == "BBMP" | alldat$organization %in% c("CWS-NOR","CWS-ONT","CWS-PRA","ECCC")] <- "BBMP"
+
+# ----------------------------------------------------
+# Load relevant layers for producing maps
+# ----------------------------------------------------
+proj <- "+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0"
+BBMP_boundary <- st_transform(BBMP_boundary, proj)
+
+max_lat <- st_coordinates(BBMP_boundary)[,2] %>% max()
+min_lat <- st_coordinates(BBMP_boundary)[,2] %>% min()
+mid_lat <- mean(c(min_lat,max_lat))
+
+max_lon <- st_coordinates(BBMP_boundary)[,1] %>% max()
+min_lon <- st_coordinates(BBMP_boundary)[,1] %>% min()
+mid_lon <- mean(c(min_lon,max_lon))
+
+proj <- paste(
+  "+proj=aea +lat_0=",mid_lat,"+lon_0=",mid_lon,"+lat_1=",min_lat,"+lat_2=",max_lat,"+x_0=0 +y_0=0 +datum=NAD83",
+  "+units=km +no_defs"
+)
+
+BCR_CAN <- st_read("../../Data/Spatial/National/BCR/BCR_Terrestrial_master.shp")  %>%
+  subset(COUNTRY %in% "CANADA") %>%
+  st_make_valid() %>%
+  dplyr::select(BCR, PROVINCE_S) %>%
+  st_transform(crs = proj)
+
+BCR_NA <- st_read("../../Data/Spatial/National/BCR/BCR_Terrestrial_master.shp")  %>%
+  subset(COUNTRY %in% c("CANADA","USA")) %>%
+  st_make_valid() %>%
+  dplyr::select(BCR, PROVINCE_S) %>%
+  st_transform(crs = proj)
+
+
+# ----------------------------------------------------
+# Map of survey data
+# ----------------------------------------------------
+alldat <- st_transform(alldat, proj)
+xlim <- range(as.data.frame(st_coordinates(alldat))$X)
+ylim <- range(as.data.frame(st_coordinates(alldat))$Y)
+
+survey_map <- ggplot() +
+  geom_sf(data = BCR_NA, col = "white", fill = "white")+
+  geom_sf(data = BCR_CAN, col = "gray98", fill = "white")+
+  geom_sf(data = BBMP_boundary, col = "transparent", fill = "forestgreen", alpha = 0.1)+
+  geom_sf(data = subset(alldat, Data_Source != "BBMP"), aes(col = "Other"), size = 0.1)+
+  geom_sf(data = subset(alldat, Data_Source == "BBMP"), aes(col = "BBMP"), size = 0.1)+
+
+  annotation_scale(style = "ticks")+
+  scale_color_manual(values=c("black","gray70"), name = "Data Source")+
+  theme(panel.background = element_rect(fill = desaturate("#bbfdfd", amount = 0.5),
+                                        colour = desaturate("#bbfdfd", amount = 0.5),
+                                        size = 0.5, linetype = "solid"),
+        legend.spacing.y = unit(0, "mm"),
+        panel.border = element_rect(colour = "black", fill=NA),
+        legend.background = element_blank(),
+        legend.box.background = element_rect(colour = "black"),
+        legend.position=c(0.98,0.98),
+        legend.justification = c("right","top"),
+        legend.title = element_text(size = 10),
+        legend.text = element_text(size = 6))+
+  coord_sf(xlim = xlim, ylim = ylim)+
+  ggtitle("")
+
+survey_map
+
+```
+
+## Enhance Knowledge {.tabset}
+
+ECCC's Boreal Bird Monitoring Program is yielding valuable new insights into the fundamental properties of Canada's bird populations.
+
+```{r fit-BRTs, eval = FALSE, echo = FALSE, results = 'hide', cache=TRUE}
+
+library(dismo)
+library(gbm)
+
+# This code snippet fits species distribution models to data, and conducts cross-validation to assess predictive accuracy with/without BBMP data
+
+# ----------------------------------------------------------------
+# Function to fit BRT
+# ----------------------------------------------------------------
+
+fit_brt <- function(model_data,
+                    response_column = NA,
+                    covariate_columns = NA){
+  mod_brt <- NULL
+  
+  ntrees <- 50
+  tcomplexity <- 5
+  lrate <- 0.25
+  m <- 0
+  
+  while(is.null(mod_brt)){
+    
+    m <- m + 1
+    if(m > 2){
+      ntrees <- 50
+      lrate <- 0.1
+    } else if(m > 4){
+      lrate <- 0.05
+    } else if(m > 6){
+      ntrees <- 25
+      lrate <- 0.05
+    } else if(m > 8){
+      ntrees <- 25
+      lrate <- 0.025
+    } else if(m > 10){
+      ntrees <- 10
+      lrate <- 0.025
+    }
+    else{
+      break
+    }
+    
+    ptm <- proc.time()
+    if(inherits(try(
+      mod_brt <- dismo::gbm.step(data = model_data,
+                                 gbm.x = covariate_columns,
+                                 gbm.y = response_column,
+                                 family = "poisson",
+                                 learning.rate = lrate,
+                                 n.trees = ntrees)
+    ), "try-error")){
+      cat("Couldn't fit model", n, "in the iteration", m, "\n")
+    }
+    t <- proc.time() - ptm
+  }
+  if(is.null(mod_brt)){
+    next
+  }
+  return(mod_brt)
+}
+
+# ----------------------------------------------------------------
+# Conduct cross-validation
+# ----------------------------------------------------------------
+
+# Relative abundances of each species
+species_relabund <- allcounts 
+species_relabund[species_relabund>0] <- 1
+species_relabund <- apply(species_relabund,2,sum) %>% sort(decreasing = TRUE)
+
+results <- data.frame()
+results_path <- "Output/Crossvalidation/Crossval_results_BRT.RDS"
+
+for (xval_fold in (1:5)){
+  for (sp_code in (names(species_relabund)[1:20])){
+    
+    if (file.exists(results_path)){
+      results <- readRDS(results_path)
+      if (nrow(results[which(results$sp_code == sp_code & results$Crossval_Fold == xval_fold),])>0) next
+    }
+    
+    print(paste0(sp_code," fold ", xval_fold))
+    if (nrow(results)>0){
+      if (nrow(subset(results,Species == sp_code & fold == xval_fold))>0) next
+    }
+    
+    # ----------------------------------------------------
+    # Select appropriate data
+    # ----------------------------------------------------
+    
+    # Prepare data for this species
+    sp_dat <- alldat %>%
+      mutate(count = allcounts[,sp_code]) %>%
+      mutate(presence = as.numeric(count>0)) %>%
+      subset(duration >=1 & duration <= 10)
+    
+    sp_dat$Date <- lubridate::ymd_hms(sp_dat$date)
+    sp_dat <- na.omit(sp_dat)
+    sp_dat <- subset(sp_dat,
+                     yday(Date) >= yday(ymd("2022-06-01")) &
+                       yday(Date) <= yday(ymd("2022-07-15")) &
+                       hour(Date) >= 5 &
+                       hour(Date) <= 12)
+    
+    sp_dat <- na.omit(sp_dat)
+    sp_dat <- sp_dat %>% dplyr::select(-Obs_Index)
+    
+    # ----------------------------------------------------
+    # Separate training and validation data for this crossval fold
+    # ----------------------------------------------------
+    
+    validation_data <- subset(sp_dat, Crossval_Fold == xval_fold) %>% as.data.frame()
+    training_data <- subset(sp_dat, Crossval_Fold != xval_fold) %>% as.data.frame()
+    rm(sp_dat)
+    
+    covariates_to_include <- training_data %>% dplyr::select(duration:PC9) %>% colnames()
+    
+    # ----------------------------------------------------------------------------
+    # Fit model to only non-bbmp data, assess cross-validation accuracy
+    # ----------------------------------------------------------------------------
+    
+    # Fit model
+    fit_without_BBMP <-  fit_brt(model_data = subset(training_data,Data_Source != "BBMP"),
+                                 response_column = which(colnames(training_data)=="count"),
+                                 covariate_columns = which(colnames(training_data)%in% covariates_to_include))
+    
+    # Assess xval accuracy
+    pred_without_BBMP  <- predict(fit_without_BBMP, 
+                                  validation_data, 
+                                  n.trees = fit_without_BBMP$gbm.call$best.trees, type = "response")
+    
+    
+    AUC_without_BBMP <- pROC::auc(response = validation_data$presence, predictor = 1-exp(-pred_without_BBMP))
+    cor_without_BBMP <- cor(validation_data$count, pred_without_BBMP)
+    deviance_without_BBMP <- dismo::calc.deviance(obs=validation_data$count, pred=pred_without_BBMP, calc.mean = FALSE, family = "poisson")
+    
+    # ----------------------------------------------------------------------------
+    # Fit model to all data (including bbmp)
+    # ----------------------------------------------------------------------------
+    
+    # Fit model
+    fit_with_BBMP <-  fit_brt(model_data = training_data,
+                              response_column = which(colnames(training_data)=="count"),
+                              covariate_columns = which(colnames(training_data) %in% covariates_to_include))
+    
+    # Assess xval accuracy
+    pred_with_BBMP  <- predict(fit_with_BBMP, 
+                               validation_data, 
+                               n.trees = fit_with_BBMP$gbm.call$best.trees, type = "response")
+    
+    AUC_with_BBMP <- pROC::auc(response = validation_data$presence, predictor = 1-exp(-pred_with_BBMP))
+    cor_with_BBMP <- cor(validation_data$count, pred_with_BBMP)
+    deviance_with_BBMP <- dismo::calc.deviance(obs=validation_data$count, pred=pred_with_BBMP, calc.mean = FALSE, family = "poisson")
+    
+    # ----------------------------------------------------------------------------
+    # Evaluate cross-validation accuracy
+    # ----------------------------------------------------------------------------
+    
+    sp_results <- data.frame(Species = sp_code,
+                             fold = xval_fold,
+                             mean_val = mean(validation_data$count),
+                             p_val = mean(validation_data$presence),
+                             
+                             # Ability to predict presences and absences
+                             AUC_without_BBMP = AUC_without_BBMP,
+                             AUC_with_BBMP = AUC_with_BBMP,
+                             
+                             # Ability to predict counts
+                             deviance_without_BBMP = deviance_without_BBMP,
+                             deviance_with_BBMP = deviance_with_BBMP,
+                             cor_without_BBMP = cor_without_BBMP,
+                             cor_with_BBMP = cor_with_BBMP)
+    
+    if (file.exists(results_path)) results <- readRDS(results_path)
+    
+    results <- rbind(results, sp_results)
+    
+    saveRDS(results,results_path)
+    
+  }
+}
+
+```
+
+```{r fit-INLA, eval = FALSE, echo = FALSE, results = 'hide', cache=TRUE}
+
+library(INLA)
+library(inlabru)
+
+# ----------------------------------------------------------------
+# Prepare some preliminary objects for fitting models with INLA
+# ----------------------------------------------------------------
+
+proj <- "+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0"
+BBMP_boundary <- st_transform(BBMP_boundary, proj)
+
+max_lat <- st_coordinates(BBMP_boundary)[,2] %>% max()
+min_lat <- st_coordinates(BBMP_boundary)[,2] %>% min()
+mid_lat <- mean(c(min_lat,max_lat))
+
+max_lon <- st_coordinates(BBMP_boundary)[,1] %>% max()
+min_lon <- st_coordinates(BBMP_boundary)[,1] %>% min()
+mid_lon <- mean(c(min_lon,max_lon))
+
+proj <- paste(
+  "+proj=aea +lat_0=",mid_lat,"+lon_0=",mid_lon,"+lat_1=",min_lat,"+lat_2=",max_lat,"+x_0=0 +y_0=0 +datum=NAD83",
+  "+units=km +no_defs"
+)
+
+alldat <- alldat %>% st_transform(proj)
+
+BBMP_boundary <- st_transform(BBMP_boundary,proj)
+
+mesh <- inla.mesh.2d(loc = as(alldat,'Spatial'), 
+                     boundary = as(BBMP_boundary,'Spatial'), 
+                     max.edge=c(100,200), 
+                      offset = c(100,200),
+                      cutoff = 50)
+#plot(mesh)
+#points(alldat)
+
+# ---------------------------------------------------
+# Standardize covariates
+# ---------------------------------------------------
+
+covariates_to_standardize <- paste0("PC",1:9)
+alldat <- alldat %>% mutate_at(covariates_to_standardize, ~(scale(.) %>% as.vector))
+
+# ----------------------------------------------------------------
+# Conduct cross-validation
+# ----------------------------------------------------------------
+
+# Timeout INLA after 10 minutes (if it has not fit by then, it has likely stalled)
+inla.setOption(inla.timeout = 60*20)
+
+# Relative abundances of each species
+species_relabund <- allcounts 
+species_relabund[species_relabund>0] <- 1
+species_relabund <- apply(species_relabund,2,sum) %>% sort(decreasing = TRUE)
+
+results <- data.frame()
+results_path <- "Output/Crossvalidation/Crossval_results_INLA.RDS"
+
+set.seed(999)
+species_to_model <- species_relabund[species_relabund>250] %>% sample(.,100) %>% sort(decreasing = TRUE)
+
+for (xval_fold in (1:5)){
+  for (sp_code in (names(species_to_model)[1:10])){
+    
+    if (file.exists(results_path)){
+      results <- readRDS(results_path)
+      if (nrow(results[which(results$sp_code == sp_code & results$Crossval_Fold == xval_fold),])>0) next
+    }
+    
+    print(paste0(sp_code," fold ", xval_fold))
+    if (nrow(results)>0){
+      if (nrow(subset(results,Species == sp_code & fold == xval_fold))>0) next
+    }
+    
+    # ----------------------------------------------------
+    # Select appropriate data
+    # ----------------------------------------------------
+    
+    # Prepare data for this species
+    sp_dat <- alldat %>%
+      mutate(count = allcounts[,sp_code]) %>%
+      mutate(presence = as.numeric(count>0)) %>%
+      subset(duration >=1 & duration <= 10)
+    
+    sp_dat$Date <- lubridate::ymd_hms(sp_dat$date)
+    sp_dat <- na.omit(sp_dat)
+    sp_dat <- subset(sp_dat,
+                     yday(Date) >= yday(ymd("2022-06-01")) &
+                       yday(Date) <= yday(ymd("2022-07-15")) &
+                       hour(Date) >= 5 &
+                       hour(Date) <= 12)
+    
+    sp_dat <- na.omit(sp_dat)
+    sp_dat <- sp_dat %>% dplyr::select(-Obs_Index)
+    
+    # ----------------------------------------------------
+    # Separate training and validation data for this crossval fold
+    # ----------------------------------------------------
+    
+    validation_data <- subset(sp_dat, Crossval_Fold == xval_fold) 
+    training_data <- subset(sp_dat, Crossval_Fold != xval_fold) 
+
+    # ----------------------------------------------------
+    # Prepare formulas and priors
+    # ----------------------------------------------------
+    
+    # Controls the 'residual spatial field'.  This can be adjusted to create smoother surfaces.
+    prior_range <- c(1000,0.01)
+    prior_sigma <- c(1,0.01)
+    
+    matern_coarse <- inla.spde2.pcmatern(mesh,prior.range = prior_range,prior.sigma = prior_sigma)
+    
+    # Covariate effects to include
+    covariates_to_include <- paste0("PC",1:9)
+    sd_linear <- 1   
+    prec_linear <-  c(1/sd_linear^2,1/(sd_linear/2)^2)
+                                         
+    model_components = as.formula(paste0('~ Intercept(1)+ spde_coarse(main = geometry, model = matern_coarse) +',
+                                         paste0("Beta1_",covariates_to_include,'(1,model="linear", mean.linear = 0, prec.linear = ', prec_linear[1],')', collapse = " + "),
+                                       '+',
+                                       paste0("Beta2_",covariates_to_include,'(1,model="linear", mean.linear = 0, prec.linear = ', prec_linear[2],')', collapse = " + ")))
+    
+    model_formula = as.formula(paste0('count ~ Intercept + spde_coarse + ',
+                                       paste0("Beta1_",covariates_to_include,'*',covariates_to_include, collapse = " + "),
+                                       '+',
+                                       paste0("Beta2_",covariates_to_include,'*',covariates_to_include,"^2", collapse = " + ")))
+    
+    # ----------------------------------------------------------------------------
+    # Fit model to only non-bbmp data, assess cross-validation accuracy
+    # ----------------------------------------------------------------------------
+    
+    fit_without_BBMP <- NULL
+    while(is.null(fit_without_BBMP)){
+      
+      fit_model <- function(){
+        tryCatch(expr = {bru(components = model_components,
+                             
+                             like(family = "nbinomial",
+                                  formula = model_formula,
+                                  data = subset(training_data, Data_Source != "BBMP")),
+                             options = list(control.compute = list(waic = FALSE, cpo = FALSE),
+                                            bru_verbose = 4))},
+                 error = function(e){NULL})
+      }
+      fit_without_BBMP <- fit_model()
+      
+      if ("try-error" %in% class(fit_without_BBMP)) fit_without_BBMP <- NULL
+    }
+    
+    # Assess xval accuracy
+    pred_without_BBMP  <- generate(fit_without_BBMP,
+                     validation_data,
+                     formula =  model_formula,
+                     n.samples = 1000)
+    
+    pred_without_BBMP <- exp(pred_without_BBMP) %>% apply(.,1,median) 
+    
+    size_without_BBMP <- fit_without_BBMP$summary.hyperpar$'0.5quant'[1] # parameter of negative binomial
+    prob_zero_without_BBMP <- dnbinom(0,mu=pred_without_BBMP,size=size_without_BBMP)
+    AUC_without_BBMP <- pROC::auc(response = validation_data$presence, predictor = 1-prob_zero_without_BBMP) # 0.56
+    cor_without_BBMP <- cor(validation_data$count, pred_without_BBMP)
+    deviance_without_BBMP <- dismo::calc.deviance(obs=validation_data$count, pred=pred_without_BBMP, calc.mean = FALSE, family = "poisson")
+    
+    # ----------------------------------------------------------------------------
+    # Fit model to all data (including BBMP)
+    # ----------------------------------------------------------------------------
+    
+    fit_alldat <- NULL
+    while(is.null(fit_alldat)){
+      
+      fit_model <- function(){
+        tryCatch(expr = {bru(components = model_components,
+                             
+                             like(family = "nbinomial",
+                                  formula = model_formula,
+                                  data = training_data),
+                             options = list(control.compute = list(waic = FALSE, cpo = FALSE),
+                                            bru_verbose = 4))},
+                 error = function(e){NULL})
+      }
+      fit_alldat <- fit_model()
+      
+      if ("try-error" %in% class(fit_alldat)) fit_alldat <- NULL
+    }
+    
+    # Assess xval accuracy
+    pred_alldat  <- generate(fit_alldat,
+                     validation_data,
+                     formula =  model_formula,
+                     n.samples = 1000)
+    
+    pred_alldat <- exp(pred_alldat) %>% apply(.,1,median) 
+    
+    size_alldat <- fit_alldat$summary.hyperpar$'0.5quant'[1] # parameter of negative binomial
+    prob_zero_alldat <- dnbinom(0,mu=pred_alldat,size=size_alldat)
+    AUC_alldat <- pROC::auc(response = validation_data$presence, predictor = 1-prob_zero_alldat)
+    cor_alldat <- cor(validation_data$count, pred_alldat)
+    deviance_alldat <- dismo::calc.deviance(obs=validation_data$count, pred=pred_alldat, calc.mean = FALSE, family = "poisson")
+    
+    # ----------------------------------------------------------------------------
+    # Evaluate cross-validation accuracy
+    # ----------------------------------------------------------------------------
+    
+    sp_results <- data.frame(Species = sp_code,
+                             fold = xval_fold,
+                             mean_val = mean(validation_data$count),
+                             p_val = mean(validation_data$presence),
+                             
+                             # Ability to predict presences and absences
+                             AUC_without_BBMP = AUC_without_BBMP,
+                             AUC_alldat = AUC_alldat,
+                             
+                             # Ability to predict counts
+                             deviance_without_BBMP = deviance_without_BBMP,
+                             deviance_alldat = deviance_alldat,
+                             
+                             cor_without_BBMP = cor_without_BBMP,
+                             cor_alldat = cor_alldat)
+    
+    if (file.exists(results_path)) results <- readRDS(results_path)
+    
+    results <- rbind(results, sp_results)
+    
+    saveRDS(results,results_path)
+    
+  }
+}
+
+
+```
+
+```{r model-fits, echo = FALSE, results = 'hide', fig.width=10, fig.height=5, fig.cap = "Figure 2: Improvement in predictive performance after including BBMP data",fig.align = 'center'}
+
+results_path <- "Output/Crossvalidation/Crossval_results_INLA.RDS"
+results <- readRDS(results_path)
+
+results_summary <- results %>% 
+  group_by(Species) %>% 
+  summarize_all(mean) %>%
+  arrange(mean_val)
+
+results_summary <- bind_rows(data.frame(Species = ""),results_summary)
+
+results_summary$Species <- factor(results_summary$Species, levels = results_summary$Species)
+
+label_df <- data.frame(Species = "", x = c(0.6,0.75,0.85,0.95), text = c("Poor","Adequate","Good","Excellent"))
+label_df$text <- factor(label_df$text, levels = label_df$text)
+
+colors <- RColorBrewer::brewer.pal(4,name = "RdYlBu")
+
+comparison_plot2 <- ggplot(data = results_summary)+
+  
+  geom_rect(aes(xmin=0, xmax=0.7, ymin=-Inf, ymax=Inf), fill = colors[1], alpha = 0.25)+
+  geom_rect(aes(xmin=0.7, xmax=0.8, ymin=-Inf, ymax=Inf), fill = colors[2], alpha = 0.25)+
+  geom_rect(aes(xmin=0.8, xmax=0.9, ymin=-Inf, ymax=Inf), fill = colors[3], alpha = 0.25)+
+  geom_rect(aes(xmin=0.9, xmax=1, ymin=-Inf, ymax=Inf), fill = colors[4], alpha = 0.25)+
+  geom_text(data = label_df, aes(x = x, y = Species, label = text), fontface = "bold", alpha = 0.5)+
+  
+  scale_fill_manual(values = colors)+ 
+  geom_point(aes(y = Species, x = AUC_without_BBMP),size = 2,col = "black")+
+  
+  geom_segment(aes(y = Species, yend = Species, x = AUC_without_BBMP, xend = AUC_alldat),
+               size = 2,
+               arrow = arrow(length = unit(0.2, "cm")),
+               col = "black")+
+  
+  coord_cartesian(xlim = c(0.5,1))+
+  ggtitle("Predictive performance with BBMP data")+
+  xlab("AUC score\n\n(cross-validation)")
+
+print(comparison_plot2)
+```
+
+
+## Support Conservation {.tabset}
+
+more stuff
+
+\
+
+## Strengthen Partnerships {.tabset}
+
+even more stuff

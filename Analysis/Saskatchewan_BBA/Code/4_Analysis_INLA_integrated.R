@@ -431,7 +431,7 @@ for (sp_code in rev(species_summary$sp_code)){
                   spde_coarse +',
                                        paste0("Beta1_",covariates_to_include,'*',covariates_to_include, collapse = " + "),
                                        '+',
-                                       paste0("Beta2_",covariates_to_include,'*',covariates_to_include, collapse = " + ")))
+                                       paste0("Beta2_",covariates_to_include,'*',covariates_to_include,"^2", collapse = " + ")))
   
   
   # model_formula_SC = as.formula(paste0('presence ~ log(1/exp(-exp(
@@ -442,7 +442,7 @@ for (sp_code in rev(species_summary$sp_code)){
   #                 spde_coarse +',
   #                                      paste0("Beta1_",covariates_to_include,'*',covariates_to_include, collapse = " + "),
   #                                      '+',
-  #                                      paste0("Beta2_",covariates_to_include,'*',covariates_to_include, collapse = " + "),"))-1)"))
+  #                                      paste0("Beta2_",covariates_to_include,'*',covariates_to_include,"^2", collapse = " + "),"))-1)"))
   # 
   
   model_formula_LT = as.formula(paste0('presence ~ log(1/exp(-exp(
@@ -454,7 +454,7 @@ for (sp_code in rev(species_summary$sp_code)){
                   range_effect * distance_from_range +',
                                        paste0("Beta1_",covariates_to_include,'*',covariates_to_include, collapse = " + "),
                                        '+',
-                                       paste0("Beta2_",covariates_to_include,'*',covariates_to_include, collapse = " + "),"))-1)"))
+                                       paste0("Beta2_",covariates_to_include,'*',covariates_to_include,"^2", collapse = " + "),"))-1)"))
   
   # ----------------------------------------------------------------------------
   # Fit model to point counts and ARUs with negative binomial error

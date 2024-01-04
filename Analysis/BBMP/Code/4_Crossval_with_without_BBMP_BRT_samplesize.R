@@ -1,3 +1,8 @@
+# ------------------------------------------------------------------
+# This script evaluates the relative value of BBMP and non-BBMP data,
+# while holding sample size constant
+# ------------------------------------------------------------------
+
 # ------------------------------------------------
 # Load/install packages and set graphical themes / working directory
 # ------------------------------------------------
@@ -79,20 +84,58 @@ CustomTheme <- theme_update(legend.key = element_rect(colour = NA),
 fit_brt <- function(model_data,
                     response_column = NA,
                     covariate_columns = NA){
-
-  mod_brt <- dismo::gbm.step(data = model_data,
-                             gbm.x = covariate_columns,
-                             gbm.y = response_column,
-                             offset = model_data$log_offset,
-                             family = "poisson",
-                             tree.complexity = 5,
-                             learning.rate = 0.25,
-                             n.trees = 50,
-                             n.folds = 5,
-                             max.trees = 5000)
+  mod_brt <- NULL
   
+  ntrees <- 50
+  tcomplexity <- 5
+  lrate <- 0.1
+  m <- 0
+  
+  while(is.null(mod_brt)){
+    
+    m <- m + 1
+    if(m < 11){
+      ntrees <- 50
+      lrate <- 0.1
+    } else if(m < 21){
+      lrate <- 0.05
+    } else if(m < 31){
+      ntrees <- 25
+      lrate <- 0.05
+    } else if(m < 41){
+      ntrees <- 25
+      lrate <- 0.025
+    } else if(m < 51){
+      ntrees <- 10
+      lrate <- 0.025
+    }
+    else{
+      break
+    }
+    
+    ptm <- proc.time()
+    if(inherits(try(
+      mod_brt <- dismo::gbm.step(data = model_data,
+                                 gbm.x = covariate_columns,
+                                 gbm.y = response_column,
+                                 offset = model_data$log_QPAD_offset,
+                                 family = "poisson",
+                                 tree.complexity = tcomplexity,
+                                 learning.rate = lrate,
+                                 n.trees = ntrees,
+                                 n.folds = 5,
+                                 max.trees = 10000)
+    ), "try-error")){
+      cat("Couldn't fit model", n, "in the iteration", m, "\n")
+    }
+    t <- proc.time() - ptm
+  }
+  if(is.null(mod_brt)){
+    next
+  }
   return(mod_brt)
 }
+
 
 # # -----------------------------------------------
 # # Useful functions
@@ -399,7 +442,7 @@ species_relabund[species_relabund>0] <- 1
 species_relabund <- apply(species_relabund,2,sum) %>% sort(decreasing = TRUE)
 
 results <- data.frame()
-results_path <- "../Output/Crossvalidation/Crossval_results_with_without_BBMP_BRT.rds"
+results_path <- "../Output/Crossvalidation/Crossval_results_with_without_BBMP_BRT_samplesize.rds"
 
 for (xval_fold in (1:5)){
   for (sp_code in (names(species_relabund)[1:20])){
@@ -444,23 +487,54 @@ for (xval_fold in (1:5)){
     # Separate Data types
     # ----------------------------------------------------
     
-    sp_dat <- na.omit(sp_dat)
     
-    validation_data <- subset(sp_dat, Crossval_Fold == xval_fold) %>% as.data.frame()
+    sp_dat$Date <- lubridate::ymd_hms(sp_dat$date)
+    sp_dat <- na.omit(sp_dat)
+    sp_dat <- subset(sp_dat,
+                     yday(Date) >= yday(ymd("2022-06-01")) &
+                     yday(Date) <= yday(ymd("2022-07-15")) &
+                     hour(Date) >= 5 &
+                     hour(Date) <= 12)
+    
+    validation_data <- subset(sp_dat, Crossval_Fold == xval_fold & (project == "BBMP" | organization %in% c("CWS-NOR","CWS-ONT","CWS-PRA","ECCC"))) %>% as.data.frame()
     training_data <- subset(sp_dat, Crossval_Fold != xval_fold) %>% as.data.frame()
     rm(sp_dat)
     
+    # ----------------------------------------------------
+    # Create two datasets:
+    # 1) 100% of data is from non-BBMP
+    # 2) 50% of data is from non-BBMP, and 50% is from BBMP
+    # Ensure sample size is the same
+    # ----------------------------------------------------
+    training_data$Obs_Index <- 1:nrow(training_data)
+    training_data_bam <-  subset(training_data, project != "BBMP" & organization %!in% c("CWS-NOR","CWS-ONT","CWS-PRA","ECCC"))
+    sample_size_bam <- nrow(training_data_bam)
+    
+    training_data_bbmp <-  subset(training_data, project == "BBMP" | organization %in% c("CWS-NOR","CWS-ONT","CWS-PRA","ECCC"))
+    
+    # create dataset with 50% bbmp and 50% non-bbmp data
+    training_data_5050 <- sample_n(training_data_bam,size=round(sample_size_bam/2)) %>%
+      bind_rows(sample_n(training_data_bbmp, size = round(sample_size_bam/2)))
+    
     covariates_to_include <- training_data %>% dplyr::select(duration:PC9) %>% colnames()
     
+    # par(mfrow=c(1,2))
+    # plot(x = training_data$lon, y = training_data$lat, pch = 19, cex = 0.1)
+    # points(x = training_data_bam$lon, y = training_data_bam$lat, pch = 19, cex = 0.1, col = "red")
+    # points(x = validation_data$lon, y = validation_data$lat, pch = 19, cex = 0.2, col = "green")
+    # 
+    # plot(x = training_data$lon, y = training_data$lat, pch = 19, cex = 0.1)
+    # points(x = training_data_bbmp$lon, y = training_data_bbmp$lat, pch = 19, cex = 0.1, col = "blue")
+    # points(x = validation_data$lon, y = validation_data$lat, pch = 19, cex = 0.2, col = "green")
+    # 
     # ----------------------------------------------------------------------------
     # Fit model to only non-bbmp data, assess cross-validation accuracy
     # ----------------------------------------------------------------------------
     start <- Sys.time()
     
-    fit_bam <-  fit_brt(model_data = subset(training_data,
-                                            project != "BBMP" & organization %!in% c("CWS-NOR","CWS-ONT","CWS-PRA","ECCC")),
-                        response_column = which(colnames(training_data)=="count"),
-                        covariate_columns = which(colnames(training_data)%in% covariates_to_include))
+    fit_bam <-  fit_brt(model_data = training_data_bam,
+                        response_column = which(colnames(training_data_bam)=="count"),
+                        covariate_columns = which(colnames(training_data_bam)%in% covariates_to_include))
     
     pred_bam  <- predict(fit_bam, 
                          validation_data, 
@@ -470,9 +544,9 @@ for (xval_fold in (1:5)){
     # Fit model to all data (including bbmp)
     # ----------------------------------------------------------------------------
     
-    fit_bbmp <-  fit_brt(model_data = training_data,
-                         response_column = which(colnames(training_data)=="count"),
-                         covariate_columns = which(colnames(training_data)%in% covariates_to_include))
+    fit_bbmp <-  fit_brt(model_data = training_data_5050,
+                         response_column = which(colnames(training_data_5050)=="count"),
+                         covariate_columns = which(colnames(training_data_5050)%in% covariates_to_include))
     
     pred_bbmp  <- predict(fit_bbmp, 
                           validation_data, 

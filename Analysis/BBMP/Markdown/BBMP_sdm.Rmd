@@ -153,7 +153,7 @@ survey_map <- ggplot() +
   geom_sf(data = BBMP_boundary, col = "transparent", fill = "forestgreen", alpha = 0.1)+
   geom_sf(data = subset(alldat, Data_Source != "BBMP"), aes(col = "Other"), size = 0.1)+
   geom_sf(data = subset(alldat, Data_Source == "BBMP"), aes(col = "BBMP"), size = 0.1)+
-
+  
   annotation_scale(style = "ticks")+
   scale_color_manual(values=c("black","gray70"), name = "Data Source")+
   theme(panel.background = element_rect(fill = desaturate("#bbfdfd", amount = 0.5),
@@ -367,7 +367,7 @@ for (xval_fold in (1:5)){
 
 library(INLA)
 library(inlabru)
-
+setwd('C:/Users/IlesD/OneDrive - EC-EC/Iles/Projects/Landbirds/Landbird-Distribution-Modeling-ECCC/Analysis/BBMP/')
 # ----------------------------------------------------------------
 # Prepare some preliminary objects for fitting models with INLA
 # ----------------------------------------------------------------
@@ -395,8 +395,8 @@ BBMP_boundary <- st_transform(BBMP_boundary,proj)
 mesh <- inla.mesh.2d(loc = as(alldat,'Spatial'), 
                      boundary = as(BBMP_boundary,'Spatial'), 
                      max.edge=c(100,200), 
-                      offset = c(100,200),
-                      cutoff = 50)
+                     offset = c(100,200),
+                     cutoff = 50)
 #plot(mesh)
 #points(alldat)
 
@@ -423,11 +423,11 @@ results <- data.frame()
 results_path <- "Output/Crossvalidation/Crossval_results_INLA.RDS"
 
 set.seed(999)
-species_to_model <- species_relabund[species_relabund>250] %>% sample(.,100) %>% sort(decreasing = TRUE)
+species_to_model <- species_relabund[species_relabund>250] %>% sample(.,100)
 
-for (xval_fold in (1:5)){
-  for (sp_code in (names(species_to_model)[1:10])){
-    
+
+for (sp_code in (names(species_to_model)[1:50])){
+  for (xval_fold in (1:5)){    
     if (file.exists(results_path)){
       results <- readRDS(results_path)
       if (nrow(results[which(results$sp_code == sp_code & results$Crossval_Fold == xval_fold),])>0) next
@@ -465,7 +465,7 @@ for (xval_fold in (1:5)){
     
     validation_data <- subset(sp_dat, Crossval_Fold == xval_fold) 
     training_data <- subset(sp_dat, Crossval_Fold != xval_fold) 
-
+    
     # ----------------------------------------------------
     # Prepare formulas and priors
     # ----------------------------------------------------
@@ -480,16 +480,16 @@ for (xval_fold in (1:5)){
     covariates_to_include <- paste0("PC",1:9)
     sd_linear <- 1   
     prec_linear <-  c(1/sd_linear^2,1/(sd_linear/2)^2)
-                                         
+    
     model_components = as.formula(paste0('~ Intercept(1)+ spde_coarse(main = geometry, model = matern_coarse) +',
                                          paste0("Beta1_",covariates_to_include,'(1,model="linear", mean.linear = 0, prec.linear = ', prec_linear[1],')', collapse = " + "),
-                                       '+',
-                                       paste0("Beta2_",covariates_to_include,'(1,model="linear", mean.linear = 0, prec.linear = ', prec_linear[2],')', collapse = " + ")))
+                                         '+',
+                                         paste0("Beta2_",covariates_to_include,'(1,model="linear", mean.linear = 0, prec.linear = ', prec_linear[2],')', collapse = " + ")))
     
     model_formula = as.formula(paste0('count ~ Intercept + spde_coarse + ',
-                                       paste0("Beta1_",covariates_to_include,'*',covariates_to_include, collapse = " + "),
-                                       '+',
-                                       paste0("Beta2_",covariates_to_include,'*',covariates_to_include,"^2", collapse = " + ")))
+                                      paste0("Beta1_",covariates_to_include,'*',covariates_to_include, collapse = " + "),
+                                      '+',
+                                      paste0("Beta2_",covariates_to_include,'*',covariates_to_include,"^2", collapse = " + ")))
     
     # ----------------------------------------------------------------------------
     # Fit model to only non-bbmp data, assess cross-validation accuracy
@@ -515,9 +515,9 @@ for (xval_fold in (1:5)){
     
     # Assess xval accuracy
     pred_without_BBMP  <- generate(fit_without_BBMP,
-                     validation_data,
-                     formula =  model_formula,
-                     n.samples = 1000)
+                                   validation_data,
+                                   formula =  model_formula,
+                                   n.samples = 1000)
     
     pred_without_BBMP <- exp(pred_without_BBMP) %>% apply(.,1,median) 
     
@@ -551,9 +551,9 @@ for (xval_fold in (1:5)){
     
     # Assess xval accuracy
     pred_alldat  <- generate(fit_alldat,
-                     validation_data,
-                     formula =  model_formula,
-                     n.samples = 1000)
+                             validation_data,
+                             formula =  model_formula,
+                             n.samples = 1000)
     
     pred_alldat <- exp(pred_alldat) %>% apply(.,1,median) 
     
@@ -595,12 +595,13 @@ for (xval_fold in (1:5)){
 
 ```
 
-```{r model-fits, echo = FALSE, results = 'hide', fig.width=10, fig.height=5, fig.cap = "Figure 2: Improvement in predictive performance after including BBMP data",fig.align = 'center'}
+```{r model-fits, echo = FALSE, results = 'hide', fig.width=10, fig.height=20, fig.cap = "Figure 2: Improvement in predictive performance after including BBMP data",fig.align = 'center'}
 
 results_path <- "Output/Crossvalidation/Crossval_results_INLA.RDS"
 results <- readRDS(results_path)
 
 results_summary <- results %>% 
+  #subset(Species %in% c("SORA") & fold == 1) %>%
   group_by(Species) %>% 
   summarize_all(mean) %>%
   arrange(mean_val)
@@ -614,7 +615,7 @@ label_df$text <- factor(label_df$text, levels = label_df$text)
 
 colors <- RColorBrewer::brewer.pal(4,name = "RdYlBu")
 
-comparison_plot2 <- ggplot(data = results_summary)+
+AUC_plot <- ggplot(data = results_summary)+
   
   geom_rect(aes(xmin=0, xmax=0.7, ymin=-Inf, ymax=Inf), fill = colors[1], alpha = 0.25)+
   geom_rect(aes(xmin=0.7, xmax=0.8, ymin=-Inf, ymax=Inf), fill = colors[2], alpha = 0.25)+
@@ -634,7 +635,22 @@ comparison_plot2 <- ggplot(data = results_summary)+
   ggtitle("Predictive performance with BBMP data")+
   xlab("AUC score\n\n(cross-validation)")
 
-print(comparison_plot2)
+print(AUC_plot)
+
+cor_plot <- ggplot(data = results_summary)+
+  
+  geom_point(aes(y = Species, x = cor_without_BBMP),size = 2,col = "black")+
+  
+  geom_segment(aes(y = Species, yend = Species, x = cor_without_BBMP, xend = cor_alldat),
+               size = 2,
+               arrow = arrow(length = unit(0.2, "cm")),
+               col = "black")+
+  
+  #coord_cartesian(xlim = c(0.5,1))+
+  ggtitle("Predictive performance with BBMP data")+
+  xlab("Cor\n\n(cross-validation)")
+
+print(cor_plot)
 ```
 
 

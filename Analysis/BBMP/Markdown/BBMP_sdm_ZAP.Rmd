@@ -94,6 +94,8 @@ The Boreal Bird Monitoring Program represents a collaborative effort between fed
 ```{r current-data, echo = FALSE, results = 'hide', cache=TRUE,fig.width=10, fig.height=5, fig.cap = "Figure 1: Data availability across Canada's boreal forest over the last 10 years",fig.align = 'center'}
 library(ggspatial)
 library(colorspace)
+setwd('C:/Users/IlesD/OneDrive - EC-EC/Iles/Projects/Landbirds/Landbird-Distribution-Modeling-ECCC/Analysis/BBMP/')
+
 # Note that data are pre-prepared by other scripts in the "code" folder:
 # 1_WildTrax_Download.R - reads in WildTrax data
 # 2_Compile_Data.R - Merges with BAM dataset and extracts covariates
@@ -153,7 +155,7 @@ survey_map <- ggplot() +
   geom_sf(data = BBMP_boundary, col = "transparent", fill = "forestgreen", alpha = 0.1)+
   geom_sf(data = subset(alldat, Data_Source != "BBMP"), aes(col = "Other"), size = 0.1)+
   geom_sf(data = subset(alldat, Data_Source == "BBMP"), aes(col = "BBMP"), size = 0.1)+
-
+  
   annotation_scale(style = "ticks")+
   scale_color_manual(values=c("black","gray70"), name = "Data Source")+
   theme(panel.background = element_rect(fill = desaturate("#bbfdfd", amount = 0.5),
@@ -178,192 +180,9 @@ survey_map
 
 ECCC's Boreal Bird Monitoring Program is yielding valuable new insights into the fundamental properties of Canada's bird populations.
 
-```{r fit-BRTs, eval = FALSE, echo = FALSE, results = 'hide', cache=TRUE}
-
-library(dismo)
-library(gbm)
-
-# This code snippet fits species distribution models to data, and conducts cross-validation to assess predictive accuracy with/without BBMP data
-
-# ----------------------------------------------------------------
-# Function to fit BRT
-# ----------------------------------------------------------------
-
-fit_brt <- function(model_data,
-                    response_column = NA,
-                    covariate_columns = NA){
-  mod_brt <- NULL
-  
-  ntrees <- 50
-  tcomplexity <- 5
-  lrate <- 0.25
-  m <- 0
-  
-  while(is.null(mod_brt)){
-    
-    m <- m + 1
-    if(m > 2){
-      ntrees <- 50
-      lrate <- 0.1
-    } else if(m > 4){
-      lrate <- 0.05
-    } else if(m > 6){
-      ntrees <- 25
-      lrate <- 0.05
-    } else if(m > 8){
-      ntrees <- 25
-      lrate <- 0.025
-    } else if(m > 10){
-      ntrees <- 10
-      lrate <- 0.025
-    }
-    else{
-      break
-    }
-    
-    ptm <- proc.time()
-    if(inherits(try(
-      mod_brt <- dismo::gbm.step(data = model_data,
-                                 gbm.x = covariate_columns,
-                                 gbm.y = response_column,
-                                 family = "poisson",
-                                 learning.rate = lrate,
-                                 n.trees = ntrees)
-    ), "try-error")){
-      cat("Couldn't fit model", n, "in the iteration", m, "\n")
-    }
-    t <- proc.time() - ptm
-  }
-  if(is.null(mod_brt)){
-    next
-  }
-  return(mod_brt)
-}
-
-# ----------------------------------------------------------------
-# Conduct cross-validation
-# ----------------------------------------------------------------
-
-# Relative abundances of each species
-species_relabund <- allcounts 
-species_relabund[species_relabund>0] <- 1
-species_relabund <- apply(species_relabund,2,sum) %>% sort(decreasing = TRUE)
-
-results <- data.frame()
-results_path <- "Output/Crossvalidation/Crossval_results_BRT.RDS"
-
-for (xval_fold in (1:5)){
-  for (sp_code in (names(species_relabund)[1:20])){
-    
-    if (file.exists(results_path)){
-      results <- readRDS(results_path)
-      if (nrow(results[which(results$sp_code == sp_code & results$Crossval_Fold == xval_fold),])>0) next
-    }
-    
-    print(paste0(sp_code," fold ", xval_fold))
-    if (nrow(results)>0){
-      if (nrow(subset(results,Species == sp_code & fold == xval_fold))>0) next
-    }
-    
-    # ----------------------------------------------------
-    # Select appropriate data
-    # ----------------------------------------------------
-    
-    # Prepare data for this species
-    sp_dat <- alldat %>%
-      mutate(count = allcounts[,sp_code]) %>%
-      mutate(presence = as.numeric(count>0)) %>%
-      subset(duration >=1 & duration <= 10)
-    
-    sp_dat$Date <- lubridate::ymd_hms(sp_dat$date)
-    sp_dat <- na.omit(sp_dat)
-    sp_dat <- subset(sp_dat,
-                     yday(Date) >= yday(ymd("2022-06-01")) &
-                       yday(Date) <= yday(ymd("2022-07-15")) &
-                       hour(Date) >= 5 &
-                       hour(Date) <= 12)
-    
-    sp_dat <- na.omit(sp_dat)
-    sp_dat <- sp_dat %>% dplyr::select(-Obs_Index)
-    
-    # ----------------------------------------------------
-    # Separate training and validation data for this crossval fold
-    # ----------------------------------------------------
-    
-    validation_data <- subset(sp_dat, Crossval_Fold == xval_fold) %>% as.data.frame()
-    training_data <- subset(sp_dat, Crossval_Fold != xval_fold) %>% as.data.frame()
-    rm(sp_dat)
-    
-    covariates_to_include <- training_data %>% dplyr::select(duration:PC9) %>% colnames()
-    
-    # ----------------------------------------------------------------------------
-    # Fit model to only non-bbmp data, assess cross-validation accuracy
-    # ----------------------------------------------------------------------------
-    
-    # Fit model
-    fit_without_BBMP <-  fit_brt(model_data = subset(training_data,Data_Source != "BBMP"),
-                                 response_column = which(colnames(training_data)=="count"),
-                                 covariate_columns = which(colnames(training_data)%in% covariates_to_include))
-    
-    # Assess xval accuracy
-    pred_without_BBMP  <- predict(fit_without_BBMP, 
-                                  validation_data, 
-                                  n.trees = fit_without_BBMP$gbm.call$best.trees, type = "response")
-    
-    
-    AUC_without_BBMP <- pROC::auc(response = validation_data$presence, predictor = 1-exp(-pred_without_BBMP))
-    cor_without_BBMP <- cor(validation_data$count, pred_without_BBMP)
-    deviance_without_BBMP <- dismo::calc.deviance(obs=validation_data$count, pred=pred_without_BBMP, calc.mean = FALSE, family = "poisson")
-    
-    # ----------------------------------------------------------------------------
-    # Fit model to all data (including bbmp)
-    # ----------------------------------------------------------------------------
-    
-    # Fit model
-    fit_with_BBMP <-  fit_brt(model_data = training_data,
-                              response_column = which(colnames(training_data)=="count"),
-                              covariate_columns = which(colnames(training_data) %in% covariates_to_include))
-    
-    # Assess xval accuracy
-    pred_with_BBMP  <- predict(fit_with_BBMP, 
-                               validation_data, 
-                               n.trees = fit_with_BBMP$gbm.call$best.trees, type = "response")
-    
-    AUC_with_BBMP <- pROC::auc(response = validation_data$presence, predictor = 1-exp(-pred_with_BBMP))
-    cor_with_BBMP <- cor(validation_data$count, pred_with_BBMP)
-    deviance_with_BBMP <- dismo::calc.deviance(obs=validation_data$count, pred=pred_with_BBMP, calc.mean = FALSE, family = "poisson")
-    
-    # ----------------------------------------------------------------------------
-    # Evaluate cross-validation accuracy
-    # ----------------------------------------------------------------------------
-    
-    sp_results <- data.frame(Species = sp_code,
-                             fold = xval_fold,
-                             mean_val = mean(validation_data$count),
-                             p_val = mean(validation_data$presence),
-                             
-                             # Ability to predict presences and absences
-                             AUC_without_BBMP = AUC_without_BBMP,
-                             AUC_with_BBMP = AUC_with_BBMP,
-                             
-                             # Ability to predict counts
-                             deviance_without_BBMP = deviance_without_BBMP,
-                             deviance_with_BBMP = deviance_with_BBMP,
-                             cor_without_BBMP = cor_without_BBMP,
-                             cor_with_BBMP = cor_with_BBMP)
-    
-    if (file.exists(results_path)) results <- readRDS(results_path)
-    
-    results <- rbind(results, sp_results)
-    
-    saveRDS(results,results_path)
-    
-  }
-}
-
-```
 
 ```{r fit-INLA, eval = FALSE, echo = FALSE, results = 'hide', cache=TRUE}
+setwd('C:/Users/IlesD/OneDrive - EC-EC/Iles/Projects/Landbirds/Landbird-Distribution-Modeling-ECCC/Analysis/BBMP/')
 
 library(INLA)
 library(inlabru)
@@ -395,8 +214,8 @@ BBMP_boundary <- st_transform(BBMP_boundary,proj)
 mesh <- inla.mesh.2d(loc = as(alldat,'Spatial'), 
                      boundary = as(BBMP_boundary,'Spatial'), 
                      max.edge=c(100,200), 
-                      offset = c(100,200),
-                      cutoff = 50)
+                     offset = c(100,200),
+                     cutoff = 50)
 #plot(mesh)
 #points(alldat)
 
@@ -420,13 +239,13 @@ species_relabund[species_relabund>0] <- 1
 species_relabund <- apply(species_relabund,2,sum) %>% sort(decreasing = TRUE)
 
 results <- data.frame()
-results_path <- "Output/Crossvalidation/Crossval_results_INLA.RDS"
+results_path <- "Output/Crossvalidation/Crossval_results_INLA_ZAP.RDS"
 
 set.seed(999)
-species_to_model <- species_relabund[species_relabund>250] %>% sample(.,100) %>% sort(decreasing = TRUE)
+species_to_model <- species_relabund[species_relabund>250] %>% sample(.,100)
 
-for (xval_fold in (1:5)){
-  for (sp_code in (names(species_to_model))){
+for (sp_code in (names(species_to_model))[1:50]){
+  for (xval_fold in (1:5)){
     
     if (file.exists(results_path)){
       results <- readRDS(results_path)
@@ -465,7 +284,7 @@ for (xval_fold in (1:5)){
     
     validation_data <- subset(sp_dat, Crossval_Fold == xval_fold) 
     training_data <- subset(sp_dat, Crossval_Fold != xval_fold) 
-
+    
     # ----------------------------------------------------
     # Prepare formulas and priors
     # ----------------------------------------------------
@@ -480,20 +299,38 @@ for (xval_fold in (1:5)){
     covariates_to_include <- paste0("PC",1:9)
     sd_linear <- 1   
     prec_linear <-  c(1/sd_linear^2,1/(sd_linear/2)^2)
-                                         
-    model_components = as.formula(paste0('~ Intercept(1)+ spde_coarse(main = geometry, model = matern_coarse) +',
-                                         paste0("Beta1_",covariates_to_include,'(1,model="linear", mean.linear = 0, prec.linear = ', prec_linear[1],')', collapse = " + "),
-                                       '+',
-                                       paste0("Beta2_",covariates_to_include,'(1,model="linear", mean.linear = 0, prec.linear = ', prec_linear[2],')', collapse = " + ")))
     
-    model_formula = as.formula(paste0('count ~ Intercept + spde_coarse + ',
-                                       paste0("Beta1_",covariates_to_include,'*',covariates_to_include, collapse = " + "),
-                                       '+',
-                                       paste0("Beta2_",covariates_to_include,'*',covariates_to_include,"^2", collapse = " + ")))
+    # ----------------------------------------------------
+    # Prepare to fit ZAP model
+    # Adapted from vignette at https://inlabru-org.github.io/inlabru/articles/zip_zap_models.html
+    # ----------------------------------------------------
+    
+    model_components <- as.formula(paste0('~ Intercept_presence(1) +spde_presence(main = geometry, model = matern_coarse) +',paste0("Beta_presence_",covariates_to_include,'(',covariates_to_include,',model="linear", mean.linear = 0, prec.linear = ', prec_linear[1],')', collapse = " + "),'+','Intercept_count(1) + spde_count(main = geometry, model = matern_coarse) +',paste0("Beta_count_",covariates_to_include,'(',covariates_to_include,',model="linear", mean.linear = 0, prec.linear = ', prec_linear[1],')', collapse = " + ")))
+    
     
     # ----------------------------------------------------------------------------
     # Fit model to only non-bbmp data, assess cross-validation accuracy
     # ----------------------------------------------------------------------------
+    
+    truncated_poisson_like <-
+      if (package_version(getNamespaceVersion("INLA")) < "2023.10.19-1") {
+        like(
+          family = "zeroinflatedpoisson0",
+          data = subset(training_data, Data_Source != "BBMP" & count > 0),
+          formula = as.formula(paste0('count ~ Intercept_count + spde_count + ',
+                                      paste0("Beta_count_",covariates_to_include, collapse = " + "))),
+          control.family = list(hyper = list(theta = list(
+            initial = -20, fixed = TRUE
+          )))
+        )
+      } else {
+        like(
+          family = "nzpoisson",
+          data = subset(training_data, Data_Source != "BBMP" & count > 0),
+          formula = as.formula(paste0('count ~ Intercept_count + spde_count + ',
+                                      paste0("Beta_count_",covariates_to_include, collapse = " + "))),
+        )
+      }
     
     fit_without_BBMP <- NULL
     while(is.null(fit_without_BBMP)){
@@ -501,9 +338,11 @@ for (xval_fold in (1:5)){
       fit_model <- function(){
         tryCatch(expr = {bru(components = model_components,
                              
-                             like(family = "nbinomial",
-                                  formula = model_formula,
+                             like(family = "binomial",
+                                  formula = as.formula(paste0('presence ~ Intercept_presence + spde_presence + ',
+                                                              paste0("Beta_presence_",covariates_to_include, collapse = " + "))),
                                   data = subset(training_data, Data_Source != "BBMP")),
+                             truncated_poisson_like,
                              options = list(control.compute = list(waic = FALSE, cpo = FALSE),
                                             bru_verbose = 4))},
                  error = function(e){NULL})
@@ -514,22 +353,54 @@ for (xval_fold in (1:5)){
     }
     
     # Assess xval accuracy
-    pred_without_BBMP  <- generate(fit_without_BBMP,
-                     validation_data,
-                     formula =  model_formula,
-                     n.samples = 1000)
+    pred_without_BBMP <- predict(
+      fit_without_BBMP,
+      validation_data,
+      ~ {
+        presence_prob <-plogis( Intercept_presence + spde_presence + Beta_presence_PC1 + Beta_presence_PC2 + Beta_presence_PC3 + Beta_presence_PC4 + Beta_presence_PC5 + Beta_presence_PC6 + Beta_presence_PC7 + Beta_presence_PC8 + Beta_presence_PC9)
+        
+        lambda <- exp(Intercept_count + spde_count + Beta_count_PC1 + Beta_count_PC2 + Beta_count_PC3 + Beta_count_PC4 + Beta_count_PC5 + Beta_count_PC6 + Beta_count_PC7 + Beta_count_PC8 + Beta_count_PC9)
+        expect <- presence_prob * lambda / (1 - exp(-lambda))
+        #variance <- expect * (1 - exp(-lambda) * expect)
+        list(
+          presence = presence_prob,
+          lambda = lambda,
+          expect = expect,
+          #variance = variance,
+          obs_prob = (1 - presence_prob) * (count == 0) +
+            (count > 0) * presence_prob * dpois(count, expect) / (1 - dpois(0, expect))
+        )
+      },
+      n.samples = 1000
+    )
     
-    pred_without_BBMP <- exp(pred_without_BBMP) %>% apply(.,1,median) 
-    
-    size_without_BBMP <- fit_without_BBMP$summary.hyperpar$'0.5quant'[1] # parameter of negative binomial
-    prob_zero_without_BBMP <- dnbinom(0,mu=pred_without_BBMP,size=size_without_BBMP)
-    AUC_without_BBMP <- pROC::auc(response = validation_data$presence, predictor = 1-prob_zero_without_BBMP) # 0.56
-    cor_without_BBMP <- cor(validation_data$count, pred_without_BBMP)
-    deviance_without_BBMP <- dismo::calc.deviance(obs=validation_data$count, pred=pred_without_BBMP, calc.mean = FALSE, family = "poisson")
+    AUC_without_BBMP <- pROC::auc(response = validation_data$presence, predictor = pred_without_BBMP$presence$mean)
+    cor_without_BBMP <- cor(validation_data$count, pred_without_BBMP$expect$mean)
+    deviance_without_BBMP <- dismo::calc.deviance(obs=validation_data$count, pred=pred_without_BBMP$expect$mean, calc.mean = FALSE, family = "poisson")
     
     # ----------------------------------------------------------------------------
     # Fit model to all data (including BBMP)
     # ----------------------------------------------------------------------------
+    
+    truncated_poisson_like <-
+      if (package_version(getNamespaceVersion("INLA")) < "2023.10.19-1") {
+        like(
+          family = "zeroinflatedpoisson0",
+          data = subset(training_data, count > 0),
+          formula = as.formula(paste0('count ~ Intercept_count + spde_count + ',
+                                      paste0("Beta_count_",covariates_to_include, collapse = " + "))),
+          control.family = list(hyper = list(theta = list(
+            initial = -20, fixed = TRUE
+          )))
+        )
+      } else {
+        like(
+          family = "nzpoisson",
+          data = subset(training_data, count > 0),
+          formula = as.formula(paste0('count ~ Intercept_count + spde_count + ',
+                                      paste0("Beta_count_",covariates_to_include, collapse = " + "))),
+        )
+      }
     
     fit_alldat <- NULL
     while(is.null(fit_alldat)){
@@ -537,9 +408,11 @@ for (xval_fold in (1:5)){
       fit_model <- function(){
         tryCatch(expr = {bru(components = model_components,
                              
-                             like(family = "nbinomial",
-                                  formula = model_formula,
+                             like(family = "binomial",
+                                  formula = as.formula(paste0('presence ~ Intercept_presence + spde_presence + ',
+                                                              paste0("Beta_presence_",covariates_to_include, collapse = " + "))),
                                   data = training_data),
+                             truncated_poisson_like,
                              options = list(control.compute = list(waic = FALSE, cpo = FALSE),
                                             bru_verbose = 4))},
                  error = function(e){NULL})
@@ -550,18 +423,30 @@ for (xval_fold in (1:5)){
     }
     
     # Assess xval accuracy
-    pred_alldat  <- generate(fit_alldat,
-                     validation_data,
-                     formula =  model_formula,
-                     n.samples = 1000)
+    pred_alldat <- predict(
+      fit_alldat,
+      validation_data,
+      ~ {
+        presence_prob <-plogis( Intercept_presence + spde_presence + Beta_presence_PC1 + Beta_presence_PC2 + Beta_presence_PC3 + Beta_presence_PC4 + Beta_presence_PC5 + Beta_presence_PC6 + Beta_presence_PC7 + Beta_presence_PC8 + Beta_presence_PC9)
+        
+        lambda <- exp(Intercept_count + spde_count + Beta_count_PC1 + Beta_count_PC2 + Beta_count_PC3 + Beta_count_PC4 + Beta_count_PC5 + Beta_count_PC6 + Beta_count_PC7 + Beta_count_PC8 + Beta_count_PC9)
+        expect <- presence_prob * lambda / (1 - exp(-lambda))
+        #variance <- expect * (1 - exp(-lambda) * expect)
+        list(
+          presence = presence_prob,
+          lambda = lambda,
+          expect = expect,
+          #variance = variance,
+          obs_prob = (1 - presence_prob) * (count == 0) +
+            (count > 0) * presence_prob * dpois(count, expect) / (1 - dpois(0, expect))
+        )
+      },
+      n.samples = 1000
+    )
     
-    pred_alldat <- exp(pred_alldat) %>% apply(.,1,median) 
-    
-    size_alldat <- fit_alldat$summary.hyperpar$'0.5quant'[1] # parameter of negative binomial
-    prob_zero_alldat <- dnbinom(0,mu=pred_alldat,size=size_alldat)
-    AUC_alldat <- pROC::auc(response = validation_data$presence, predictor = 1-prob_zero_alldat)
-    cor_alldat <- cor(validation_data$count, pred_alldat)
-    deviance_alldat <- dismo::calc.deviance(obs=validation_data$count, pred=pred_alldat, calc.mean = FALSE, family = "poisson")
+    AUC_alldat <- pROC::auc(response = validation_data$presence, predictor = pred_alldat$presence$mean)
+    cor_alldat <- cor(validation_data$count, pred_alldat$expect$mean)
+    deviance_alldat <- dismo::calc.deviance(obs=validation_data$count, pred=pred_alldat$expect$mean, calc.mean = FALSE, family = "poisson")
     
     # ----------------------------------------------------------------------------
     # Evaluate cross-validation accuracy
@@ -597,7 +482,7 @@ for (xval_fold in (1:5)){
 
 ```{r model-fits, echo = FALSE, results = 'hide', fig.width=10, fig.height=5, fig.cap = "Figure 2: Improvement in predictive performance after including BBMP data",fig.align = 'center'}
 
-results_path <- "Output/Crossvalidation/Crossval_results_INLA.RDS"
+results_path <- "Output/Crossvalidation/Crossval_results_INLA_ZAP.RDS"
 results <- readRDS(results_path)
 
 results_summary <- results %>% 

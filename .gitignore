@@ -5,6 +5,7 @@
 *.RDS
 *.png
 *.csv
+Presentations/
 Data/
 text_documents/
 archive_code/

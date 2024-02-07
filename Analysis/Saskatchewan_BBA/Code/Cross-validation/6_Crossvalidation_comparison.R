@@ -16,7 +16,7 @@ results_C <- readRDS("Output/Crossvalidation/Crossval_results_integrated_PC_SC_f
   dplyr::rename(pred_C = mean_count_val_pred, lppd_C = lppd, AUC_C = AUC, RMSE_C = RMSE)
 
 results <- full_join(results_A,results_B) %>%
-  #full_join(results_C) %>%
+  full_join(results_C) %>%
   na.omit() %>%
   group_by(sp_code) %>%
   summarize_all(mean)

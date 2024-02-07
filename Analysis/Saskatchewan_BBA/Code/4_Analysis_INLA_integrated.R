@@ -274,7 +274,6 @@ head(species_summary)
 # ******************************************************************
 # Loop through species, fit models, generate maps
 # ******************************************************************
-
 species_summary <- species_summary %>% subset(`PC/ARU` >=20)
 
 for (sp_code in rev(species_summary$sp_code)){
@@ -437,8 +436,8 @@ for (sp_code in rev(species_summary$sp_code)){
   SC_effort_meshpoints <- seq(min(SC_dat$total_effort)-1,max(SC_dat$total_effort)+1,length.out = 11)
   SC_effort_mesh1D = inla.mesh.1d(SC_effort_meshpoints,boundary="free")
   SC_effort_spde = inla.spde2.pcmatern(SC_effort_mesh1D,
-                                       prior.range = c(30,0.1),
-                                       prior.sigma = c(1,0.5))
+                                       prior.range = c(10,0.1),
+                                       prior.sigma = c(0.5,0.1))
   
   # ***************************************************************
   # Model formulas
@@ -452,9 +451,6 @@ for (sp_code in rev(species_summary$sp_code)){
   sd_linear <- 0.1  # Change to smaller value (e.g., 0.1), if you want to heavily shrink covariate effects and potentially create smoother surfaces
   prec_linear <-  c(1/sd_linear^2,1/(sd_linear/2)^2)
   
-  #Intercept_SC(1)+
-  #  SC_effort(main = total_effort,model = SC_effort_spde) +
-    
   model_components = as.formula(paste0('~
             Intercept_PC(1)+
             range_effect(1,model="linear", mean.linear = -0.046, prec.linear = 10000)+
@@ -464,6 +460,9 @@ for (sp_code in rev(species_summary$sp_code)){
             LT_duration(main = Survey_Duration_Minutes,model = LT_duration_spde) +
             LT_distance(main = Travel_Distance_Metres,model = LT_distance_spde) +
             
+            Intercept_SC(1)+
+            SC_effort(main = total_effort,model = SC_effort_spde) +
+    
             spde_coarse(main = coordinates, model = matern_coarse) +',
                                        paste0("Beta1_",covariates_to_include,'(1,model="linear", mean.linear = 0, prec.linear = ', prec_linear[1],')', collapse = " + "),
                                        '+',
@@ -521,7 +520,6 @@ for (sp_code in rev(species_summary$sp_code)){
                             like(family = "binomial",
                                    formula = model_formula_SC,
                                    data = SC_dat),
-                           
                            
                            options = list(bru_initial = list(lsig = 2,
                                                              Intercept_PC = -10,
@@ -592,15 +590,14 @@ for (sp_code in rev(species_summary$sp_code)){
   SaskGrid_species$pred_q95 <- prediction_quantiles[3,]
   SaskGrid_species$pred_CI_width_90 <- prediction_quantiles[3,] - prediction_quantiles[1,]
   
-  # Probability of observing species
+  # Probability of observing species after conducting 15 point counts
   size <- fit_INLA$summary.hyperpar$'0.5quant'[1] # parameter of negative binomial
   prob_zero_PC <- dnbinom(0,mu=prediction_quantiles[2,],size=size)
   SaskGrid_species$pObs_5min <- 1-prob_zero_PC
   
-  # Upper/lower 90% credible intervals on PObs
+  # 90% credible interval on PObs
   SaskGrid_species$pObs_5min_q05 <- 1-dnbinom(0,mu=prediction_quantiles[1,],size=size)
   SaskGrid_species$pObs_5min_q95 <- 1-dnbinom(0,mu=prediction_quantiles[3,],size=size)
-  
   
   # Convert to CRS of target raster
   SaskGrid_species <- SaskGrid_species %>% st_transform(st_crs(target_raster))
@@ -684,14 +681,13 @@ for (sp_code in rev(species_summary$sp_code)){
     #geom_sf(data = range,colour="darkred",fill=NA,show.legend = F) +
     
     # Surveyed squares
-    geom_sf(data = subset(SaskSquares_centroids, !is.na(PC_detected) | !is.na(CL_detected)), col = "gray70", pch = 19, size = 0.1)+
+    #geom_sf(data = subset(SaskSquares_centroids, !is.na(PC_detected) | !is.na(CL_detected)), col = "gray70", pch = 19, size = 0.1)+
     
     # Point count detections
-    geom_sf(data = subset(SaskSquares_centroids, !is.na(PC_detected) & PC_detected > 0), col = "black", pch = 19, size = 0.2)+
+    #geom_sf(data = subset(SaskSquares_centroids, !is.na(PC_detected) & PC_detected > 0), col = "black", pch = 19, size = 0.2)+
     
     # Checklist detections
-    geom_sf(data = subset(SaskSquares_species, !is.na(CL_detected) & CL_detected > 0), col = "black", size = 0.2, fill = "transparent")+
-    
+    #geom_sf(data = subset(SaskSquares_species, !is.na(CL_detected) & CL_detected > 0), col = "black", size = 0.2, fill = "transparent")+
     
     coord_sf(clip = "off",xlim = range(as.data.frame(st_coordinates(SaskBoundary))$X))+
     theme(panel.background = element_blank(),
@@ -722,7 +718,7 @@ for (sp_code in rev(species_summary$sp_code)){
   colpal_uncertainty <- colorRampPalette(colscale_uncertainty)
   
   lower_bound <- 0.15
-  upper_bound <- quantile(SaskGrid_species$pred_CI_width_90,0.99,na.rm = TRUE) %>% signif(2)
+  upper_bound <- 5#quantile(SaskGrid_species$pred_CI_width_90,0.99,na.rm = TRUE) %>% signif(2)
   if (lower_bound >= (upper_bound/5)) lower_bound <- (upper_bound/5) %>% signif(2)
   
   raster_CI_width_90 <- cut.fn(df = SaskGrid_species,
@@ -744,13 +740,13 @@ for (sp_code in rev(species_summary$sp_code)){
     #geom_sf(data = range,colour="darkred",fill=NA,show.legend = F) +
     
     # Surveyed squares
-    geom_sf(data = subset(SaskSquares_centroids, !is.na(PC_detected) | !is.na(CL_detected)), col = "gray70", pch = 19, size = 0.1)+
+    #geom_sf(data = subset(SaskSquares_centroids, !is.na(PC_detected) | !is.na(CL_detected)), col = "gray70", pch = 19, size = 0.1)+
     
     # Point count detections
-    geom_sf(data = subset(SaskSquares_centroids, !is.na(PC_detected) & PC_detected > 0), col = "black", pch = 19, size = 0.2)+
+    #geom_sf(data = subset(SaskSquares_centroids, !is.na(PC_detected) & PC_detected > 0), col = "black", pch = 19, size = 0.2)+
     
     # Checklist detections
-    geom_sf(data = subset(SaskSquares_centroids, !is.na(CL_detected) & CL_detected > 0), col = "black", pch = 4, size = 0.2)+
+    #geom_sf(data = subset(SaskSquares_centroids, !is.na(CL_detected) & CL_detected > 0), col = "black", pch = 4, size = 0.2)+
     
     coord_sf(clip = "off",xlim = range(as.data.frame(st_coordinates(SaskBoundary))$X))+
     theme(panel.background = element_blank(),panel.grid.major = element_blank(), panel.grid.minor = element_blank())+
@@ -793,20 +789,20 @@ for (sp_code in rev(species_summary$sp_code)){
                       values = colpal_pObs(length(levels(raster_pObs$pObs_levs))), 
                       drop=FALSE,na.translate=FALSE)+
     
-    #geom_sf(data = SaskWater,colour=NA,fill="#59F3F3",show.legend = F)+
+    geom_sf(data = SaskWater,colour=NA,fill="#59F3F3",show.legend = F)+
     
     geom_sf(data = SaskBoundary,colour="black",fill=NA,lwd=0.3,show.legend = F) +
     
     #geom_sf(data = range,colour="darkred",fill=NA,show.legend = F) +
     
     # Surveyed squares
-    geom_sf(data = subset(SaskSquares_centroids, !is.na(PC_detected) | !is.na(CL_detected)), col = "gray70", pch = 19, size = 0.1)+
+    #geom_sf(data = subset(SaskSquares_centroids, !is.na(PC_detected) | !is.na(CL_detected)), col = "gray70", pch = 19, size = 0.1)+
     
     # Point count detections
-    geom_sf(data = subset(SaskSquares_centroids, !is.na(PC_detected) & PC_detected > 0), col = "black", pch = 19, size = 0.2)+
+    #geom_sf(data = subset(SaskSquares_centroids, !is.na(PC_detected) & PC_detected > 0), col = "black", pch = 19, size = 0.2)+
     
     # Checklist detections
-    geom_sf(data = subset(SaskSquares_centroids, !is.na(CL_detected) & CL_detected > 0), col = "black", pch = 4, size = 0.2)+
+    #geom_sf(data = subset(SaskSquares_centroids, !is.na(CL_detected) & CL_detected > 0), col = "black", pch = 4, size = 0.2)+
     
     coord_sf(clip = "off",xlim = range(as.data.frame(st_coordinates(SaskBoundary))$X))+
     theme(panel.background = element_blank(),
@@ -826,6 +822,83 @@ for (sp_code in rev(species_summary$sp_code)){
   print(plot_pObs)
   dev.off()
 
+  # ****************************************************************************
+  # BONUS FIGURE: PObs based on stationary count checklists
+  # ****************************************************************************
+
+  # Mean effort per square (could instead use 1,10,100 or whatever other number is relevant)
+  SaskGrid_species$total_effort <- mean(SC_dat$total_effort)
+  
+  pred_formula_SC = as.formula(paste0(' ~
+                  Intercept_SC +
+                  SC_effort +
+                  range_effect * distance_from_range +
+                  spde_coarse +',
+                                      paste0("Beta1_",covariates_to_include,'*',covariates_to_include, collapse = " + "),
+                                      '+',
+                                      paste0("Beta2_",covariates_to_include,'*',covariates_to_include, collapse = " + ")))
+  
+  # Note that predictions are initially on log scale
+  pred_SC <- NULL
+  pred_SC <- generate(fit_INLA,
+                   as(SaskGrid_species,'Spatial'),
+                   formula =  pred_formula_SC,
+                   n.samples = 1000)
+  
+  pred_SC <- exp(pred_SC)
+  
+  prediction_quantiles_SC = apply(pred_SC,1,function(x) quantile(x,c(0.05,0.5,0.95),na.rm = TRUE))
+  
+  # Median, upper,and lower 90% credible intervals on PObs
+  SaskGrid_species$pObs_SC <- 1-dpois(0,lambda=prediction_quantiles_SC[2,])
+  SaskGrid_species$pObs_SC_q05 <- 1-dpois(0,lambda=prediction_quantiles_SC[1,])
+  SaskGrid_species$pObs_SC_q95 <- 1-dpois(0,lambda=prediction_quantiles_SC[3,])
+  
+  SaskGrid_species$pObs_SC_levs <- cut(as.data.frame(SaskGrid_species)[,"pObs_SC"], 
+                                    cut_levs,labels=cut_levs_labs)
+  
+  raster_pObs_SC = stars::st_rasterize(SaskGrid_species %>% dplyr::select(pObs_SC_levs, geometry))
+  
+  plot_pObs_SC <- ggplot() +
+    
+    geom_stars(data = raster_pObs_SC) +
+    scale_fill_manual(name = "<span style='font-size:13pt'>Prob. of Observation</span><br><span style='font-size:7pt'> Based on stationary checklists </span><br><span style='font-size:7pt'>(Posterior Median)</span>",
+                      values = colpal_pObs(length(levels(raster_pObs_SC$pObs_SC_levs))), 
+                      drop=FALSE,na.translate=FALSE)+
+    
+    geom_sf(data = SaskWater,colour=NA,fill="#59F3F3",show.legend = F)+
+    
+    geom_sf(data = SaskBoundary,colour="black",fill=NA,lwd=0.3,show.legend = F) +
+    
+    #geom_sf(data = range,colour="darkred",fill=NA,show.legend = F) +
+    
+    # Surveyed squares
+    #geom_sf(data = subset(SaskSquares_centroids, !is.na(PC_detected) | !is.na(CL_detected)), col = "gray70", pch = 19, size = 0.1)+
+    
+    # Point count detections
+    #geom_sf(data = subset(SaskSquares_centroids, !is.na(PC_detected) & PC_detected > 0), col = "black", pch = 19, size = 0.2)+
+    
+    # Checklist detections
+    #geom_sf(data = subset(SaskSquares_centroids, !is.na(CL_detected) & CL_detected > 0), col = "black", pch = 4, size = 0.2)+
+    
+    coord_sf(clip = "off",xlim = range(as.data.frame(st_coordinates(SaskBoundary))$X))+
+    theme(panel.background = element_blank(),
+          panel.grid.major = element_blank(), 
+          panel.grid.minor = element_blank())+
+    theme(axis.title.x=element_blank(), axis.text.x=element_blank(), axis.ticks.x=element_blank())+
+    theme(axis.title.y=element_blank(), axis.text.y=element_blank(), axis.ticks.y=element_blank())+
+    theme(plot.margin = unit(c(0, 0, 0, 0), "cm"))+
+    theme(legend.margin=margin(0,0,0,0),
+          legend.box.margin=margin(5,10,5,-20),
+          legend.title.align=0.5,
+          legend.title = element_markdown(lineheight=.9,hjust = "left"))+
+    annotate(geom="text",x=346000,y=1850000, label= paste0(species_label),lineheight = .85,hjust = 0,size=6,fontface =2) +
+    annotate(geom="text",x=346000,y=1400000, label= paste0("Prepared on ",Sys.Date()),size=3,lineheight = .75,hjust = 0,color="#3b3b3b")
+  
+  png(paste0("../Output/Prediction_Maps/PObs/",sp_code,"_PObs_SC.png"), width=6.5, height=8, units="in", res=300, type="cairo")
+  print(plot_pObs_SC)
+  dev.off()
+  
 } # close species loop
 
 

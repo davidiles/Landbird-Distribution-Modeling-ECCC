@@ -518,9 +518,9 @@ for (sp_code in rev(species_summary$sp_code)){
                                 formula = model_formula_LT,
                                 data = LT_dat),
                            
-                            # like(family = "binomial",
-                            #       formula = model_formula_SC,
-                            #       data = SC_dat),
+                            like(family = "binomial",
+                                   formula = model_formula_SC,
+                                   data = SC_dat),
                            
                            
                            options = list(bru_initial = list(lsig = 2,

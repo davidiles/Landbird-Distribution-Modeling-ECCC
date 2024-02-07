@@ -689,22 +689,15 @@ for (sp_code in rev(species_summary$sp_code)){
     # Checklist detections
     #geom_sf(data = subset(SaskSquares_species, !is.na(CL_detected) & CL_detected > 0), col = "black", size = 0.2, fill = "transparent")+
     
-    coord_sf(clip = "off",xlim = range(as.data.frame(st_coordinates(SaskBoundary))$X))+
-    theme(panel.background = element_blank(),
-          panel.grid.major = element_blank(), 
-          panel.grid.minor = element_blank())+
+  coord_sf(clip = "off",xlim = range(as.data.frame(st_coordinates(SaskBoundary))$X))+
+    theme(panel.background = element_blank(),panel.grid.major = element_blank(), panel.grid.minor = element_blank())+
     theme(axis.title.x=element_blank(), axis.text.x=element_blank(), axis.ticks.x=element_blank())+
     theme(axis.title.y=element_blank(), axis.text.y=element_blank(), axis.ticks.y=element_blank())+
     theme(plot.margin = unit(c(0, 0, 0, 0), "cm"))+
-    theme(legend.margin=margin(0,0,0,0),
-          legend.box.margin=margin(5,10,5,-20),
-          legend.title.align=0.5,
+    theme(legend.margin=margin(0,0,0,0),legend.box.margin=margin(5,10,5,-20),legend.title.align=0.5,
           legend.title = element_markdown(lineheight=.9,hjust = "left"))+
-    theme(legend.key = element_rect(fill = "transparent", colour = "transparent"))+
-    annotate(geom="text",x=346000,y=2050000, label= paste0(species_label),lineheight = .85,hjust = 0,size=6,fontface =2) +
-    annotate(geom="text",x=200000,y=970000, label= paste0("Prepared on ",Sys.Date()),size=1.5,lineheight = .75,hjust = 0,color="gray75")+
-    guides(fill = guide_legend(order = 1), 
-           size = guide_legend(order = 2))
+    annotate(geom="text",x=346000,y=1850000, label= paste0(species_label),lineheight = .85,hjust = 0,size=6,fontface =2) +
+    annotate(geom="text",x=346000,y=1400000, label= paste0("Prepared on ",Sys.Date()),size=3,lineheight = .75,hjust = 0,color="#3b3b3b")
   
   png(paste0("../Output/Prediction_Maps/Relative_Abundance/",sp_code,"_q50.png"), width=6.5, height=8, units="in", res=300, type="cairo")
   print(plot_q50)

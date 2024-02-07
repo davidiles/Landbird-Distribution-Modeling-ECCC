@@ -244,9 +244,9 @@ results_path <- "Output/Crossvalidation/Crossval_results_INLA_ZAP.RDS"
 set.seed(999)
 species_to_model <- species_relabund[species_relabund>250] %>% sample(.,100)
 
-for (sp_code in (names(species_to_model))[1:50]){
-  for (xval_fold in (1:5)){
-    
+for (xval_fold in (1:5)){
+    for (sp_code in (names(species_to_model))[1:10]){
+  
     if (file.exists(results_path)){
       results <- readRDS(results_path)
       if (nrow(results[which(results$sp_code == sp_code & results$Crossval_Fold == xval_fold),])>0) next
@@ -289,11 +289,8 @@ for (sp_code in (names(species_to_model))[1:50]){
     # Prepare formulas and priors
     # ----------------------------------------------------
     
-    # Controls the 'residual spatial field'.  This can be adjusted to create smoother surfaces.
-    prior_range <- c(1000,0.01)
-    prior_sigma <- c(1,0.01)
-    
-    matern_coarse <- inla.spde2.pcmatern(mesh,prior.range = prior_range,prior.sigma = prior_sigma)
+    matern_presence <- inla.spde2.pcmatern(mesh,prior.range = c(500,0.5),prior.sigma = c(1,0.5))
+    matern_count <- inla.spde2.pcmatern(mesh,prior.range = c(500,0.01),prior.sigma = c(1,0.01))
     
     # Covariate effects to include
     covariates_to_include <- paste0("PC",1:9)
@@ -305,7 +302,10 @@ for (sp_code in (names(species_to_model))[1:50]){
     # Adapted from vignette at https://inlabru-org.github.io/inlabru/articles/zip_zap_models.html
     # ----------------------------------------------------
     
-    model_components <- as.formula(paste0('~ Intercept_presence(1) +spde_presence(main = geometry, model = matern_coarse) +',paste0("Beta_presence_",covariates_to_include,'(',covariates_to_include,',model="linear", mean.linear = 0, prec.linear = ', prec_linear[1],')', collapse = " + "),'+','Intercept_count(1) + spde_count(main = geometry, model = matern_coarse) +',paste0("Beta_count_",covariates_to_include,'(',covariates_to_include,',model="linear", mean.linear = 0, prec.linear = ', prec_linear[1],')', collapse = " + ")))
+    covariates_for_count <- paste0("PC",1:3)
+    covariates_for_presence <- paste0("PC",1:9)
+    
+    model_components <- as.formula(paste0('~ Intercept_presence(1) +spde_presence(main = geometry, model = matern_presence) +',paste0("Beta_presence_",covariates_for_presence,'(',covariates_for_presence,',model="linear", mean.linear = 0, prec.linear = ', prec_linear[1],')', collapse = " + "),'+','Intercept_count(1) + spde_count(main = geometry, model = matern_count) +',paste0("Beta_count_",covariates_for_count,'(',covariates_for_count,',model="linear", mean.linear = 0, prec.linear = ', prec_linear[1],')', collapse = " + ")))
     
     
     # ----------------------------------------------------------------------------
@@ -318,7 +318,7 @@ for (sp_code in (names(species_to_model))[1:50]){
           family = "zeroinflatedpoisson0",
           data = subset(training_data, Data_Source != "BBMP" & count > 0),
           formula = as.formula(paste0('count ~ Intercept_count + spde_count + ',
-                                      paste0("Beta_count_",covariates_to_include, collapse = " + "))),
+                                      paste0("Beta_count_",covariates_for_count, collapse = " + "))),
           control.family = list(hyper = list(theta = list(
             initial = -20, fixed = TRUE
           )))
@@ -328,7 +328,7 @@ for (sp_code in (names(species_to_model))[1:50]){
           family = "nzpoisson",
           data = subset(training_data, Data_Source != "BBMP" & count > 0),
           formula = as.formula(paste0('count ~ Intercept_count + spde_count + ',
-                                      paste0("Beta_count_",covariates_to_include, collapse = " + "))),
+                                      paste0("Beta_count_",covariates_for_count, collapse = " + "))),
         )
       }
     
@@ -340,7 +340,7 @@ for (sp_code in (names(species_to_model))[1:50]){
                              
                              like(family = "binomial",
                                   formula = as.formula(paste0('presence ~ Intercept_presence + spde_presence + ',
-                                                              paste0("Beta_presence_",covariates_to_include, collapse = " + "))),
+                                                              paste0("Beta_presence_",covariates_for_presence, collapse = " + "))),
                                   data = subset(training_data, Data_Source != "BBMP")),
                              truncated_poisson_like,
                              options = list(control.compute = list(waic = FALSE, cpo = FALSE),
@@ -359,7 +359,7 @@ for (sp_code in (names(species_to_model))[1:50]){
       ~ {
         presence_prob <-plogis( Intercept_presence + spde_presence + Beta_presence_PC1 + Beta_presence_PC2 + Beta_presence_PC3 + Beta_presence_PC4 + Beta_presence_PC5 + Beta_presence_PC6 + Beta_presence_PC7 + Beta_presence_PC8 + Beta_presence_PC9)
         
-        lambda <- exp(Intercept_count + spde_count + Beta_count_PC1 + Beta_count_PC2 + Beta_count_PC3 + Beta_count_PC4 + Beta_count_PC5 + Beta_count_PC6 + Beta_count_PC7 + Beta_count_PC8 + Beta_count_PC9)
+        lambda <- exp(Intercept_count + spde_count + Beta_count_PC1 + Beta_count_PC2 + Beta_count_PC3)
         expect <- presence_prob * lambda / (1 - exp(-lambda))
         #variance <- expect * (1 - exp(-lambda) * expect)
         list(
@@ -388,7 +388,7 @@ for (sp_code in (names(species_to_model))[1:50]){
           family = "zeroinflatedpoisson0",
           data = subset(training_data, count > 0),
           formula = as.formula(paste0('count ~ Intercept_count + spde_count + ',
-                                      paste0("Beta_count_",covariates_to_include, collapse = " + "))),
+                                      paste0("Beta_count_",covariates_for_count, collapse = " + "))),
           control.family = list(hyper = list(theta = list(
             initial = -20, fixed = TRUE
           )))
@@ -398,7 +398,7 @@ for (sp_code in (names(species_to_model))[1:50]){
           family = "nzpoisson",
           data = subset(training_data, count > 0),
           formula = as.formula(paste0('count ~ Intercept_count + spde_count + ',
-                                      paste0("Beta_count_",covariates_to_include, collapse = " + "))),
+                                      paste0("Beta_count_",covariates_for_count, collapse = " + "))),
         )
       }
     
@@ -410,7 +410,7 @@ for (sp_code in (names(species_to_model))[1:50]){
                              
                              like(family = "binomial",
                                   formula = as.formula(paste0('presence ~ Intercept_presence + spde_presence + ',
-                                                              paste0("Beta_presence_",covariates_to_include, collapse = " + "))),
+                                                              paste0("Beta_presence_",covariates_for_presence, collapse = " + "))),
                                   data = training_data),
                              truncated_poisson_like,
                              options = list(control.compute = list(waic = FALSE, cpo = FALSE),
@@ -429,7 +429,7 @@ for (sp_code in (names(species_to_model))[1:50]){
       ~ {
         presence_prob <-plogis( Intercept_presence + spde_presence + Beta_presence_PC1 + Beta_presence_PC2 + Beta_presence_PC3 + Beta_presence_PC4 + Beta_presence_PC5 + Beta_presence_PC6 + Beta_presence_PC7 + Beta_presence_PC8 + Beta_presence_PC9)
         
-        lambda <- exp(Intercept_count + spde_count + Beta_count_PC1 + Beta_count_PC2 + Beta_count_PC3 + Beta_count_PC4 + Beta_count_PC5 + Beta_count_PC6 + Beta_count_PC7 + Beta_count_PC8 + Beta_count_PC9)
+        lambda <- exp(Intercept_count + spde_count + Beta_count_PC1 + Beta_count_PC2 + Beta_count_PC3)
         expect <- presence_prob * lambda / (1 - exp(-lambda))
         #variance <- expect * (1 - exp(-lambda) * expect)
         list(
@@ -481,6 +481,7 @@ for (sp_code in (names(species_to_model))[1:50]){
 ```
 
 ```{r model-fits, echo = FALSE, results = 'hide', fig.width=10, fig.height=5, fig.cap = "Figure 2: Improvement in predictive performance after including BBMP data",fig.align = 'center'}
+setwd('C:/Users/IlesD/OneDrive - EC-EC/Iles/Projects/Landbirds/Landbird-Distribution-Modeling-ECCC/Analysis/BBMP/')
 
 results_path <- "Output/Crossvalidation/Crossval_results_INLA_ZAP.RDS"
 results <- readRDS(results_path)

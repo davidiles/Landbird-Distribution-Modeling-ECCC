@@ -423,11 +423,12 @@ results <- data.frame()
 results_path <- "Output/Crossvalidation/Crossval_results_INLA.RDS"
 
 set.seed(999)
-species_to_model <- species_relabund[species_relabund>250] %>% sample(.,100)
+species_to_model <- species_relabund[species_relabund>250] 
 
 
-for (sp_code in (names(species_to_model)[1:50])){
-  for (xval_fold in (1:5)){    
+for (xval_fold in (1:5)){    
+  for (sp_code in (names(species_to_model))){
+  
     if (file.exists(results_path)){
       results <- readRDS(results_path)
       if (nrow(results[which(results$sp_code == sp_code & results$Crossval_Fold == xval_fold),])>0) next
@@ -596,15 +597,20 @@ for (sp_code in (names(species_to_model)[1:50])){
 ```
 
 ```{r model-fits, echo = FALSE, results = 'hide', fig.width=10, fig.height=20, fig.cap = "Figure 2: Improvement in predictive performance after including BBMP data",fig.align = 'center'}
-
+setwd('C:/Users/IlesD/OneDrive - EC-EC/Iles/Projects/Landbirds/Landbird-Distribution-Modeling-ECCC/Analysis/BBMP/')
 results_path <- "Output/Crossvalidation/Crossval_results_INLA.RDS"
 results <- readRDS(results_path)
 
 results_summary <- results %>% 
-  #subset(Species %in% c("SORA") & fold == 1) %>%
   group_by(Species) %>% 
   summarize_all(mean) %>%
   arrange(mean_val)
+
+# Proportion of species where AUC increased
+mean(results_summary$AUC_alldat > results_summary$AUC_without_BBMP)
+mean((results_summary$AUC_alldat - results_summary$AUC_without_BBMP) > 0.1)
+mean((results_summary$AUC_alldat > 0.7)  & (results_summary$AUC_without_BBMP < 0.7))
+mean((results_summary$AUC_alldat > 0.7))
 
 results_summary <- bind_rows(data.frame(Species = ""),results_summary)
 
@@ -651,6 +657,8 @@ cor_plot <- ggplot(data = results_summary)+
   xlab("Cor\n\n(cross-validation)")
 
 print(cor_plot)
+
+
 ```
 
 

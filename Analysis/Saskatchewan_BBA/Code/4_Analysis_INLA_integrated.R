@@ -48,6 +48,7 @@ require(viridis)
 require(terra)
 require(stars)
 require(ggtext)
+require(exactextractr)
 
 # Timeout INLA after 10 minutes (if it has not fit by then, it has likely stalled)
 inla.setOption(inla.timeout = 60*10)
@@ -93,7 +94,7 @@ cut.fn <- function(df = NA,
 # LOAD AND SUBSET BIRD DATA BASED ON SPECIFIC CRITERIA (DATE RANGES, ETC.)
 # ******************************************************************
 
-analysis_data <- readRDS("../Data_Cleaned/analysis_data_package.rds")
+analysis_data <- readRDS("../Data_Cleaned/analysis_data_package_FromDean.rds")
 attach(analysis_data)
 all_surveys$Hours_Since_Sunrise <- as.numeric(all_surveys$Hours_Since_Sunrise)
 
@@ -138,6 +139,7 @@ SaskSquares <- st_read("../../../Data/Spatial/Saskatchewan/SaskSquares/SaskSquar
 
 # ------------------------------------------
 # Select Point Counts / ARUs to use
+# Decision to remove "SPM" aru transcriptions, as they are considered less reliable
 # ------------------------------------------
 
 PC_to_use <- subset(all_surveys,
@@ -162,28 +164,46 @@ dim(PC_to_use) # 26228
 # Select STATIONARY COUNT data to use (assuming these are 'breeding bird atlas' checklists; vast majority do not have distance)
 # ------------------------------------------
 
-# Select stationary counts to use
-SC_to_use <- subset(all_surveys,
-                    
-                    Survey_Type %in% c("Breeding Bird Atlas") &
-                      
-                      Hours_Since_Sunrise >= -2 &
-                      Hours_Since_Sunrise <= 8 &
-                      
-                      Survey_Duration_Minutes >= 10 &
-                      Survey_Duration_Minutes <= 120 &
-                      
-                      yday(Date_Time) >= yday(ymd("2022-05-28")) &
-                      yday(Date_Time) <= yday(ymd("2022-07-07")) &
-                      
-                      year(Date_Time) >= 2017 &
-                      year(Date_Time) <= 2021 &
-                      
-                      IncludesPointCounts == 0)
+# Note that Dean Evans prepared a new data table describing overall checklist effort and species
+# presence/absence records within each atlas square.  This is going to be used in place of observation-level
+# checklists because it is not clear if stationary count checklists contain duplicate information from point counts.
+# Using square-level summaries is anticipated to be less strong affected by duplicate information.
 
-dim(SC_to_use) # 2026
+# Also note that covariate values associated with each square need to be re-calculated (the values in Dean's
+# table are missing in many cases).  This is done below.
 
+# # Select stationary counts to use
+# SC_to_use <- subset(all_surveys,
+#                     
+#                     Survey_Type %in% c("Breeding Bird Atlas") &
+#                       
+#                       Hours_Since_Sunrise >= -2 &
+#                       Hours_Since_Sunrise <= 8 &
+#                       
+#                       Survey_Duration_Minutes >= 10 &
+#                       Survey_Duration_Minutes <= 120 &
+#                       
+#                       yday(Date_Time) >= yday(ymd("2022-05-28")) &
+#                       yday(Date_Time) <= yday(ymd("2022-07-07")) &
+#                       
+#                       year(Date_Time) >= 2017 &
+#                       year(Date_Time) <= 2021 &
+#                       
+#                       IncludesPointCounts == 0)
+# 
+# dim(SC_to_use) # 2026
 
+# ------------------------------------------
+# Calculate mean covariate valueswithin each Atlas square (covariates taken from SaskGrid)
+# Note: these will be merged with new stationary checklist dataframe ("SaskSquareChecklist") within the species loop
+# ------------------------------------------
+
+# This vector should contain names of each covariate needed for analysis
+covars <- paste0("PC",1:14)
+cov_rast <- stars::st_rasterize(SaskGrid %>% dplyr::select(covars, geometry)) %>% rast()
+SaskSquares <- cbind(SaskSquares,exact_extract(cov_rast,SaskSquares,"mean") %>% suppressWarnings())
+colnames(SaskSquares)[2:(ncol(SaskSquares)-1)] <- covars
+SaskSquares_centroids <- st_centroid(SaskSquares)
 
 # ------------------------------------------
 # Select LINEAR TRANSECT data to use
@@ -217,7 +237,7 @@ dim(LT_to_use) # 1748
 # Subset
 # ------------------------------------------
 
-surveys_to_use <- c(PC_to_use$Obs_Index, SC_to_use$Obs_Index, LT_to_use$Obs_Index)
+surveys_to_use <- c(PC_to_use$Obs_Index,  LT_to_use$Obs_Index) # SC_to_use$Obs_Index,
 all_surveys <- subset(all_surveys, Obs_Index %in% surveys_to_use) %>% arrange(Obs_Index)
 full_count_matrix <- full_count_matrix[all_surveys$Obs_Index,]
 
@@ -232,7 +252,7 @@ for (sp_code in colnames(full_count_matrix)){
   species_detections <- all_surveys %>% 
     as.data.frame() %>%
     mutate(count = full_count_matrix[,sp_code]) %>%
-    mutate(Survey_Type = replace(Survey_Type, Survey_Type %in% c("Point_Count","ARU_SPT","ARU_SPM"), "PC/ARU")) %>%
+    mutate(Survey_Type = replace(Survey_Type, Survey_Type %in% c("Point_Count","ARU_SPT"), "PC/ARU")) %>%
     group_by(sq_id, Survey_Type) %>%
     summarize(n = sum(count>0,na.rm = TRUE))%>%
     group_by(Survey_Type) %>%
@@ -264,18 +284,14 @@ for (sp_code in rev(species_summary$sp_code)){
   # ----------------------------------------------------
   
   print(sp_code)
-  map_file <- paste0("../Output/Prediction_Maps/Relative_Abundance/",sp_code,"_q50_integrated.png")
-  
-  # Skip this species if already run
-  #if (file.exists(map_file)) next
   
   # Prepare data for this species
   sp_dat <- all_surveys %>% 
     mutate(count = full_count_matrix[,sp_code],
            presence = as.numeric(full_count_matrix[,sp_code]>0)) %>%
     
-    subset(Survey_Type %in% c("Point_Count","ARU_SPT","ARU_SPM",
-                              "Breeding Bird Atlas",
+    subset(Survey_Type %in% c("Point_Count","ARU_SPT",
+                              #"Breeding Bird Atlas",
                               "Linear transect"))
   
   # ----------------------------------------------------
@@ -308,14 +324,42 @@ for (sp_code in rev(species_summary$sp_code)){
   }
   
   # ----------------------------------------------------
+  # Prepare SC data (based on SaskSquareChecklist object created by Dean)
+  # ----------------------------------------------------
+  
+  # Assign SC checklists (from Dean) to each crossval fold
+  # Note that covariate information is missing/incorrect in the SaskSquareChecklist object, so need to replace it with SaskSquare_centroids
+  SC_dat <- SaskSquareChecklist %>%
+    as.data.frame() %>%
+    dplyr::rename(species_code = sp_code) %>%
+    subset(species_code == sp_code) %>%
+    dplyr::select(sq_id,presence,total_checklists,total_effort,checklists_with_species,effort_to_species) %>% 
+    left_join(SaskSquares_centroids,.) %>%
+    subset(total_checklists > 0 & !is.na(total_effort)) 
+  
+  SC_dat$presence <- as.numeric(SC_dat$presence)
+  
+  # Extract ebird range for this species (if it exists); prepared by 4_Prep_Analysis.R
+  if (sp_code %in% names(species_ranges)){
+    
+    range <- species_ranges[[sp_code]] %>% st_transform(st_crs(sp_dat))
+    
+    # Identify distance of each survey to the edge of species range (in km)
+    SC_dat$distance_from_range <- ((st_distance(SC_dat, range)) %>% as.numeric())/1000
+  } else{
+    SC_dat$distance_from_range <- 0
+  }
+  SC_dat <- as(SC_dat, 'Spatial')
+  
+  # ----------------------------------------------------
   # Separate Data types
   # ----------------------------------------------------
   
   # Point count and ARU data treated as the same thing in this analysis
-  PC_dat <- subset(sp_dat,Survey_Type %in% c("Point_Count","ARU_SPT","ARU_SPM")) %>% as('Spatial')
+  PC_dat <- subset(sp_dat,Survey_Type %in% c("Point_Count","ARU_SPT")) %>% as('Spatial')
 
-  # Stationary counts
-  SC_dat <- subset(sp_dat, Survey_Type == "Breeding Bird Atlas") %>% mutate(presence = as.numeric(count>0)) %>% as('Spatial')
+  # Stationary counts 
+  #SC_dat <- subset(sp_dat, Survey_Type == "Breeding Bird Atlas") %>% mutate(presence = as.numeric(count>0)) %>% as('Spatial')
   
   # Linear transects
   LT_dat <- subset(sp_dat, Survey_Type == "Linear transect") %>% mutate(presence = as.numeric(count>0)) %>% as('Spatial')
@@ -371,14 +415,8 @@ for (sp_code in rev(species_summary$sp_code)){
                                  prior.sigma = c(1,0.1)) # 10% chance sd is larger than 1
   
   # ------------------------------------------------
-  # Create mesh to model effect of checklist duration
+  # Create mesh to model effect of linear transect effort
   # ------------------------------------------------
-  
-  SC_duration_meshpoints <- seq(min(SC_dat$Survey_Duration_Minutes)-0.1,max(SC_dat$Survey_Duration_Minutes)+0.1,length.out = 11)
-  SC_duration_mesh1D = inla.mesh.1d(SC_duration_meshpoints,boundary="free")
-  SC_duration_spde = inla.spde2.pcmatern(SC_duration_mesh1D,
-                                         prior.range = c(60,0.1),
-                                         prior.sigma = c(1,0.5))
   
   LT_duration_meshpoints <- seq(min(LT_dat$Survey_Duration_Minutes)-10,max(LT_dat$Survey_Duration_Minutes)+10,length.out = 11)
   LT_duration_mesh1D = inla.mesh.1d(LT_duration_meshpoints,boundary="free")
@@ -392,6 +430,16 @@ for (sp_code in rev(species_summary$sp_code)){
                                          prior.range = c(5000,0.1),
                                          prior.sigma = c(1,0.5))
   
+  # ------------------------------------------------
+  # Create mesh to model effect of stationary checklist effort
+  # ------------------------------------------------
+  
+  SC_effort_meshpoints <- seq(min(SC_dat$total_effort)-1,max(SC_dat$total_effort)+1,length.out = 11)
+  SC_effort_mesh1D = inla.mesh.1d(SC_effort_meshpoints,boundary="free")
+  SC_effort_spde = inla.spde2.pcmatern(SC_effort_mesh1D,
+                                       prior.range = c(30,0.1),
+                                       prior.sigma = c(1,0.5))
+  
   # ***************************************************************
   # Model formulas
   # ***************************************************************
@@ -401,20 +449,18 @@ for (sp_code in rev(species_summary$sp_code)){
   covariates_to_include <- paste0("PC",1:7) 
   
   # How much shrinkage should be applied to covariate effects?
-  sd_linear <- 1  # Change to smaller value (e.g., 0.1), if you want to heavily shrink covariate effects and potentially create smoother surfaces
+  sd_linear <- 0.1  # Change to smaller value (e.g., 0.1), if you want to heavily shrink covariate effects and potentially create smoother surfaces
   prec_linear <-  c(1/sd_linear^2,1/(sd_linear/2)^2)
   
   #Intercept_SC(1)+
-  #  SC_duration(main = Survey_Duration_Minutes,model = SC_duration_spde) +
-  
+  #  SC_effort(main = total_effort,model = SC_effort_spde) +
+    
   model_components = as.formula(paste0('~
             Intercept_PC(1)+
-            Intercept_LT(1)+
-            
             range_effect(1,model="linear", mean.linear = -0.046, prec.linear = 10000)+
             TSS(main = Hours_Since_Sunrise,model = TSS_spde) +
             
-            
+            Intercept_LT(1)+
             LT_duration(main = Survey_Duration_Minutes,model = LT_duration_spde) +
             LT_distance(main = Travel_Distance_Metres,model = LT_distance_spde) +
             
@@ -433,23 +479,20 @@ for (sp_code in rev(species_summary$sp_code)){
                                        '+',
                                        paste0("Beta2_",covariates_to_include,'*',covariates_to_include,"^2", collapse = " + ")))
   
-  
-  # model_formula_SC = as.formula(paste0('presence ~ log(1/exp(-exp(
-  #                 Intercept_SC +
-  #                 SC_duration +
-  #                 TSS +
-  #                 range_effect * distance_from_range +
-  #                 spde_coarse +',
-  #                                      paste0("Beta1_",covariates_to_include,'*',covariates_to_include, collapse = " + "),
-  #                                      '+',
-  #                                      paste0("Beta2_",covariates_to_include,'*',covariates_to_include,"^2", collapse = " + "),"))-1)"))
-  # 
-  
   model_formula_LT = as.formula(paste0('presence ~ log(1/exp(-exp(
                   Intercept_LT +
                   LT_distance +
                   LT_duration +
                   TSS +
+                  spde_coarse +
+                  range_effect * distance_from_range +',
+                                       paste0("Beta1_",covariates_to_include,'*',covariates_to_include, collapse = " + "),
+                                       '+',
+                                       paste0("Beta2_",covariates_to_include,'*',covariates_to_include,"^2", collapse = " + "),"))-1)"))
+  
+  model_formula_SC = as.formula(paste0('presence ~ log(1/exp(-exp(
+                  Intercept_SC +
+                  SC_effort +
                   spde_coarse +
                   range_effect * distance_from_range +',
                                        paste0("Beta1_",covariates_to_include,'*',covariates_to_include, collapse = " + "),
@@ -471,13 +514,14 @@ for (sp_code in rev(species_summary$sp_code)){
                                 formula = model_formula_PC,
                                 data = PC_dat),
                            
-                           # like(family = "binomial",
-                           #       formula = model_formula_SC,
-                           #       data = SC_dat),
-                           
                            like(family = "binomial",
                                 formula = model_formula_LT,
                                 data = LT_dat),
+                           
+                            # like(family = "binomial",
+                            #       formula = model_formula_SC,
+                            #       data = SC_dat),
+                           
                            
                            options = list(bru_initial = list(lsig = 2,
                                                              Intercept_PC = -10,
@@ -553,6 +597,11 @@ for (sp_code in rev(species_summary$sp_code)){
   prob_zero_PC <- dnbinom(0,mu=prediction_quantiles[2,],size=size)
   SaskGrid_species$pObs_5min <- 1-prob_zero_PC
   
+  # Upper/lower 90% credible intervals on PObs
+  SaskGrid_species$pObs_5min_q05 <- 1-dnbinom(0,mu=prediction_quantiles[1,],size=size)
+  SaskGrid_species$pObs_5min_q95 <- 1-dnbinom(0,mu=prediction_quantiles[3,],size=size)
+  
+  
   # Convert to CRS of target raster
   SaskGrid_species <- SaskGrid_species %>% st_transform(st_crs(target_raster))
   
@@ -565,7 +614,7 @@ for (sp_code in rev(species_summary$sp_code)){
   # ------------------------------------------------
   
   PC_detected <- sp_dat %>%
-    subset(Survey_Type %in% c("Point_Count","ARU_SPT","ARU_SPM")) %>% 
+    subset(Survey_Type %in% c("Point_Count","ARU_SPT")) %>% 
     as.data.frame() %>%
     group_by(sq_id) %>%
     summarize(PC_detected = as.numeric(sum(count)>0),
@@ -610,9 +659,8 @@ for (sp_code in rev(species_summary$sp_code)){
   colscale_relabund <-c("#FEFEFE", "#FBF7E2", "#FCF8D0", "#EEF7C2", "#CEF2B0", "#94E5A0", "#51C987", "#18A065", "#008C59", "#007F53", "#006344")
   colpal_relabund <- colorRampPalette(colscale_relabund)
 
-  lower_bound <- 0.01
-  upper_bound <- 9
-  #upper_bound <- quantile(SaskGrid_species$pred_q50,0.99,na.rm = TRUE) %>% signif(2)
+  lower_bound <- 0.15
+  upper_bound <- quantile(SaskGrid_species$pred_q50,0.95,na.rm = TRUE) %>% signif(2)
   if (lower_bound >= (upper_bound/5)) lower_bound <- (upper_bound/5) %>% signif(2)
   
   sp_cut <- cut.fn(df = SaskGrid_species,
@@ -662,9 +710,7 @@ for (sp_code in rev(species_summary$sp_code)){
     guides(fill = guide_legend(order = 1), 
            size = guide_legend(order = 2))
   
-  print(plot_q50)
-  
-  png(map_file, width=6.5, height=8, units="in", res=300, type="cairo")
+  png(paste0("../Output/Prediction_Maps/Relative_Abundance/",sp_code,"_q50.png"), width=6.5, height=8, units="in", res=300, type="cairo")
   print(plot_q50)
   dev.off()
   
@@ -717,7 +763,7 @@ for (sp_code in rev(species_summary$sp_code)){
     annotate(geom="text",x=346000,y=1400000, label= paste0("Prepared on ",Sys.Date()),size=3,lineheight = .75,hjust = 0,color="#3b3b3b")
   print(plot_CI_width_90)
   
-  png(paste0("../Output/Prediction_Maps/Uncertainty/",sp_code,"_CI_width_90_integrated.png"), width=6.5, height=8, units="in", res=300, type="cairo")
+  png(paste0("../Output/Prediction_Maps/Uncertainty/",sp_code,"_CI_width_90.png"), width=6.5, height=8, units="in", res=300, type="cairo")
   print(plot_CI_width_90)
   dev.off()
   
@@ -776,7 +822,7 @@ for (sp_code in rev(species_summary$sp_code)){
     annotate(geom="text",x=346000,y=1850000, label= paste0(species_label),lineheight = .85,hjust = 0,size=6,fontface =2) +
     annotate(geom="text",x=346000,y=1400000, label= paste0("Prepared on ",Sys.Date()),size=3,lineheight = .75,hjust = 0,color="#3b3b3b")
   
-  png(paste0("../Output/Prediction_Maps/PObs/",sp_code,"_PObs_integrated.png"), width=6.5, height=8, units="in", res=300, type="cairo")
+  png(paste0("../Output/Prediction_Maps/PObs/",sp_code,"_PObs.png"), width=6.5, height=8, units="in", res=300, type="cairo")
   print(plot_pObs)
   dev.off()
 

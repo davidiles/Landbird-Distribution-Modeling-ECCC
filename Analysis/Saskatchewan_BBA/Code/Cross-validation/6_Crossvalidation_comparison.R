@@ -12,7 +12,7 @@ results_B <- readRDS("Output/Crossvalidation/Crossval_results_integrated_PC_LT_f
   dplyr::rename(pred_B = mean_count_val_pred, lppd_B = lppd, AUC_B = AUC, RMSE_B = RMSE)
 
 # Fitting to PC & LT & SC (model "C")
-results_C <- readRDS("Output/Crossvalidation/Crossval_results_integrated_PC_SC_fixed.rds") %>%
+results_C <- readRDS("Output/Crossvalidation/Crossval_results_integrated_PC_LT_SC_fixed.rds") %>%
   dplyr::rename(pred_C = mean_count_val_pred, lppd_C = lppd, AUC_C = AUC, RMSE_C = RMSE)
 
 results <- full_join(results_A,results_B) %>%
@@ -81,4 +81,4 @@ ggplot(data = results)+
   xlab("Change in cross-validation AUC\n\n(relative to PC only model)")+
   ylab("Species")+
   ggtitle("Do checklists improve cross-validation accuracy, compared to analysis of point counts only?\n\nPositive values indicate better performance\n\nBest model is noted in text")+
-  coord_cartesian(xlim=c(-0.05,0.05))
+  coord_cartesian(xlim=c(-0.1,0.1))

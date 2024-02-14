@@ -219,7 +219,7 @@ results_path <- "../Output/Crossvalidation/Crossval_results_integrated_PC_SC_fix
 
 for (xval_fold in 1:n_folds){ 
   for (sp_code in species_to_fit$sp_code){
-    
+
     if (file.exists(results_path)){
       
       results <- readRDS(results_path)
@@ -382,8 +382,8 @@ for (xval_fold in 1:n_folds){
     SC_effort_meshpoints <- seq(min(SC_dat$total_effort)-1,max(SC_dat$total_effort)+1,length.out = 11)
     SC_effort_mesh1D = inla.mesh.1d(SC_effort_meshpoints,boundary="free")
     SC_effort_spde = inla.spde2.pcmatern(SC_effort_mesh1D,
-                                           prior.range = c(30,0.1),
-                                           prior.sigma = c(1,0.5))
+                                           prior.range = c(10,0.1),
+                                           prior.sigma = c(0.5,0.1))
 
     # ***************************************************************
     # Model formulas

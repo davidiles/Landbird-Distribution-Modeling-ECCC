@@ -30,28 +30,7 @@ rm(list=ls())
 # Set working directory
 # ------------------------------------------
 
-stub <- function() {}
-thisPath <- function() {
-  cmdArgs <- commandArgs(trailingOnly = FALSE)
-  if (length(grep("^-f$", cmdArgs)) > 0) {
-    # R console option
-    normalizePath(dirname(cmdArgs[grep("^-f", cmdArgs) + 1]))[1]
-  } else if (length(grep("^--file=", cmdArgs)) > 0) {
-    # Rscript/R console option
-    scriptPath <- normalizePath(dirname(sub("^--file=", "", cmdArgs[grep("^--file=", cmdArgs)])))[1]
-  } else if (Sys.getenv("RSTUDIO") == "1") {
-    # RStudio
-    dirname(rstudioapi::getSourceEditorContext()$path)
-  } else if (is.null(attr(stub, "srcref")) == FALSE) {
-    # 'source'd via R console
-    dirname(normalizePath(attr(attr(stub, "srcref"), "srcfile")$filename))
-  } else {
-    stop("Cannot find file path")
-  }
-}
-
-dirname <- thisPath()
-setwd(dirname)
+setwd("C:/Users/IlesD/OneDrive - EC-EC/Iles/Projects/Landbirds/Landbird-Distribution-Modeling-ECCC/Analysis/Ontario_BBA/Code")
 
 `%!in%` <- Negate(`%in%`)
 
@@ -65,50 +44,55 @@ analysis_data <- readRDS(file = "../Data_Cleaned/analysis_data.rds")
 
 all_surveys <- analysis_data$all_surveys %>% mutate(Obs_Index = 1:nrow(.))
 full_count_matrix <- analysis_data$full_count_matrix
-
 all_surveys$Survey_Type[all_surveys$Survey_Type == "Point Count"] <- "Point_Count"
+
+# ------------------------------------------
+# Round survey duration
+# ------------------------------------------
+all_surveys$Survey_Duration_Minutes <- round(all_surveys$Survey_Duration_Minutes)
+table(all_surveys$Survey_Duration_Minutes)
 
 # ------------------------------------------
 # Select Point Counts / ARUs to use
 # ------------------------------------------
 
 PC_to_use <- subset(all_surveys,
-                    Survey_Type %in% c("Point_Count","ARU_SPT","ARU_SPM") &
+                    Survey_Type %in% c("Point_Count","ARU_SPT") &
                       
-                      Survey_Duration_Minutes > 1 &
+                      Survey_Duration_Minutes >= 1 &
                       Survey_Duration_Minutes <= 10 &
                       
                       Hours_Since_Sunrise >= -2 &
                       Hours_Since_Sunrise <= 4 &
                       
                       yday(Date_Time) >= yday(ymd("2022-05-15")) &
-                      yday(Date_Time) <= yday(ymd("2022-07-15")) &
+                      yday(Date_Time) <= yday(ymd("2022-07-15")) #&
                       
-                      year(Date_Time) >= 2021 &
-                      year(Date_Time) <= 2025
+                      #year(Date_Time) >= 2021 &
+                      #year(Date_Time) <= 2025
 )
-
-# ------------------------------------------
-# Select STATIONARY COUNT data to use
-# ------------------------------------------
-
-# Select stationary counts to use
-SC_to_use <- subset(all_surveys,
-                    
-                    Survey_Type %in% c("Stationary Count") & 
-                      
-                      Hours_Since_Sunrise >= -2 &
-                      Hours_Since_Sunrise <= 4 &
-                      
-                      Survey_Duration_Minutes >= 1 &
-                      Survey_Duration_Minutes <= 120 &
-                      
-                      yday(Date_Time) >= yday(ymd("2022-05-15")) &
-                      yday(Date_Time) <= yday(ymd("2022-07-15")) & 
-                      
-                      year(Date_Time) >= 2021 &
-                      year(Date_Time) <= 2025)
-
+# 
+# # ------------------------------------------
+# # Select STATIONARY COUNT data to use
+# # ------------------------------------------
+# 
+# # Select stationary counts to use
+# SC_to_use <- subset(all_surveys,
+#                     
+#                     Survey_Type %in% c("Stationary Count") & 
+#                       
+#                       Hours_Since_Sunrise >= -2 &
+#                       Hours_Since_Sunrise <= 4 &
+#                       
+#                       Survey_Duration_Minutes >= 1 &
+#                       Survey_Duration_Minutes <= 120 &
+#                       
+#                       yday(Date_Time) >= yday(ymd("2022-05-15")) &
+#                       yday(Date_Time) <= yday(ymd("2022-07-15")) & 
+#                       
+#                       year(Date_Time) >= 2021 &
+#                       year(Date_Time) <= 2025)
+# 
 # # ------------------------------------------
 # # Select LINEAR TRANSECT data to use
 # # ------------------------------------------
@@ -141,7 +125,7 @@ full_count_matrix <- full_count_matrix[surveys_to_use,]
 # Atlas Squares in which each survey is located
 # ------------------------------------------
 
-# ONSquares <- st_read("../../../Data/Spatial/ONatchewan/ONSquares/ONSquares.shp") %>%
+# ONSquares <- st_read("../../../Data/Spatial/Ontario/ONSquares/ONSquares.shp") %>%
 #   st_transform(st_crs(all_surveys)) %>%
 #   dplyr::select(SQUARE_ID) %>%
 #   rename(sq_id = SQUARE_ID)
@@ -181,19 +165,19 @@ ONBoundary <- st_read("../../../Data/Spatial/National/BCR/BCR_Terrestrial_master
   st_union() %>%
   st_transform(target_crs)
 
-# 1 km x 1 km grid
-ONGrid <- st_make_grid(
-  ONBoundary,
-  cellsize = units::set_units(1*1,km^2),
-  what = "polygons",
-  square = TRUE,
-  flat_topped = FALSE)%>%
-  st_as_sf() %>%
-  st_intersection(ONBoundary) %>%
-  na.omit()
-
-ONGrid$point_id <- 1:nrow(ONGrid)
-ONGrid_centroid <- st_centroid(ONGrid)
+# # 1 km x 1 km grid
+# ONGrid <- st_make_grid(
+#   ONBoundary,
+#   cellsize = units::set_units(1*1,km^2),
+#   what = "polygons",
+#   square = TRUE,
+#   flat_topped = FALSE)%>%
+#   st_as_sf() %>%
+#   st_intersection(ONBoundary) %>%
+#   na.omit()
+# 
+# ONGrid$point_id <- 1:nrow(ONGrid)
+# ONGrid_centroid <- st_centroid(ONGrid)
 
 # ---------------------------------------------------
 # Load covariate layers
@@ -354,34 +338,40 @@ all_surveys_covariates <- all_surveys_covariates %>%
 all_surveys <- full_join(all_surveys,all_surveys_covariates)
 ONGrid <- bind_cols(ONGrid,ONGrid_PCA)
 
+# ONGrid_centroid <- st_centroid(ONGrid)
+# ONGrid_list = list(ONGrid = ONGrid,
+#                    ONGrid_centroid = ONGrid_centroid)
+# saveRDS(ONGrid_list,
+#         file = "../Data_Cleaned/Spatial/ONGrid.rds")
+
 # ******************************************************************
 # PART 3: Identify list of species to run analysis for
 # ******************************************************************
 
-# ------------------------------------------
-# Process species names / labels (from Birds Canada)
-# ------------------------------------------
-
-ON_spcd <- search_species_code() %>% rename(spcd = BSCDATA, CommonName = english_name)
-countSpaces <- function(s) { sapply(gregexpr(" ", s), function(p) { sum(p>=0) } ) }
-
-# Process Species Names so they fit
-ON_spcd$Label <- NA
-ON_spcd$CommonName[ON_spcd$CommonName=="Rock Pigeon (Feral Pigeon)"] <- "Rock Pigeon"
-
-for (i in 1:nrow(ON_spcd)) {
-  Name <- ON_spcd$CommonName[i]
-  if(nchar(Name) > 13){
-    if(countSpaces(Name)>0){
-      ON_spcd$Label[i] <- gsub(" "," \n",Name)
-    }
-    
-  }
-  else {
-    ON_spcd$Label[i] <- ON_spcd$CommonName[i]
-  }
-  
-}
+# # ------------------------------------------
+# # Process species names / labels (from Birds Canada)
+# # ------------------------------------------
+# 
+# ON_spcd <- search_species_code() %>% rename(spcd = BSCDATA, CommonName = english_name)
+# countSpaces <- function(s) { sapply(gregexpr(" ", s), function(p) { sum(p>=0) } ) }
+# 
+# # Process Species Names so they fit
+# ON_spcd$Label <- NA
+# ON_spcd$CommonName[ON_spcd$CommonName=="Rock Pigeon (Feral Pigeon)"] <- "Rock Pigeon"
+# 
+# for (i in 1:nrow(ON_spcd)) {
+#   Name <- ON_spcd$CommonName[i]
+#   if(nchar(Name) > 13){
+#     if(countSpaces(Name)>0){
+#       ON_spcd$Label[i] <- gsub(" "," \n",Name)
+#     }
+#     
+#   }
+#   else {
+#     ON_spcd$Label[i] <- ON_spcd$CommonName[i]
+#   }
+#   
+# }
 
 # ------------------------------------------
 # Only fit models for species detected in at least 50 atlas squares)
@@ -390,18 +380,16 @@ for (i in 1:nrow(ON_spcd)) {
 
 BSC_species <- readRDS("../Data_Cleaned/BSC_species.RDS")
 
-n_detections <- full_count_matrix
-rownames(n_detections) <- all_surveys$sq_id
-n_detections <- n_detections %>% 
+n_detections <- full_count_matrix %>% 
   reshape2::melt() %>%
   dplyr::rename(sq_id = Var1, Species_Code_BSC = Var2, detected = value) %>%
   subset(detected>0) %>%
   group_by(Species_Code_BSC) %>%
-  summarize(n_squares = length(unique(sq_id)),
-            n_detections = sum(detected>0)) 
+  summarize(n_detections = sum(detected>0)) %>%
+  arrange(desc(n_detections)) %>%
+  left_join(.,BSC_species[,c("species_id","english_name")], by = c("Species_Code_BSC" = "species_id"))
 
-species_to_model <- left_join(n_detections,BSC_species %>% dplyr::select(-index),
-                              by = c("Species_Code_BSC" = "BSC_spcd")) %>%
+species_to_model <- n_detections %>%
   
   # Remove erroneous observations
   subset(english_name %!in% c("passerine sp.",
@@ -433,7 +421,13 @@ species_to_model <- left_join(n_detections,BSC_species %>% dplyr::select(-index)
                               "swan sp.",
                               "tern sp.",
                               "Ula-ai-hawane",
-                              "Yellow-rumped Warbler (Myrtle)"))
+                              "Yellow-rumped Warbler (Myrtle)",
+                              "Brewster's Warbler (hybrid)",
+                              "moorhen/coot/gallinule sp.",
+                              "Lesser/Greater Yellowlegs",
+                              "Coccyzus sp.",
+                              "Bohemian/Cedar Waxwing",
+                              "Chuck-will's-widow"))
 
 dim(species_to_model) 
 species_to_model$english_name %>% sort()
@@ -441,44 +435,44 @@ species_to_model$english_name %>% sort()
 # ******************************************************************
 # PART 4: IDENTIFY SPECIES WITH DETECTABILITY OFFSETS AVAILABLE
 # ******************************************************************
-
-napops_species <- list_species() %>% rename(Species_Code_NAPOPS = Species,
-                                            Common_Name_NAPOPS = Common_Name,
-                                            Scientific_Name_NAPOPS = Scientific_Name)
-
-species_to_model <- left_join(species_to_model,napops_species[,c("Species_Code_NAPOPS","Common_Name_NAPOPS","Removal","Distance")],
-                              by = c("Species_Code_BSC" = "Species_Code_NAPOPS"))
-
-
-species_to_model$offset_exists <- FALSE
-species_to_model$EDR <- NA
-species_to_model$cue_rate <- NA
-species_to_model$log_offset_5min <- 0
-
-# Extract QPAD offsets if available
-for (i in 1:nrow(species_to_model)){
-  
-  sp = species_to_model$Species_Code_BSC[i]
-  print(sp)
-  offset_exists <- FALSE
-  sp_napops <- subset(napops_species,Species_Code_NAPOPS == sp)
-  
-  if (nrow(sp_napops)>0){
-    if (sp_napops$Removal == 1 & sp_napops$Distance == 1){
-      
-      species_to_model$offset_exists[i] <- TRUE
-      species_to_model$cue_rate[i] <- cue_rate(species = sp,od = 153, tssr = 0, model = 1)[3] %>% as.numeric()
-      species_to_model$EDR[i] <- edr(species = sp,road = FALSE, forest = 0.5,model = 1)[3] %>% as.numeric()
-      
-      # Calculate A and p, which jointly determine offset
-      A_metres <- c(pi*species_to_model$EDR[i]^2)
-      p <- 1-exp(-5*species_to_model$cue_rate[i])
-      
-      species_to_model$log_offset_5min[i] <- log(A_metres * p)
-      
-    }
-  }
-}
+# 
+# napops_species <- list_species() %>% rename(Species_Code_NAPOPS = Species,
+#                                             Common_Name_NAPOPS = Common_Name,
+#                                             Scientific_Name_NAPOPS = Scientific_Name)
+# 
+# species_to_model <- left_join(species_to_model,napops_species[,c("Species_Code_NAPOPS","Common_Name_NAPOPS","Removal","Distance")],
+#                               by = c("Species_Code_BSC" = "Species_Code_NAPOPS"))
+# 
+# 
+# species_to_model$offset_exists <- FALSE
+# species_to_model$EDR <- NA
+# species_to_model$cue_rate <- NA
+# species_to_model$log_offset_5min <- 0
+# 
+# # Extract QPAD offsets if available
+# for (i in 1:nrow(species_to_model)){
+#   
+#   sp = species_to_model$Species_Code_BSC[i]
+#   print(sp)
+#   offset_exists <- FALSE
+#   sp_napops <- subset(napops_species,Species_Code_NAPOPS == sp)
+#   
+#   if (nrow(sp_napops)>0){
+#     if (sp_napops$Removal == 1 & sp_napops$Distance == 1){
+#       
+#       species_to_model$offset_exists[i] <- TRUE
+#       species_to_model$cue_rate[i] <- cue_rate(species = sp,od = 153, tssr = 0, model = 1)[3] %>% as.numeric()
+#       species_to_model$EDR[i] <- edr(species = sp,road = FALSE, forest = 0.5,model = 1)[3] %>% as.numeric()
+#       
+#       # Calculate A and p, which jointly determine offset
+#       A_metres <- c(pi*species_to_model$EDR[i]^2)
+#       p <- 1-exp(-5*species_to_model$cue_rate[i])
+#       
+#       species_to_model$log_offset_5min[i] <- log(A_metres * p)
+#       
+#     }
+#   }
+# }
 
 # ******************************************************************
 # PART 5: DOWNLOAD, TRIM, AND SAVE eBIRD RANGE LIMITS FOR SPECIES
@@ -499,10 +493,6 @@ require(terra)
 # ------------------------------------------------
 usethis::edit_r_environ()
 
-# This should read:
-# EBIRDST_KEY='ntqm1ha68fov'
-# EBIRDST_DATA_DIR='C:/Users/IlesD/OneDrive - EC-EC/Iles/Projects/Landbirds/Landbird-Distribution-Modeling-ECCC/Data/Spatial/eBird/'
-
 # # Spatial layers for ON
 # ON_BCR <- st_read("../../../Data/Spatial/National/BCR/BCR_Terrestrial_master.shp")  %>%
 #   subset(PROVINCE_S == "ONTARIO") %>%
@@ -514,46 +504,46 @@ usethis::edit_r_environ()
 # List to contain sf objects for species ranges
 species_ranges <- list()
 
-for (sp_code in species_to_model$Species_Code_BSC){
-  print(sp_code)
+for (species_name in species_to_model$english_name){
+  print(species_name)
   if (file.exists("../Data_Cleaned/Spatial/eBird_ranges_ON.RDS")) species_ranges <- readRDS("../Data_Cleaned/Spatial/eBird_ranges_ON.RDS")
   
   # ------------------------------------------------
   # Check is species already in the list
   # ------------------------------------------------
-  if (sp_code %in% names(species_ranges)) next
+  if (species_name %in% names(species_ranges)) next
   
   # ------------------------------------------------
   # Download and trim ebird range for this species
   # ------------------------------------------------
   
-  species_name = ON_spcd$CommonName[which(ON_spcd$spcd == sp_code)]
-  species_label = ON_spcd$Label[which(ON_spcd$spcd == sp_code)]
-  
   # Check if species is available
   check <- get_species(species_name)
   if (length(check)==0){
-    print(paste0(sp_code, " not available in eBird"))
+    print(paste0(species_name, " not available in eBird"))
     next
   }
   
   if (length(check)>0 & is.na(check)){
-    print(paste0(sp_code, " not available in eBird"))
+    print(paste0(species_name, " not available in eBird"))
     next
   }
   
-  ebirdst_download(species_name, pattern = "range") 
+  ebirdst_download_status(species_name, 
+                          download_abundance = FALSE,
+                          download_ranges = TRUE,
+                          pattern = "_smooth_27km_") 
   
   path <- get_species_path(species_name)
   
-  range <- load_ranges(path, resolution = "lr")
+  range <- load_ranges(species_name, resolution = "27km",smoothed = TRUE)
   
   range <- range %>% subset(season %in% c("resident","breeding")) %>% 
     st_transform(.,crs = st_crs(ONBoundary)) %>% 
     st_union() %>%
     st_crop(ONBoundary)
   
-  species_ranges[[sp_code]] <- range
+  species_ranges[[species_name]] <- range
   saveRDS(species_ranges,file="../Data_Cleaned/Spatial/eBird_ranges_ON.RDS")
   
   
@@ -580,7 +570,7 @@ analysis_data_package <- list(
   species_to_model = species_to_model,
   
   # Species codes and common names
-  ON_spcd = ON_spcd,
+  species_to_model = species_to_model,
   
   # eBird range limits
   species_ranges = species_ranges
@@ -588,5 +578,3 @@ analysis_data_package <- list(
 )
 
 saveRDS(analysis_data_package,"../Data_Cleaned/analysis_data_package.rds")
-
-write.csv(analysis_data_package$species_to_model,file = "../Data_Cleaned/species_to_model.csv",row.names = FALSE)

@@ -151,11 +151,19 @@ full_count_matrix <- full_count_matrix[all_surveys$Obs_Index,]
 #species_summary <- species_summary %>% subset(`PC/ARU` >=20)
 
 species_list <- subset(species_to_model,
-                       english_name %in% 
-                         c("Chipping Sparrow")) %>%
+                       english_name %in%
+                         c("Veery")) %>%
   unique()
 
 #species_list <- species_to_model[1:20,]
+
+# Prepare QPAD offsets for survey effort
+require(napops)
+napops_species <- list_species() %>% rename(Species_Code_NAPOPS = Species,Common_Name_NAPOPS = Common_Name,Scientific_Name_NAPOPS = Scientific_Name)
+
+species_list <- left_join(species_list,napops_species[,c("Species_Code_NAPOPS","Common_Name_NAPOPS","Removal","Distance")], by = c("english_name" = "Common_Name_NAPOPS")) %>%
+  mutate(EDR = NA, cue_rate = NA)
+
 
 for (i in 1:nrow(species_list)){
   
@@ -187,10 +195,23 @@ for (i in 1:nrow(species_list)){
   }
   
   # ----------------------------------------------------
-  # Generate QPAD offsets for each survey (assumes unlimited distance point counts)
+  # Extract QPAD offsets, if they exist
   # ----------------------------------------------------
   
-  # sp_dat$log_QPAD_offset
+  if (species_list$Removal[i] == 1 & species_list$Distance[i] == 1){
+    species_list$cue_rate[i] <- cue_rate(species = species_list$Species_Code_NAPOPS[i],od = 153, tssr = 0, model = 1)[3] %>% as.numeric()
+    species_list$EDR[i] <- edr(species = species_list$Species_Code_NAPOPS[i],road = FALSE, forest = 0.5,model = 1)[3] %>% as.numeric()
+    
+    # Calculate A and p, which jointly determine offset
+    A_metres <- c(pi*species_list$EDR[i]^2)
+    p <- 1-exp(-5*species_list$cue_rate[i])
+    
+    sp_dat$log_offset <- log(A_metres * (1-exp(-sp_dat$Survey_Duration_Minutes*species_list$cue_rate[i])))
+    log_offset_5min <- log(A_metres * p)
+  } else {
+    sp_dat$log_offset <- 0
+    log_offset_5min <- 0
+  }
   
   # ----------------------------------------------------
   # Separate Data types
@@ -227,10 +248,23 @@ for (i in 1:nrow(species_list)){
   
   # Controls the 'residual spatial field'.  This can be adjusted to create smoother surfaces.
   matern_abund <- inla.spde2.pcmatern(mesh_spatial,
-                                       prior.range = c(300000, 0.1), # 10% chance range is smaller than 300000
-                                       prior.sigma = c(0.5,0.1),    # 10% chance sd is larger than 0.5,
-                                       constr = TRUE
+                                      prior.range = c(500000, 0.1), # 10% chance range is smaller than 300000
+                                      prior.sigma = c(0.5,0.1),    # 10% chance sd is larger than 0.5,
+                                      constr = TRUE
   )
+  
+  # ----------------------------------------------------
+  # Create mesh to model effect of time since sunrise (TSS)
+  # Hours since sunrise is fit as a GAM-type effect.  
+  # Recommend leaving these settings at these defaults
+  # ----------------------------------------------------
+  
+  TSS_range <- range(sp_dat$Hours_Since_Sunrise)
+  TSS_meshpoints <- seq(TSS_range[1]-0.1,TSS_range[2]+0.1,length.out = 11)
+  TSS_mesh1D = inla.mesh.1d(TSS_meshpoints,boundary="free")
+  TSS_spde = inla.spde2.pcmatern(TSS_mesh1D,
+                                 prior.range = c(6,0.1), # 10% range is smaller than 6
+                                 prior.sigma = c(1,0.1)) # 10% chance sd is larger than 1
   
   # For every pixel on landscape, extract distance (in km) from eBird range limit
   ONGrid_species <- ONGrid %>%
@@ -238,7 +272,7 @@ for (i in 1:nrow(species_list)){
                                     st_distance( . , range) %>% 
                                     as.numeric())/1000)
   
-  covariates_to_include <- paste0("PC",1:2) 
+  covariates_to_include <- paste0("PC",1:6) 
   
   # ***************************************************************
   # OBBA - 2
@@ -248,21 +282,26 @@ for (i in 1:nrow(species_list)){
   sd_linear <- 0.1  # Change to smaller value (e.g., 0.1), if you want to heavily shrink covariate effects and potentially create smoother surfaces
   prec_linear <-  c(1/sd_linear^2,1/(sd_linear/2)^2)
   
+  # TSS(main = Hours_Since_Sunrise,model = TSS_spde) +
   model_components = as.formula(paste0('~
             Intercept_OBBA2(1)+
+            
             range_effect_OBBA2(1,model="linear", mean.linear = -0.046, prec.linear = 10000)+
             spde_OBBA2(main = coordinates, model = matern_abund) +',
                                        paste0("Beta1_",covariates_to_include,'(1,model="linear", mean.linear = 0, prec.linear = ', prec_linear[1],')', collapse = " + "),
                                        '+',
                                        paste0("Beta2_",covariates_to_include,'(1,model="linear", mean.linear = 0, prec.linear = ', prec_linear[2],')', collapse = " + ")))
   
+  #TSS + 
   model_formula_OBBA2 = as.formula(paste0('count ~
                   Intercept_OBBA2 +
+                  log_offset + 
+                  
                   range_effect_OBBA2 * distance_from_range +
                   spde_OBBA2 +',
-                                       paste0("Beta1_",covariates_to_include,'*',covariates_to_include, collapse = " + "),
-                                       '+',
-                                       paste0("Beta2_",covariates_to_include,'*',covariates_to_include,"^2", collapse = " + ")))
+                                          paste0("Beta1_",covariates_to_include,'*',covariates_to_include, collapse = " + "),
+                                          '+',
+                                          paste0("Beta2_",covariates_to_include,'*',covariates_to_include,"^2", collapse = " + ")))
   
   start <- Sys.time()
   fit_INLA <- NULL
@@ -293,21 +332,22 @@ for (i in 1:nrow(species_list)){
   pred_formula_OBBA2 = as.formula(paste0(' ~
                   Intercept_OBBA2 +
                   log(15)+
+                  log_offset_5min + 
                   range_effect_OBBA2 * distance_from_range +
                   spde_OBBA2 +',
-                                      paste0("Beta1_",covariates_to_include,'*',covariates_to_include, collapse = " + "),
-                                      '+',
-                                      paste0("Beta2_",covariates_to_include,'*',covariates_to_include,"^2", collapse = " + ")))
+                                         paste0("Beta1_",covariates_to_include,'*',covariates_to_include, collapse = " + "),
+                                         '+',
+                                         paste0("Beta2_",covariates_to_include,'*',covariates_to_include,"^2", collapse = " + ")))
   
   # Note that predictions are initially on log scale
   start2 <- Sys.time()
   
   pred_OBBA2 <- NULL
   pred_OBBA2 <- generate(fit_INLA,
-                   as(ONGrid_species,'Spatial'),
-                   formula =  pred_formula_OBBA2,
-                   n.samples = 500,
-                   seed = 123)
+                         as(ONGrid_species,'Spatial'),
+                         formula =  pred_formula_OBBA2,
+                         n.samples = 500,
+                         seed = 123)
   
   pred_OBBA2 <- exp(pred_OBBA2)
   OBBA2_prediction_quantiles = apply(pred_OBBA2,1,function(x) quantile(x,c(0.05,0.5,0.95),na.rm = TRUE))
@@ -320,16 +360,21 @@ for (i in 1:nrow(species_list)){
   # OBBA - 3
   # ***************************************************************
   
+  #TSS(main = Hours_Since_Sunrise,model = TSS_spde) +
   model_components = as.formula(paste0('~
             Intercept_OBBA3(1)+
+            
             range_effect_OBBA3(1,model="linear", mean.linear = -0.046, prec.linear = 10000)+
             spde_OBBA3(main = coordinates, model = matern_abund) +',
                                        paste0("Beta1_",covariates_to_include,'(1,model="linear", mean.linear = 0, prec.linear = ', prec_linear[1],')', collapse = " + "),
                                        '+',
                                        paste0("Beta2_",covariates_to_include,'(1,model="linear", mean.linear = 0, prec.linear = ', prec_linear[2],')', collapse = " + ")))
   
+  #TSS + 
   model_formula_OBBA3 = as.formula(paste0('count ~
                   Intercept_OBBA3 +
+                  log_offset + 
+                  
                   range_effect_OBBA3 * distance_from_range +
                   spde_OBBA3 +',
                                           paste0("Beta1_",covariates_to_include,'*',covariates_to_include, collapse = " + "),
@@ -365,6 +410,7 @@ for (i in 1:nrow(species_list)){
   pred_formula_OBBA3 = as.formula(paste0(' ~
                   Intercept_OBBA3 +
                   log(15)+
+                  log_offset_5min + 
                   range_effect_OBBA3 * distance_from_range +
                   spde_OBBA3 +',
                                          paste0("Beta1_",covariates_to_include,'*',covariates_to_include, collapse = " + "),
@@ -435,16 +481,22 @@ for (i in 1:nrow(species_list)){
     
     geom_sf(data = ONBoundary,colour="black",fill=NA,lwd=0.3,show.legend = F) +
     
-  coord_sf(clip = "off",xlim = range(as.data.frame(st_coordinates(ONBoundary))$X)) +
-     theme(panel.background = element_blank(),panel.grid.major = element_blank(), panel.grid.minor = element_blank())+
-     theme(axis.title.x=element_blank(), axis.text.x=element_blank(), axis.ticks.x=element_blank())+
-     theme(axis.title.y=element_blank(), axis.text.y=element_blank(), axis.ticks.y=element_blank())+
-     theme(plot.margin = unit(c(0, 0, 0, 0), "cm"))+
+    # Survey locations
+    #geom_sf(data = subset(sp_dat, presence == 0 & year(Date_Time)%in% c(2001:2005)), col = "gray70", pch = 19, size = 0.1)+
+    
+    # Point count detections
+    #geom_sf(data = subset(sp_dat, presence == 1 & year(Date_Time)%in% c(2001:2005)), col = "black", pch = 19, size = 0.2)+
+    
+    coord_sf(clip = "off",xlim = range(as.data.frame(st_coordinates(ONBoundary))$X)) +
+    theme(panel.background = element_blank(),panel.grid.major = element_blank(), panel.grid.minor = element_blank())+
+    theme(axis.title.x=element_blank(), axis.text.x=element_blank(), axis.ticks.x=element_blank())+
+    theme(axis.title.y=element_blank(), axis.text.y=element_blank(), axis.ticks.y=element_blank())+
+    theme(plot.margin = unit(c(0, 0, 0, 0), "cm"))+
     annotate(geom="text",x=700000,y=1650000, label= paste0(species_name),lineheight = .85,hjust = 0,size=6,fontface =2) +
     annotate(geom="text",x=700000,y=1550000, label= "OBBA 2",lineheight = .85,hjust = 0,size=4,fontface =2) +
     annotate(geom="text",x=700000,y=1480000, label= paste0("Prepared on ",Sys.Date()),size=2,lineheight = .75,hjust = 0,color="gray75")
-     
-    print(OBBA2_plot_q50)
+  
+  print(OBBA2_plot_q50)
   
   png(paste0("../Output/Prediction_Maps/Relative_Abundance/",species_name,"_OBBA2_INDEP_q50.png"), width=6.5, height=8, units="in", res=300, type="cairo")
   print(OBBA2_plot_q50)
@@ -470,7 +522,13 @@ for (i in 1:nrow(species_list)){
     
     geom_sf(data = ONBoundary,colour="black",fill=NA,lwd=0.3,show.legend = F) +
     
-  coord_sf(clip = "off",xlim = range(as.data.frame(st_coordinates(ONBoundary))$X)) +
+    # Survey locations
+    #geom_sf(data = subset(sp_dat, presence == 0 & year(Date_Time)%in% c(2021:2025)), col = "gray70", pch = 19, size = 0.1)+
+    
+    # Point count detections
+    #geom_sf(data = subset(sp_dat, presence == 1 & year(Date_Time)%in% c(2021:2025)), col = "black", pch = 19, size = 0.2)+
+    
+    coord_sf(clip = "off",xlim = range(as.data.frame(st_coordinates(ONBoundary))$X)) +
     theme(panel.background = element_blank(),panel.grid.major = element_blank(), panel.grid.minor = element_blank())+
     theme(axis.title.x=element_blank(), axis.text.x=element_blank(), axis.ticks.x=element_blank())+
     theme(axis.title.y=element_blank(), axis.text.y=element_blank(), axis.ticks.y=element_blank())+
@@ -493,7 +551,7 @@ for (i in 1:nrow(species_list)){
   colscale_change <-c("orangered","white","dodgerblue")
   colpal_change <- colorRampPalette(colscale_change)
   
-  cut_levs <- seq(-upper_bound/2,upper_bound/2,length.out = 6) %>% round(2)
+  cut_levs <- seq(-upper_bound,upper_bound,length.out = 6) %>% round(2)
   cut_levs <- c(-Inf,cut_levs,Inf)
   
   tmp <- ONGrid_species
@@ -506,21 +564,14 @@ for (i in 1:nrow(species_list)){
     scale_fill_manual(name = "Change",
                       values = colpal_change(length(levels(raster_q50$levs))), drop=FALSE,na.translate=FALSE)+
     
-    #geom_sf(data = ONWater,colour=NA,fill="#59F3F3",show.legend = F)+
-    
     geom_sf(data = ONBoundary,colour="black",fill=NA,lwd=0.3,show.legend = F) +
     
-    #geom_sf(data = range,colour="darkred",fill=NA,show.legend = F) +
-    
-    # Surveyed squares
-    #geom_sf(data = subset(ONSquares_centroids, !is.na(PC_detected) | !is.na(CL_detected)), col = "gray70", pch = 19, size = 0.1)+
+    # Survey locations
+    #geom_sf(data = subset(sp_dat, presence == 1 & year(Date_Time)%in% c(2001:2005)), col = "black", pch = 19, size = 0.2)+
     
     # Point count detections
-    #geom_sf(data = subset(ONSquares_centroids, !is.na(PC_detected) & PC_detected > 0), col = "black", pch = 19, size = 0.2)+
+    #geom_sf(data = subset(sp_dat, presence == 1 & year(Date_Time)%in% c(2021:2025)), col = "black", pch = 19, size = 0.2)+
     
-    # Checklist detections
-    #geom_sf(data = subset(ONSquares_species, !is.na(CL_detected) & CL_detected > 0), col = "black", size = 0.2, fill = "transparent")+
-  
   coord_sf(clip = "off",xlim = range(as.data.frame(st_coordinates(ONBoundary))$X)) +
     theme(panel.background = element_blank(),panel.grid.major = element_blank(), panel.grid.minor = element_blank())+
     theme(axis.title.x=element_blank(), axis.text.x=element_blank(), axis.ticks.x=element_blank())+
@@ -540,9 +591,9 @@ for (i in 1:nrow(species_list)){
   
   
   # Estimate of total change
-  total_change <- pred_change %>% apply(2,sum,na.rm = TRUE)
-  hist(total_change, breaks = seq(-1000000,1000000,length.out = 25))
-  
+  #total_change <- pred_change %>% apply(2,sum,na.rm = TRUE)
+  #hist(total_change, breaks = seq(-3000000,3000000,length.out = 50))
+  #sd(total_change,na.rm = TRUE)
 } # close species loop
 
 

@@ -34,42 +34,6 @@ require(ggspatial)
 # Timeout INLA after 10 minutes (if it has not fit by then, it has likely stalled)
 inla.setOption(inla.timeout = 60*10)
 
-# ------------------------------------------------
-# Function to rasterize a series of spatial predictions (needed for plotting)
-# ------------------------------------------------
-
-cut.fn <- function(df = NA, 
-                   column_name = NA, 
-                   lower_bound = NA, 
-                   upper_bound = NA){
-  
-  max_val <- upper_bound
-  max_val <- ifelse(is.na(max_val), 0, max_val)
-  max_lev <- ifelse(max_val > 1.6, 4,ifelse(max_val > 0.8, 4, 3))
-  
-  cut_levs <- signif(max_val/(2^((max_lev-1):0)), 2)
-  cut_levs <- unique(cut_levs)
-  cut_levs <- ifelse(is.na(cut_levs), 0, cut_levs)
-  
-  if (lower_bound %in% cut_levs) cut_levs <- cut_levs[-which(cut_levs == lower_bound)]
-  if (lower_bound > min(cut_levs)) cut_levs = cut_levs[-which(cut_levs < lower_bound)]
-  
-  max_lev <- length(cut_levs)
-  
-  cut_levs_labs <- c(paste0("0-",lower_bound),
-                     paste(lower_bound, cut_levs[1], sep="-"),
-                     paste(cut_levs[-max_lev], cut_levs[-1], sep="-"),
-                     paste(cut_levs[max_lev], "+"))
-  
-  cut_levs <- c(-1, lower_bound, cut_levs, 1000) %>% unique()
-  
-  df$levs <- cut(as.data.frame(df)[,column_name], cut_levs, labels=cut_levs_labs)
-  
-  tmp = stars::st_rasterize(df %>% dplyr::select(levs, geometry))
-  
-  return(list(raster = tmp,cut_levs = cut_levs))
-}
-
 # ******************************************************************
 # LOAD AND SUBSET BIRD DATA BASED ON SPECIFIC CRITERIA (DATE RANGES, ETC.)
 # ******************************************************************
@@ -92,10 +56,14 @@ AEA_proj <- "+proj=aea +lat_1=50 +lat_2=70 +lat_0=40 +lon_0=-87 +x_0=0 +y_0=0 +e
 ONBoundary <- st_read("../../../Data/Spatial/National/BCR/BCR_Terrestrial_master.shp")  %>%
   subset(PROVINCE_S == "ONTARIO") %>%
   st_make_valid() %>%
-  st_union() %>%
   st_transform(AEA_proj) %>%
   st_buffer(5) %>%
-  st_buffer(-5) 
+  st_buffer(-5) %>%
+  st_union() %>%
+  st_cast("POLYGON") %>%
+  st_as_sf() %>%
+  mutate(Area_km2 = as.numeric(st_area(.))) %>%
+  subset(Area_km2 >= 100)
 
 # ONGrid <- ONGrid %>% st_intersection(ONBoundary)
 ONGrid <- ONGrid %>% rename(geometry = x)
@@ -110,11 +78,13 @@ target_raster <- rast("../../../Data/Spatial/National/AnnualMeanTemperature/wc2.
 # Create hexagonal grid across study area
 # ----------------------------------------------------
 
-hexgrid <- st_make_grid(ONBoundary, cellsize = 50, square=FALSE, what = "polygons") %>%
+hexgrid <- st_make_grid(ONBoundary, cellsize = 25, square=FALSE, what = "polygons") %>%
   st_as_sf() %>% mutate(hexid = 1:nrow(.)) %>% dplyr::rename(geometry = x) %>%
   st_intersection(ONBoundary)
 
 hex_centroids <- st_centroid(hexgrid)
+
+dim(hexgrid)
 
 # ------------------------------------------
 # Select Point Counts / ARUs to use
@@ -124,7 +94,7 @@ hex_centroids <- st_centroid(hexgrid)
 all_surveys$Hours_Since_Sunrise <- as.numeric(all_surveys$Hours_Since_Sunrise)
 all_surveys$Obs_Index <- 1:nrow(all_surveys)
 
-PC_to_use <- subset(all_surveys,
+all_surveys <- subset(all_surveys,
                     Survey_Type %in% c("Point_Count","ARU_SPT") &
                       
                       Survey_Duration_Minutes >= 1 &
@@ -139,27 +109,15 @@ PC_to_use <- subset(all_surveys,
                                           "OBBA3",
                                           "Ontario Breeding Bird Atlas Digital Point Counts 2023",
                                           "Ontario Breeding Bird Atlas Digital Point Counts 2022",
-                                          "Ontario Breeding Bird Atlas Digital Point Counts 2021")
-)
+                                          "Ontario Breeding Bird Atlas Digital Point Counts 2021")) %>%
+                      arrange(Obs_Index)
 
-dim(PC_to_use) # 101206
-
-# ------------------------------------------
-# Calculate mean covariate values within each Atlas square (covariates taken from ONGrid)
-# Note: these will be merged with new stationary checklist dataframe ("ONSquareChecklist") within the species loop
-# ------------------------------------------
-
-# This vector should contain names of each covariate needed for analysis
-covars <- paste0("PC",1:9)
-cov_rast <- stars::st_rasterize(ONGrid %>% dplyr::select(covars, geometry)) %>% rast()
-#plot(cov_rast)
+dim(all_surveys) # 101206
 
 # ------------------------------------------
 # Subset
 # ------------------------------------------
 
-surveys_to_use <- c(PC_to_use$Obs_Index) # SC_to_use$Obs_Index, # LT_to_use$Obs_Index
-all_surveys <- subset(all_surveys, Obs_Index %in% surveys_to_use) %>% arrange(Obs_Index)
 full_count_matrix <- full_count_matrix[all_surveys$Obs_Index,]
 
 # ******************************************************************
@@ -173,7 +131,8 @@ species_list <- subset(species_to_model, n_detections > 500) %>%
   sample_n(50)
 
 species_list <- rbind(subset(species_to_model,english_name %in% 
-                               c("Canada Jay","Lesser Yellowlegs","Boreal Chickadee","Black-capped Chickadee","Rusty Blackbird","Tennessee Warbler")),
+                               #c("Least Bittern","Short-billed Dowitcher"))) %>% unique()
+                               c("Canada Jay","Blackpoll Warbler","Lesser Yellowlegs","Boreal Chickadee","Black-capped Chickadee","Rusty Blackbird","Tennessee Warbler")),
                       species_list) %>% unique()
 
 # Prepare QPAD offsets for survey effort
@@ -249,15 +208,18 @@ for (i in 1:nrow(species_list)){
     as.data.frame() %>%
     group_by(hexid,Atlas) %>%
     summarize(count = sum(count),
-              effort = sum(Survey_Duration_Minutes)) 
+              effort = sum(Survey_Duration_Minutes)) %>%
+    mutate(count_per_effort = count/effort)
+  
+  
   species_hex_centroid <- full_join(hex_centroids,species_hex_centroid) %>% na.omit()
   
   col_lim <- c(0,max(species_hex_centroid$count,na.rm = TRUE))
   
   species_data_plot <- ggplot() +
     geom_sf(data=ONBoundary,colour="gray70", fill = "gray80")+
-    geom_sf(data=species_hex_centroid, aes(col = count, size = effort))+
-    #geom_sf(data=subset(species_hex_centroid,count>0), col = "black", fill = "transparent",size = 0.1)+
+    geom_sf(data=subset(species_hex_centroid,count>0), aes(col = count_per_effort, size = effort))+
+    geom_sf(data=subset(species_hex_centroid,count==0), aes(size=effort), shape = 1)+
     
     annotation_scale(style = "ticks",
                      text_face = "bold")+
@@ -266,9 +228,10 @@ for (i in 1:nrow(species_list)){
     theme(panel.grid.major = element_blank(),
           panel.grid.minor = element_blank(),
           panel.background = element_rect(fill = 'transparent', colour = 'black'))+
-    scale_color_gradientn(colors = c("black",viridis(10)),na.value=NA)+
-    ggtitle(paste0(species_name," - Observed count per km^2"))+
-    facet_grid(Atlas~.)
+    scale_color_gradientn(colors = c("black",viridis(10)),na.value=NA, trans = "log10")+
+    scale_size_continuous(name = "Total Survey Effort (min)", range = c(1,4))+
+    ggtitle(paste0(species_name," - Observed count per min"))+
+    facet_grid(.~Atlas)
   species_data_plot
   
   # ----------------------------------------------------
@@ -315,14 +278,14 @@ for (i in 1:nrow(species_list)){
   
   # Controls the 'residual spatial field'.  This can be adjusted to create smoother surfaces.
   matern_abund <- inla.spde2.pcmatern(mesh_spatial,
-                                      prior.range = c(250, 0.01), # 500, NA # 10% chance range is smaller than 500000
+                                      prior.range = c(500, 0.01), # 500, NA # 10% chance range is smaller than 500000
                                       prior.sigma = c(0.2,0.1),   # 0.1, 0.1 # 10% chance sd is larger than 1,
                                       constr = TRUE
   )
   
   # Controls the 'residual spatial field'.  This can be adjusted to create smoother surfaces.
   matern_change <- inla.spde2.pcmatern(mesh_spatial,
-                                       prior.range = c(500,NA), # 500, NA # 10% chance range is smaller than 500000
+                                       prior.range = c(1000,0.01), # 500, NA # 10% chance range is smaller than 500000
                                        prior.sigma = c(0.2,0.1),   # 0.1, 0.1# 10% chance sd is larger than 1,
                                        constr = TRUE
   )
@@ -331,7 +294,7 @@ for (i in 1:nrow(species_list)){
   # iid random effect for 20-km blocks
   # ----------------------------------------------------
   pc_prec <- list(prior = "pcprec", param = c(0.1, 0.1))
-  species_hex$hexid
+  species_hex$hexid <- as.numeric(as.factor(species_hex$hexid))
   species_hex$hex_atlas <- as.numeric(as.factor(paste0(species_hex$hexid,"-",species_hex$Atlas)))
   
   # ----------------------------------------------------
@@ -365,6 +328,7 @@ for (i in 1:nrow(species_list)){
             Intercept_OBBA2(1,model="linear",mean.linear = -10)+
             Intercept_OBBA3(1,model="linear", mean.linear = 0, prec.linear = 100)+
             range_effect_OBBA2(1,model="linear", mean.linear = -0.046, prec.linear = 10000)+
+            eta(hexid, model = "iid", constr = TRUE, hyper = list(prec = pc_prec)) +
             kappa(hex_atlas, model = "iid", constr = TRUE, hyper = list(prec = pc_prec)) +
             spde_OBBA2(main = geometry, model = matern_abund) +
             spde_change(main = geometry, model = matern_change) +',
@@ -376,6 +340,7 @@ for (i in 1:nrow(species_list)){
   model_formula_OBBA2 = as.formula(paste0('count ~
                   Intercept_OBBA2 +
                   log_offset + 
+                  eta +
                   kappa + 
                   range_effect_OBBA2 * distance_from_range +
                   spde_OBBA2 +',
@@ -388,6 +353,7 @@ for (i in 1:nrow(species_list)){
                   Intercept_OBBA2 +
                   Intercept_OBBA3 +
                   log_offset + 
+                  eta +
                   kappa + 
                   range_effect_OBBA2 * distance_from_range +
                   spde_OBBA2 + spde_change + ',
@@ -398,6 +364,10 @@ for (i in 1:nrow(species_list)){
   # ----------------------------------------------------------------------------
   # Fit model to point counts and ARUs with negative binomial error
   # ----------------------------------------------------------------------------
+  
+  error_type <- "poisson"
+  if (sum(species_hex$count>2)>20) error_type <- "nbinomial"
+  
   start <- Sys.time()
   
   fit_INLA <- NULL
@@ -406,11 +376,11 @@ for (i in 1:nrow(species_list)){
     fit_model <- function(){
       tryCatch(expr = {bru(components = model_components,
                            
-                           like(family = "poisson",
+                           like(family = error_type,
                                 formula = model_formula_OBBA2,
                                 data = subset(species_hex, year(Date_Time)%in% c(2001:2005))),
                            
-                           like(family = "poisson",
+                           like(family = error_type,
                                 formula = model_formula_OBBA3,
                                 data = subset(species_hex, year(Date_Time)%in% c(2021:2025))),
                            
@@ -441,7 +411,8 @@ for (i in 1:nrow(species_list)){
   
   end <- Sys.time()
   runtime_INLA <- difftime( end,start, units="mins") %>% round(2)
-  print(paste0(species_name," - ",runtime_INLA," min to fit model"))  # ~26 min
+  print(paste0(species_name," - ",runtime_INLA," min to fit model"))  # ~8 min
+  print(summary(fit_INLA))
   
   # ****************************************************************************
   # ****************************************************************************
@@ -504,24 +475,6 @@ for (i in 1:nrow(species_list)){
   start2 <- Sys.time()
   
   # --------
-  # OBBA-2
-  # --------
-  
-  pred_OBBA2 <- NULL
-  pred_OBBA2 <- generate(fit_INLA,
-                         ONGrid_species,
-                         formula =  pred_formula_OBBA2,
-                         n.samples = 500,
-                         seed = 123)
-  
-  pred_OBBA2 <- exp(pred_OBBA2)
-  OBBA2_prediction_quantiles = apply(pred_OBBA2,1,function(x) quantile(x,c(0.05,0.5,0.95),na.rm = TRUE))
-  ONGrid_species$OBBA2_pred_q05 <- OBBA2_prediction_quantiles[1,]
-  ONGrid_species$OBBA2_pred_q50 <- OBBA2_prediction_quantiles[2,]
-  ONGrid_species$OBBA2_pred_q95 <- OBBA2_prediction_quantiles[3,]
-  ONGrid_species$OBBA2_pred_CI_width_90 <- OBBA2_prediction_quantiles[3,] - OBBA2_prediction_quantiles[1,]
-  
-  # --------
   # OBBA-3
   # --------
   
@@ -540,6 +493,24 @@ for (i in 1:nrow(species_list)){
   ONGrid_species$OBBA3_pred_CI_width_90 <- OBBA3_prediction_quantiles[3,] - OBBA3_prediction_quantiles[1,]
   
   # --------
+  # OBBA-2
+  # --------
+  
+  pred_OBBA2 <- NULL
+  pred_OBBA2 <- generate(fit_INLA,
+                         ONGrid_species,
+                         formula =  pred_formula_OBBA2,
+                         n.samples = 500,
+                         seed = 123)
+  
+  pred_OBBA2 <- exp(pred_OBBA2)
+  OBBA2_prediction_quantiles = apply(pred_OBBA2,1,function(x) quantile(x,c(0.05,0.5,0.95),na.rm = TRUE))
+  ONGrid_species$OBBA2_pred_q05 <- OBBA2_prediction_quantiles[1,]
+  ONGrid_species$OBBA2_pred_q50 <- OBBA2_prediction_quantiles[2,]
+  ONGrid_species$OBBA2_pred_q95 <- OBBA2_prediction_quantiles[3,]
+  ONGrid_species$OBBA2_pred_CI_width_90 <- OBBA2_prediction_quantiles[3,] - OBBA2_prediction_quantiles[1,]
+  
+  # --------
   # Change
   # --------
   
@@ -553,7 +524,7 @@ for (i in 1:nrow(species_list)){
   
   end2 <- Sys.time() 
   runtime_pred <- difftime( end2,start2, units="mins") %>% round(2)
-  print(paste0(species_name," - ",runtime_pred," min to generate predictions")) # 14 min
+  print(paste0(species_name," - ",runtime_pred," min to generate predictions")) # 7 min
   
   # ------------------------------------------------
   # sf object for ebird range limit (optional - not needed for plotting, but potentially helpful)
@@ -573,7 +544,7 @@ for (i in 1:nrow(species_list)){
   colscale_relabund <-c("#FEFEFE", "#FBF7E2", "#FCF8D0", "#EEF7C2", "#CEF2B0", "#94E5A0", "#51C987", "#18A065", "#008C59", "#007F53", "#006344")
   colpal_relabund <- colorRampPalette(colscale_relabund)
   
-  upper_bound <- quantile(ONGrid_species$OBBA2_pred_q50,0.95,na.rm = TRUE) %>% signif(2)
+  upper_bound <- quantile(ONGrid_species$OBBA2_pred_q50,0.99,na.rm = TRUE) %>% signif(2)
   lower_bound <- upper_bound/100
   
   tmp$OBBA2_pred_q50[tmp$OBBA2_pred_q50 > upper_bound] <-  upper_bound
@@ -649,6 +620,7 @@ for (i in 1:nrow(species_list)){
   # ****************************************************************************
   # CHANGE BETWEEN ATLASES
   # ****************************************************************************
+  
   convert_numeric_to_char <- function(numeric_vector) {
     char_vector <- ifelse(numeric_vector > 0, paste0("+", numeric_vector), as.character(numeric_vector))
     return(char_vector)
@@ -657,6 +629,7 @@ for (i in 1:nrow(species_list)){
   colscale_change <-c("darkred","orangered","white","dodgerblue","darkblue")
   colpal_change <- colorRampPalette(colscale_change)
   
+  tmp$trend_signif <- tmp$change_pred_q95 < 0 | tmp$change_pred_q05 > 0
   tmp$change_pred_q50[tmp$change_pred_q50 > upper_bound] <-  upper_bound
   tmp$change_pred_q50[tmp$change_pred_q50 < -upper_bound] <-  -upper_bound
   
@@ -675,6 +648,10 @@ for (i in 1:nrow(species_list)){
     
     
     geom_sf(data = ONBoundary,colour="black",fill=NA,lwd=0.3,show.legend = F) +
+    #geom_sf(data = subset(tmp, trend_signif == TRUE & change_pred_q50 < 0) %>% st_buffer(5) %>% st_union(), col = "red", fill = "red", alpha = 0.2)+
+    #geom_sf(data = subset(tmp, trend_signif == TRUE & change_pred_q50 > 0) %>% st_buffer(5) %>% st_union(), col = "blue", fill = "blue", alpha = 0.2)+
+    
+    #geom_sf(data = subset(hex_for_trend, signif == TRUE & change_pred_q50 > 0) %>% st_union(), col = "blue", fill = "blue", alpha = 0.2)+
     
     coord_sf(clip = "off",xlim = range(as.data.frame(st_coordinates(ONBoundary))$X)) +
     theme(panel.background = element_blank(),panel.grid.major = element_blank(), panel.grid.minor = element_blank())+

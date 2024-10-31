@@ -217,10 +217,9 @@ for (i in 1:nrow(species_list)){
   col_lim <- c(0,max(species_hex_centroid$count,na.rm = TRUE))
   
   species_data_plot <- ggplot() +
-    geom_sf(data=ONBoundary,colour="gray70", fill = "gray80")+
+    geom_sf(data=ONBoundary,colour="gray90", fill = "white")+
+    geom_sf(data=subset(species_hex_centroid,count==0), aes(size=effort), shape = 1, col = "gray95")+
     geom_sf(data=subset(species_hex_centroid,count>0), aes(col = count_per_effort, size = effort))+
-    geom_sf(data=subset(species_hex_centroid,count==0), aes(size=effort), shape = 1)+
-    
     annotation_scale(style = "ticks",
                      text_face = "bold")+
     theme_bw()+

@@ -30,6 +30,7 @@ require(stars)
 require(ggtext)
 require(exactextractr)
 require(ggspatial)
+require(ebirdst)
 
 # Timeout INLA after 10 minutes (if it has not fit by then, it has likely stalled)
 inla.setOption(inla.timeout = 60*10)
@@ -124,7 +125,7 @@ full_count_matrix <- full_count_matrix[all_surveys$Obs_Index,]
 # Loop through species, fit models, generate maps
 # ******************************************************************
 
-#species_summary <- species_summary %>% subset(`PC/ARU` >=20)
+# species_summary <- species_summary %>% subset(`PC/ARU` >=20)
 
 set.seed(123)
 species_list <- subset(species_to_model, n_detections > 500) %>%
@@ -160,18 +161,32 @@ for (i in 1:nrow(species_list)){
     st_transform(AEA_proj)
   
   # ----------------------------------------------------
-  # Extract ebird range for this species (if it exists); prepared by previous script
+  # Extract/process ebird range for this species (if it exists)
   # ----------------------------------------------------
   
-  range <- NA
-  if (species_name %in% names(species_ranges)){
+  check <- get_species(species_name) # does the species have a range estimated from eBird?
+  
+  if (length(check)==0 | (length(check)>0 & is.na(check))){
     
-    range <- species_ranges[[species_name]] %>% st_transform(st_crs(sp_dat))
-    
-    # Identify distance of each survey to the edge of species range (in km)
-    sp_dat$distance_from_range <- ((st_distance(sp_dat, range)) %>% as.numeric())
-  } else{
+    print(paste0(species_name, " not available in eBird"))
     sp_dat$distance_from_range <- 0
+    range <- NA
+    
+  }else{
+    ebirdst_download_status(species_name, 
+                            download_abundance = FALSE,
+                            download_ranges = TRUE,
+                            pattern = "_smooth_27km_") 
+    
+    path <- get_species_path(species_name)
+    
+    range <- load_ranges(species_name, resolution = "27km",smoothed = TRUE)
+    
+    range <- range %>% subset(season %in% c("resident","breeding")) %>% 
+      st_transform(.,crs = st_crs(ONBoundary)) %>% 
+      st_union()
+    
+    sp_dat$distance_from_range <- ((st_distance(sp_dat, range)) %>% as.numeric()) # should be in km
   }
   
   # ----------------------------------------------------
@@ -211,16 +226,15 @@ for (i in 1:nrow(species_list)){
               effort = sum(Survey_Duration_Minutes)) %>%
     mutate(count_per_effort = count/effort)
   
-  
   species_hex_centroid <- full_join(hex_centroids,species_hex_centroid) %>% na.omit()
   
   col_lim <- c(0,max(species_hex_centroid$count,na.rm = TRUE))
   
   species_data_plot <- ggplot() +
-    geom_sf(data=ONBoundary,colour="gray70", fill = "gray80")+
+    geom_sf(data=ONBoundary,colour="gray90", fill = "white")+
+    geom_sf(data=subset(species_hex_centroid,count==0), aes(size=effort), shape = 1, col = "gray80")+
     geom_sf(data=subset(species_hex_centroid,count>0), aes(col = count_per_effort, size = effort))+
-    geom_sf(data=subset(species_hex_centroid,count==0), aes(size=effort), shape = 1)+
-    
+    geom_sf(data = range %>% st_intersection(ONBoundary), col = "red", fill = "transparent")+
     annotation_scale(style = "ticks",
                      text_face = "bold")+
     theme_bw()+
@@ -231,7 +245,7 @@ for (i in 1:nrow(species_list)){
     scale_color_gradientn(colors = c("black",viridis(10)),na.value=NA, trans = "log10")+
     scale_size_continuous(name = "Total Survey Effort (min)", range = c(1,4))+
     ggtitle(paste0(species_name," - Observed count per min"))+
-    facet_grid(.~Atlas)
+    facet_grid(Atlas~.)
   species_data_plot
   
   # ----------------------------------------------------
@@ -317,7 +331,7 @@ for (i in 1:nrow(species_list)){
   
   # Names of covariates to include in model. Ideally, covariates should be uncorrelated with each other.
   # Each covariate will include a quadratic effect to allow for 'intermediate optimum' effects
-  covariates_to_include <- paste0("PC",1:5) 
+  covariates_to_include <- paste0("PC",1:2) 
   
   # How much shrinkage should be applied to covariate effects?
   sd_linear <- 0.2  # Change to smaller value (e.g., 0.1), if you want to heavily shrink covariate effects and potentially create smoother surfaces
@@ -366,7 +380,7 @@ for (i in 1:nrow(species_list)){
   # ----------------------------------------------------------------------------
   
   error_type <- "poisson"
-  if (sum(species_hex$count>2)>20) error_type <- "nbinomial"
+  if (sum(species_hex$count>4)>25 & sum(sp_dat$count>5)>10) error_type <- "nbinomial"
   
   start <- Sys.time()
   
@@ -668,6 +682,19 @@ for (i in 1:nrow(species_list)){
   
   png(paste0("../Output/Prediction_Maps/Relative_Abundance/",species_name,"_change_q50.png"), width=6.5, height=8, units="in", res=300, type="cairo")
   print(change_plot_q50)
+  dev.off()
+  
+  
+  # Combine all figures into a single one
+  png(file = paste0("../Output/Prediction_Maps/Relative_Abundance/",species_name,"_full.png"), 
+      units = "in", 
+      width = 10, 
+      height = 12, res = 600)
+  grid.arrange(species_data_plot, OBBA2_plot_q50,OBBA3_plot_q50,change_plot_q50,
+               ncol = 3,nrow=4, 
+               layout_matrix = cbind(c(1,1,1,1), 
+                                     c(2,2,3,3),
+                                     c(NA,4,4,NA)))
   dev.off()
   
   print(summary(fit_INLA))

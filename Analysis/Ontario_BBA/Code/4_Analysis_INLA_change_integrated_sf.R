@@ -31,6 +31,7 @@ require(ggtext)
 require(exactextractr)
 require(ggspatial)
 require(ebirdst)
+require(gridExtra)
 
 # Timeout INLA after 10 minutes (if it has not fit by then, it has likely stalled)
 inla.setOption(inla.timeout = 60*10)
@@ -152,7 +153,7 @@ for (i in 1:nrow(species_list)){
   sp_code = as.character(species_list$Species_Code_BSC[i])
   species_name = species_list$english_name[i]
   print(species_name)
-  if (file.exists(paste0("../Output/Prediction_Maps/Relative_Abundance/",species_name,"_change_q50.png"))) next
+  if (file.exists(paste0("../Output/Prediction_Maps/Relative_Abundance/",species_name,"_full.png"))) next
   
   # Prepare data for this species
   sp_dat <- all_surveys %>% 
@@ -228,25 +229,52 @@ for (i in 1:nrow(species_list)){
   
   species_hex_centroid <- full_join(hex_centroids,species_hex_centroid) %>% na.omit()
   
-  col_lim <- c(0,max(species_hex_centroid$count,na.rm = TRUE))
+  col_lim <- c(min(species_hex_centroid$count_per_effort[species_hex_centroid$count_per_effort>0],na.rm = TRUE),max(species_hex_centroid$count_per_effort,na.rm = TRUE))
+  colscale_relabund <-c("#FEFEFE", "#FBF7E2", "#FCF8D0", "#EEF7C2", "#CEF2B0", "#94E5A0", "#51C987", "#18A065", "#008C59", "#007F53", "#006344")
   
-  species_data_plot <- ggplot() +
+  species_data_OBBA2 <- ggplot() +
     geom_sf(data=ONBoundary,colour="gray90", fill = "white")+
-    geom_sf(data=subset(species_hex_centroid,count==0), aes(size=effort), shape = 1, col = "gray80")+
-    geom_sf(data=subset(species_hex_centroid,count>0), aes(col = count_per_effort, size = effort))+
-    geom_sf(data = range %>% st_intersection(ONBoundary), col = "red", fill = "transparent")+
-    annotation_scale(style = "ticks",
-                     text_face = "bold")+
-    theme_bw()+
+    geom_sf(data=subset(species_hex_centroid,count==0 & Atlas == "OBBA2"), aes(size=effort), shape = 1, col = "gray80")+
+    geom_sf(data=subset(species_hex_centroid,count>0  & Atlas == "OBBA2"), aes(col = count_per_effort, size = effort))+
+    geom_sf(data = range %>% st_intersection(ONBoundary), col = "gray50", fill = "transparent", linetype = 2)+
+    geom_sf(data = ONBoundary,colour="black",fill=NA,lwd=0.3,show.legend = F) +
     
-    theme(panel.grid.major = element_blank(),
-          panel.grid.minor = element_blank(),
-          panel.background = element_rect(fill = 'transparent', colour = 'black'))+
-    scale_color_gradientn(colors = c("black",viridis(10)),na.value=NA, trans = "log10")+
-    scale_size_continuous(name = "Total Survey Effort (min)", range = c(1,4))+
-    ggtitle(paste0(species_name," - Observed count per min"))+
-    facet_grid(Atlas~.)
-  species_data_plot
+    coord_sf(clip = "off",xlim = range(as.data.frame(st_coordinates(ONBoundary))$X)) +
+    theme(panel.background = element_blank(),panel.grid.major = element_blank(), panel.grid.minor = element_blank())+
+    theme(axis.title.x=element_blank(), axis.text.x=element_blank(), axis.ticks.x=element_blank())+
+    theme(axis.title.y=element_blank(), axis.text.y=element_blank(), axis.ticks.y=element_blank())+
+    theme(plot.margin = unit(c(0, 0, 0, 0), "cm"))+
+    
+    annotate(geom="text",x=400,y=1650, label= "Observed Data OBBA2",lineheight = .85,hjust = 0,size=6,fontface =2) +
+    #annotate(geom="text",x=400,y=1550, label= "OBBA 2 - Observed Data",lineheight = .85,hjust = 0,size=4,fontface =2) +
+    annotate(geom="text",x=400,y=1480, label= paste0("Prepared on ",Sys.Date()),size=2,lineheight = .75,hjust = 0,color="gray75")+
+    
+    scale_color_gradientn(colors = colscale_relabund,na.value=NA, trans = "log10", name = "Count/Min", limits = col_lim)+
+    scale_size_continuous(name = "Total Survey Effort (min)", range = c(1,4), guide = "none")
+  
+  species_data_OBBA2
+  
+  species_data_OBBA3 <- ggplot() +
+    geom_sf(data=ONBoundary,colour="gray90", fill = "white")+
+    geom_sf(data=subset(species_hex_centroid,count==0 & Atlas == "OBBA3"), aes(size=effort), shape = 1, col = "gray80")+
+    geom_sf(data=subset(species_hex_centroid,count>0  & Atlas == "OBBA3"), aes(col = count_per_effort, size = effort))+
+    geom_sf(data = range %>% st_intersection(ONBoundary), col = "gray50", fill = "transparent", linetype = 2)+
+    geom_sf(data = ONBoundary,colour="black",fill=NA,lwd=0.3,show.legend = F) +
+   
+    coord_sf(clip = "off",xlim = range(as.data.frame(st_coordinates(ONBoundary))$X)) +
+    theme(panel.background = element_blank(),panel.grid.major = element_blank(), panel.grid.minor = element_blank())+
+    theme(axis.title.x=element_blank(), axis.text.x=element_blank(), axis.ticks.x=element_blank())+
+    theme(axis.title.y=element_blank(), axis.text.y=element_blank(), axis.ticks.y=element_blank())+
+    theme(plot.margin = unit(c(0, 0, 0, 0), "cm"))+
+    
+    annotate(geom="text",x=400,y=1650, label= "Observed Data OBBA3",lineheight = .85,hjust = 0,size=6,fontface =2) +
+    #annotate(geom="text",x=400,y=1550, label= "OBBA 3 - Observed Data",lineheight = .85,hjust = 0,size=4,fontface =2) +
+    annotate(geom="text",x=400,y=1480, label= paste0("Prepared on ",Sys.Date()),size=2,lineheight = .75,hjust = 0,color="gray75")+
+  
+    scale_color_gradientn(colors = colscale_relabund,na.value=NA, trans = "log10", name = "Count/Min", limits = col_lim)+
+    scale_size_continuous(name = "Total Survey Effort (min)", range = c(1,4), guide = "none")
+    
+  species_data_OBBA3
   
   # ----------------------------------------------------
   # Create a spatial mesh, which is used to fit the residual spatial field
@@ -307,6 +335,7 @@ for (i in 1:nrow(species_list)){
   # ----------------------------------------------------
   # iid random effect for 20-km blocks
   # ----------------------------------------------------
+  
   pc_prec <- list(prior = "pcprec", param = c(0.1, 0.1))
   species_hex$hexid <- as.numeric(as.factor(species_hex$hexid))
   species_hex$hex_atlas <- as.numeric(as.factor(paste0(species_hex$hexid,"-",species_hex$Atlas)))
@@ -553,7 +582,7 @@ for (i in 1:nrow(species_list)){
   # ****************************************************************************
   
   # Convert to CRS of target raster
-  tmp <- ONGrid_species %>% st_transform(st_crs(target_raster)) %>% st_centroid(.)
+  ONGrid_species <- ONGrid_species %>% st_transform(st_crs(target_raster)) %>% st_centroid(.)
   
   colscale_relabund <-c("#FEFEFE", "#FBF7E2", "#FCF8D0", "#EEF7C2", "#CEF2B0", "#94E5A0", "#51C987", "#18A065", "#008C59", "#007F53", "#006344")
   colpal_relabund <- colorRampPalette(colscale_relabund)
@@ -561,12 +590,12 @@ for (i in 1:nrow(species_list)){
   upper_bound <- quantile(ONGrid_species$OBBA2_pred_q50,0.99,na.rm = TRUE) %>% signif(2)
   lower_bound <- upper_bound/100
   
-  tmp$OBBA2_pred_q50[tmp$OBBA2_pred_q50 > upper_bound] <-  upper_bound
-  tmp$OBBA2_pred_q50[tmp$OBBA2_pred_q50 < lower_bound] <-  0
+  ONGrid_species$OBBA2_pred_q50[ONGrid_species$OBBA2_pred_q50 > upper_bound] <-  upper_bound
+  ONGrid_species$OBBA2_pred_q50[ONGrid_species$OBBA2_pred_q50 < lower_bound] <-  0
   
   OBBA2_plot_q50 <- ggplot() +
     
-    geom_sf(data = tmp, aes(col = OBBA2_pred_q50), size = 0.1) +
+    geom_sf(data = ONGrid_species, aes(col = OBBA2_pred_q50), size = 0.1) +
     scale_color_gradientn(name = "Per point count",
                           colors = colpal_relabund(10),
                           trans = "log10",
@@ -584,26 +613,28 @@ for (i in 1:nrow(species_list)){
     theme(plot.margin = unit(c(0, 0, 0, 0), "cm"))+
     # theme(legend.margin=margin(0,0,0,0),legend.box.margin=margin(5,10,5,-20),legend.title.align=0.5,
     #       legend.title = element_markdown(lineheight=.9,hjust = "left"))
-    annotate(geom="text",x=400,y=1650, label= paste0(species_name),lineheight = .85,hjust = 0,size=6,fontface =2) +
-    annotate(geom="text",x=400,y=1550, label= "OBBA 2",lineheight = .85,hjust = 0,size=4,fontface =2) +
+    
+    annotate(geom="text",x=400,y=1650, label="Predicted OBBA2",lineheight = .85,hjust = 0,size=6,fontface =2) +
+    #annotate(geom="text",x=400,y=1650, label= paste0(species_name),lineheight = .85,hjust = 0,size=6,fontface =2) +
+    #annotate(geom="text",x=400,y=1550, label= "OBBA 2",lineheight = .85,hjust = 0,size=4,fontface =2) +
     annotate(geom="text",x=400,y=1480, label= paste0("Prepared on ",Sys.Date()),size=2,lineheight = .75,hjust = 0,color="gray75")
   
   #print(OBBA2_plot_q50)
-  
-  png(paste0("../Output/Prediction_Maps/Relative_Abundance/",species_name,"_OBBA2_q50.png"), width=6.5, height=8, units="in", res=300, type="cairo")
-  print(OBBA2_plot_q50)
-  dev.off()
-  
+  # 
+  # png(paste0("../Output/Prediction_Maps/Relative_Abundance/",species_name,"_OBBA2_q50.png"), width=6.5, height=8, units="in", res=300, type="cairo")
+  # print(OBBA2_plot_q50)
+  # dev.off()
+  # 
   # ****************************************************************************
   # RELATIVE ABUNDANCE IN OBBA3
   # ****************************************************************************
   
-  tmp$OBBA3_pred_q50[tmp$OBBA3_pred_q50 > upper_bound] <-  upper_bound
-  tmp$OBBA3_pred_q50[tmp$OBBA3_pred_q50 < lower_bound] <-  0
+  ONGrid_species$OBBA3_pred_q50[ONGrid_species$OBBA3_pred_q50 > upper_bound] <-  upper_bound
+  ONGrid_species$OBBA3_pred_q50[ONGrid_species$OBBA3_pred_q50 < lower_bound] <-  0
   
   OBBA3_plot_q50 <- ggplot() +
     
-    geom_sf(data = tmp, aes(col = OBBA3_pred_q50), size = 0.1) +
+    geom_sf(data = ONGrid_species, aes(col = OBBA3_pred_q50), size = 0.1) +
     scale_color_gradientn(name = "Per point count",
                           colors = colpal_relabund(10),
                           trans = "log10",
@@ -620,17 +651,19 @@ for (i in 1:nrow(species_list)){
     theme(plot.margin = unit(c(0, 0, 0, 0), "cm"))+
     # theme(legend.margin=margin(0,0,0,0),legend.box.margin=margin(5,10,5,-20),legend.title.align=0.5,
     #       legend.title = element_markdown(lineheight=.9,hjust = "left"))
-    annotate(geom="text",x=400,y=1650, label= paste0(species_name),lineheight = .85,hjust = 0,size=6,fontface =2) +
-    annotate(geom="text",x=400,y=1550, label= "OBBA 3",lineheight = .85,hjust = 0,size=4,fontface =2) +
+    
+    annotate(geom="text",x=400,y=1650, label="Predicted OBBA3",lineheight = .85,hjust = 0,size=6,fontface =2) +
+    #annotate(geom="text",x=400,y=1650, label= paste0(species_name),lineheight = .85,hjust = 0,size=6,fontface =2) +
+    #annotate(geom="text",x=400,y=1550, label= "OBBA 3",lineheight = .85,hjust = 0,size=4,fontface =2) +
     annotate(geom="text",x=400,y=1480, label= paste0("Prepared on ",Sys.Date()),size=2,lineheight = .75,hjust = 0,color="gray75")
   
   #   
   # print(OBBA3_plot_q50)
-  
-  png(paste0("../Output/Prediction_Maps/Relative_Abundance/",species_name,"_OBBA3_q50.png"), width=6.5, height=8, units="in", res=300, type="cairo")
-  print(OBBA3_plot_q50)
-  dev.off()
-  
+  # 
+  # png(paste0("../Output/Prediction_Maps/Relative_Abundance/",species_name,"_OBBA3_q50.png"), width=6.5, height=8, units="in", res=300, type="cairo")
+  # print(OBBA3_plot_q50)
+  # dev.off()
+  # 
   # ****************************************************************************
   # CHANGE BETWEEN ATLASES
   # ****************************************************************************
@@ -643,18 +676,18 @@ for (i in 1:nrow(species_list)){
   colscale_change <-c("darkred","orangered","white","dodgerblue","darkblue")
   colpal_change <- colorRampPalette(colscale_change)
   
-  tmp$trend_signif <- tmp$change_pred_q95 < 0 | tmp$change_pred_q05 > 0
-  tmp$change_pred_q50[tmp$change_pred_q50 > upper_bound] <-  upper_bound
-  tmp$change_pred_q50[tmp$change_pred_q50 < -upper_bound] <-  -upper_bound
+  ONGrid_species$trend_signif <- ONGrid_species$change_pred_q95 < 0 | ONGrid_species$change_pred_q05 > 0
+  ONGrid_species$change_pred_q50[ONGrid_species$change_pred_q50 > upper_bound] <-  upper_bound
+  ONGrid_species$change_pred_q50[ONGrid_species$change_pred_q50 < -upper_bound] <-  -upper_bound
   
   percent_change <- 100*(apply(pred_OBBA3,2,sum,na.rm = TRUE) - apply(pred_OBBA2,2,sum,na.rm = TRUE))/apply(pred_OBBA2,2,sum,na.rm = TRUE)
   percent_change_quantiles <- quantile(percent_change,c(0.05,0.5,0.95)) %>% round() %>% convert_numeric_to_char()
   
   change_label <- paste0("Overall change = ",percent_change_quantiles[2],"% (",percent_change_quantiles[1]," to ",percent_change_quantiles[3],")")
-  lim <- max(abs(tmp$change_pred_q50),na.rm = TRUE)
+  lim <- max(abs(ONGrid_species$change_pred_q50),na.rm = TRUE)
   change_plot_q50 <- ggplot() +
     
-    geom_sf(data = tmp, aes(col = change_pred_q50), size = 0.1) +
+    geom_sf(data = ONGrid_species, aes(col = change_pred_q50), size = 0.1) +
     scale_color_gradientn(name = "Absolute\nchange\n",
                           colors = colpal_change(5),
                           na.value = "black",
@@ -662,8 +695,8 @@ for (i in 1:nrow(species_list)){
     
     
     geom_sf(data = ONBoundary,colour="black",fill=NA,lwd=0.3,show.legend = F) +
-    #geom_sf(data = subset(tmp, trend_signif == TRUE & change_pred_q50 < 0) %>% st_buffer(5) %>% st_union(), col = "red", fill = "red", alpha = 0.2)+
-    #geom_sf(data = subset(tmp, trend_signif == TRUE & change_pred_q50 > 0) %>% st_buffer(5) %>% st_union(), col = "blue", fill = "blue", alpha = 0.2)+
+    #geom_sf(data = subset(ONGrid_species, trend_signif == TRUE & change_pred_q50 < 0) %>% st_buffer(5) %>% st_union(), col = "red", fill = "red", alpha = 0.2)+
+    #geom_sf(data = subset(ONGrid_species, trend_signif == TRUE & change_pred_q50 > 0) %>% st_buffer(5) %>% st_union(), col = "blue", fill = "blue", alpha = 0.2)+
     
     #geom_sf(data = subset(hex_for_trend, signif == TRUE & change_pred_q50 > 0) %>% st_union(), col = "blue", fill = "blue", alpha = 0.2)+
     
@@ -674,27 +707,29 @@ for (i in 1:nrow(species_list)){
     theme(plot.margin = unit(c(0, 0, 0, 0), "cm"))+
     # theme(legend.margin=margin(0,0,0,0),legend.box.margin=margin(5,10,5,-20),legend.title.align=0.5,
     #       legend.title = element_markdown(lineheight=.9,hjust = "left"))
-    annotate(geom="text",x=400,y=1650, label= paste0(species_name),lineheight = .85,hjust = 0,size=6,fontface =2) +
+    annotate(geom="text",x=400,y=1650, label= "Change between atlases",lineheight = .85,hjust = 0,size=6,fontface =2) +
+    #annotate(geom="text",x=400,y=1650, label= paste0(species_name),lineheight = .85,hjust = 0,size=6,fontface =2) +
     annotate(geom="text",x=400,y=1550, label= change_label,lineheight = .85,hjust = 0,size=4,fontface =2) +
     annotate(geom="text",x=400,y=1480, label= paste0("Prepared on ",Sys.Date()),size=2,lineheight = .75,hjust = 0,color="gray75")+
     annotation_scale()
   # print(change_plot_q50)
-  
-  png(paste0("../Output/Prediction_Maps/Relative_Abundance/",species_name,"_change_q50.png"), width=6.5, height=8, units="in", res=300, type="cairo")
-  print(change_plot_q50)
-  dev.off()
-  
+  # png(paste0("../Output/Prediction_Maps/Relative_Abundance/",species_name,"_change_q50.png"), width=6.5, height=8, units="in", res=300, type="cairo")
+  # print(change_plot_q50)
+  # dev.off()
+  # 
   
   # Combine all figures into a single one
   png(file = paste0("../Output/Prediction_Maps/Relative_Abundance/",species_name,"_full.png"), 
       units = "in", 
-      width = 10, 
-      height = 12, res = 600)
-  grid.arrange(species_data_plot, OBBA2_plot_q50,OBBA3_plot_q50,change_plot_q50,
+      width = 30, 
+      height = 14, res = 600)
+  grid.arrange(species_data_OBBA2,species_data_OBBA3, OBBA2_plot_q50,OBBA3_plot_q50,change_plot_q50,
                ncol = 3,nrow=4, 
-               layout_matrix = cbind(c(1,1,1,1), 
-                                     c(2,2,3,3),
-                                     c(NA,4,4,NA)))
+               layout_matrix = rbind(c(1,3,NA),
+                                     c(1,3,5),
+                                     c(2,4,5),
+                                     c(2,4,NA)),
+               top = species_name)
   dev.off()
   
   print(summary(fit_INLA))

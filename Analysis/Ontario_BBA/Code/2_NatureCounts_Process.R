@@ -219,6 +219,26 @@ for (i in 1:nrow(subset(PC_surveyinfo, to_evaluate))){
   print(i)
 }
 
+# # ---------------------
+# # Examine specific points (this code can be removed eventually)
+# # ---------------------
+# 
+# ggplot()+
+#   geom_sf(data = subset(PC_surveyinfo, Project_Name == "OBBA3"))+
+#   geom_sf(data = subset(PC_surveyinfo,to_evaluate & Project_Name == "OBBA3"),col="red")+
+#   theme_bw()
+# 
+# a = subset(PC_surveyinfo, Project_Name == "OBBA3" & 
+#          DecimalLongitude <= -85 & DecimalLongitude >= -85.1 &
+#          DecimalLatitude >= 52.5 & DecimalLatitude <= 52.7 & to_evaluate)[2,]
+# 
+# b = st_intersection(st_buffer(a,1),WT_surveyinfo)
+# 
+# ggplot()+
+#   geom_sf(data = b)+
+#   geom_sf(data = a)+
+#   theme_bw()
+
 # Remove duplicated records from NatureCounts dataset
 PC_removed <- subset(PC_surveyinfo,to_remove)
 PC_surveyinfo <- subset(PC_surveyinfo,!to_remove)

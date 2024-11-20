@@ -1,5 +1,5 @@
 # ************************************************
-# BAYESIAN ANALYSIS / SPECIES DISTRIBUTION MODELS FOR SAONATCHEWAN BREEDING BIRD ATLAS
+# BAYESIAN ANALYSIS / SPECIES DISTRIBUTION MODELS FOR ONTARIO BREEDING BIRD ATLAS
 # 
 # 1) A 'processed data package' for analysis is prepared by previous script
 # ************************************************
@@ -33,7 +33,7 @@ require(ggspatial)
 require(ebirdst)
 require(gridExtra)
 
-# Timeout INLA after 10 minutes (if it has not fit by then, it has likely stalled)
+# Timeout INLA after 20 minutes (if it has not fit by then, it has likely stalled)
 inla.setOption(inla.timeout = 60*20)
 
 # ******************************************************************
@@ -93,25 +93,19 @@ for (bcr in unique(ON_BCR$BCR)){
   ONGrid$BCR[!is.na(tmp)] <- bcr
 }
 
-ggplot(ONGrid)
-
-# Raster with target properties (needed for plotting)
-target_raster <- rast("../../../Data/Spatial/National/AnnualMeanTemperature/wc2.1_30s_bio_1.tif") %>% 
-  crop(st_transform(ONBoundary,crs(.))) %>% 
-  project(AEA_proj, res = 1000) %>%
-  mask(vect(ONBoundary))
+# # Raster with target properties (needed for plotting)
+# target_raster <- rast("../../../Data/Spatial/National/AnnualMeanTemperature/wc2.1_30s_bio_1.tif") %>% 
+#   crop(st_transform(ONBoundary,crs(.))) %>% 
+#   project(AEA_proj, res = 1000) %>%
+#   mask(vect(ONBoundary))
 
 # ----------------------------------------------------
-# Create hexagonal grid across study area
+# Load shapefile containing atlas squares (10km x 10km)
 # ----------------------------------------------------
 
-hexgrid <- st_make_grid(ONBoundary, cellsize = 10, square=FALSE, what = "polygons") %>%
-  st_as_sf() %>% mutate(hexid = 1:nrow(.)) %>% dplyr::rename(geometry = x) %>%
-  st_intersection(ONBoundary)
-
-hex_centroids <- st_centroid(hexgrid)
-
-dim(hexgrid)
+squares <- st_read("../../../Data/Spatial/National/AtlasSquares/NationalSquares_FINAL.shp")  %>%
+  subset(prov == "ON") %>%
+  st_transform(AEA_proj)
 
 # ------------------------------------------
 # Select Point Counts / ARUs to use
@@ -166,6 +160,10 @@ napops_species <- list_species() %>% rename(Species_Code_NAPOPS = Species,Common
 change_estimate_table <- data.frame()
 if (file.exists(paste0("../Output/Tables_Summaries/OBBA3_change_estimate_table.csv"))) change_estimate_table <- read.csv(paste0("../Output/Tables_Summaries/OBBA3_change_estimate_table.csv"), header = TRUE)
 
+# Empty table to populate with summaries of covariate effects
+covariate_effect_table <- data.frame()
+if (file.exists(paste0("../Output/Tables_Summaries/covariate_effect_table.csv"))) covariate_effect_table <- read.csv(paste0("../Output/Tables_Summaries/covariate_effect_table.csv"), header = TRUE)
+
 species_to_model <- left_join(species_to_model,
                               napops_species[,c("Species_Code_NAPOPS","Common_Name_NAPOPS","Removal","Distance")], 
                               by = c("english_name" = "Common_Name_NAPOPS")) %>%
@@ -178,7 +176,8 @@ species_list <- unique(species_to_model$english_name)
 # Shuffle
 species_list <- sample(species_list,length(species_list))
 
-for (spec in rev(species_list)){
+species_list <- c("Connecticut Warbler", "Canada Jay", "Boreal Chickadee", "Dark-eyed Junco")
+for (spec in species_list){
   
   i <- which(species_to_model$english_name == spec)
   
@@ -189,6 +188,7 @@ for (spec in rev(species_list)){
   sp_code = as.character(species_to_model$Species_Code_BSC[i])
   species_name = species_to_model$english_name[i]
   print(species_name)
+  if (file.exists(paste0("../Output/Prediction_Maps/Relative_Abundance/",species_name,".png"))) next
   
   # Prepare data for this species
   sp_dat <- all_surveys %>% 
@@ -209,11 +209,11 @@ for (spec in rev(species_list)){
     range <- NA
     
   }else{
-    ebirdst_download_status(species_name, 
-                            download_abundance = FALSE,
-                            download_ranges = TRUE,
-                            pattern = "_smooth_27km_") 
-    
+    # ebirdst_download_status(species_name, 
+    #                         download_abundance = FALSE,
+    #                         download_ranges = TRUE,
+    #                         pattern = "_smooth_27km_") 
+    # 
     path <- get_species_path(species_name)
     
     range <- load_ranges(species_name, resolution = "27km",smoothed = TRUE)
@@ -250,27 +250,27 @@ for (spec in rev(species_list)){
   # ----------------------------------------------------
   
   # Intersect with survey information
-  species_hex <- sp_dat %>% st_intersection(hexgrid)
-  species_hex$Atlas <- "OBBA2"
-  species_hex$Atlas[year(species_hex$Date_Time) >= 2020] <- "OBBA3"
+  species_square <- sp_dat %>% st_intersection(squares)
+  species_square$Atlas <- "OBBA2"
+  species_square$Atlas[year(species_square$Date_Time) >= 2020] <- "OBBA3"
   
-  # Summarize total effort and mean count in each hexagon
-  species_hex_centroid <- species_hex %>%
+  # Summarize total effort and mean count in each squareagon
+  species_square_centroid <- species_square %>%
     as.data.frame() %>%
-    group_by(hexid,Atlas) %>%
+    group_by(square_id,Atlas) %>%
     summarize(count = sum(count),
               effort = sum(Survey_Duration_Minutes)) %>%
     mutate(count_per_effort = count/effort)
   
-  species_hex_centroid <- full_join(hex_centroids,species_hex_centroid) %>% na.omit()
+  species_square_centroid <- full_join(st_centroid(squares) %>% select(square_id),species_square_centroid) %>% na.omit()
   
-  col_lim <- c(min(species_hex_centroid$count_per_effort[species_hex_centroid$count_per_effort>0],na.rm = TRUE),max(species_hex_centroid$count_per_effort,na.rm = TRUE))
+  col_lim <- c(min(species_square_centroid$count_per_effort[species_square_centroid$count_per_effort>0],na.rm = TRUE),max(species_square_centroid$count_per_effort,na.rm = TRUE))
   colscale_relabund <-c("#FEFEFE", "#FBF7E2", "#FCF8D0", "#EEF7C2", "#CEF2B0", "#94E5A0", "#51C987", "#18A065", "#008C59", "#007F53", "#006344")
   
   species_data_OBBA2 <- ggplot() +
     geom_sf(data=ONBoundary,colour="gray90", fill = "white")+
-    geom_sf(data=subset(species_hex_centroid,count==0 & Atlas == "OBBA2"), aes(size=effort), shape = 1, col = "gray80")+
-    geom_sf(data=subset(species_hex_centroid,count>0  & Atlas == "OBBA2"), aes(col = count_per_effort, size = effort))+
+    geom_sf(data=subset(species_square_centroid,count==0 & Atlas == "OBBA2"), aes(size=effort), shape = 1, col = "gray80")+
+    geom_sf(data=subset(species_square_centroid,count>0  & Atlas == "OBBA2"), aes(col = count_per_effort, size = effort))+
     geom_sf(data = range %>% st_intersection(ONBoundary), col = "gray50", fill = "transparent", linetype = 2)+
     geom_sf(data = ONBoundary,colour="black",fill=NA,lwd=0.3,show.legend = F) +
     
@@ -287,12 +287,12 @@ for (spec in rev(species_list)){
     scale_color_gradientn(colors = colscale_relabund,na.value=NA, trans = "log10", name = "Count/Min", limits = col_lim)+
     scale_size_continuous(name = "Total Survey Effort (min)", range = c(1,4), guide = "none")
   
-  # species_data_OBBA2
+  #species_data_OBBA2
   
   species_data_OBBA3 <- ggplot() +
     geom_sf(data=ONBoundary,colour="gray90", fill = "white")+
-    geom_sf(data=subset(species_hex_centroid,count==0 & Atlas == "OBBA3"), aes(size=effort), shape = 1, col = "gray80")+
-    geom_sf(data=subset(species_hex_centroid,count>0  & Atlas == "OBBA3"), aes(col = count_per_effort, size = effort))+
+    geom_sf(data=subset(species_square_centroid,count==0 & Atlas == "OBBA3"), aes(size=effort), shape = 1, col = "gray80")+
+    geom_sf(data=subset(species_square_centroid,count>0  & Atlas == "OBBA3"), aes(col = count_per_effort, size = effort))+
     geom_sf(data = range %>% st_intersection(ONBoundary), col = "gray50", fill = "transparent", linetype = 2)+
     geom_sf(data = ONBoundary,colour="black",fill=NA,lwd=0.3,show.legend = F) +
     
@@ -312,18 +312,16 @@ for (spec in rev(species_list)){
   # species_data_OBBA3
   
   # ----------------------------------------------------
-  # Only fit model if species was detected in at least 50 hexagons in both atlases
+  # Only fit model if species was detected in at least 50 squares in both atlases
   # ----------------------------------------------------
-  n_hex_OBBA2 <- subset(species_hex_centroid,Atlas=="OBBA2" & count > 0)
-  n_hex_OBBA3 <- subset(species_hex_centroid,Atlas=="OBBA3" & count > 0)
   
-  if (nrow(n_hex_OBBA2) < 20 | nrow(n_hex_OBBA3) < 20 ) next
+  n_square_OBBA2 <- subset(species_square_centroid,Atlas=="OBBA2" & count > 0)
+  n_square_OBBA3 <- subset(species_square_centroid,Atlas=="OBBA3" & count > 0)
+  
+  if (nrow(n_square_OBBA2) < 20 | nrow(n_square_OBBA3) < 20 ) next
   
   # ----------------------------------------------------
   # Create a spatial mesh, which is used to fit the residual spatial field
-  # NOTE: MAKING A COARSER MESH (LARGER VALUES OF MAX_EDGE) WILL SPEED UP COMPUTATIONS AND REDUCE RAM REQUIREMENTS, 
-  # BUT WITH POTENTIAL LOSS OF ACCURACY/PRECISION
-  # DEFAULT SHOULD CREATE APPROX 5000
   # ----------------------------------------------------
   
   # make a two extension hulls and mesh for spatial model
@@ -333,20 +331,15 @@ for (spec in rev(species_list)){
     concave = c(350, 500)
   )
   
-  # Setting max.edge = c(30000,100000) requires longer to fit (7 min), but may increase model accuracy
-  # Setting max.edge = c(50000,100000) allows the model to fit much more quickly (3.5 min), though possibly with reduced accuracy
-  
   mesh_spatial <- fm_mesh_2d_inla(
-    #loc = st_as_sfc(sp_dat),
     boundary = hull, 
     max.edge = c(50, 200), # km inside and outside  
     cutoff = 10, 
-    crs = fm_crs(species_hex)
+    crs = fm_crs(species_square)
   )
   
   mesh_locs <- mesh_spatial$loc[,c(1,2)] %>% as.data.frame()
   dim(mesh_locs)
-  
   
   # -------------------
   # Note: some hints in here about SPDE range / sd parameters
@@ -355,14 +348,14 @@ for (spec in rev(species_list)){
   
   # Controls the 'residual spatial field'.  This can be adjusted to create smoother surfaces.
   matern_abund <- inla.spde2.pcmatern(mesh_spatial,
-                                      prior.range = c(500, 0.01), # 500, NA # 1% chance range is smaller than 500000
+                                      prior.range = c(500,0.5),#c(500, 0.01), # 500, NA # 1% chance range is smaller than 500000
                                       prior.sigma = c(0.1,0.1),   # 10% chance sd is larger than 0.1,
                                       constr = TRUE
   )
   
   # Controls the 'residual spatial field'.  This can be adjusted to create smoother surfaces.
   matern_change <- inla.spde2.pcmatern(mesh_spatial,
-                                       prior.range = c(500,0.01), # 500, NA # 1% chance range is smaller than 500000
+                                       prior.range = c(500,0.5),#c(500,0.01), # 500, NA # 1% chance range is smaller than 500000
                                        prior.sigma = c(0.1,0.1),   # 10% chance sd is larger than 0.1,
                                        constr = TRUE
   )
@@ -372,22 +365,22 @@ for (spec in rev(species_list)){
   # ----------------------------------------------------
   
   pc_prec <- list(prior = "pcprec", param = c(0.1, 0.1))
-  species_hex$hexid <- as.numeric(as.factor(species_hex$hexid))
-  species_hex$hex_atlas <- as.numeric(as.factor(paste0(species_hex$hexid,"-",species_hex$Atlas)))
+  species_square$square_id <- as.numeric(as.factor(species_square$square_id))
+  species_square$square_atlas <- as.numeric(as.factor(paste0(species_square$square_id,"-",species_square$Atlas)))
   
   # ----------------------------------------------------
-  # Create mesh to model effect of time since sunrise (TSS)
+  # Create mesh to model effect of time since sunrise (HSS)
   # Hours since sunrise is fit as a GAM-type effect.  
   # Recommend leaving these settings at these defaults
   # ----------------------------------------------------
   
-  TSS_range <- range(species_hex$Hours_Since_Sunrise)
-  TSS_meshpoints <- seq(TSS_range[1]-2,TSS_range[2]+2,length.out = 11)
-  TSS_mesh1D = inla.mesh.1d(TSS_meshpoints,boundary="free")
-  TSS_spde = inla.spde2.pcmatern(TSS_mesh1D,
-                                 prior.range = c(6,0.1), # 10% range is smaller than 4
-                                 prior.sigma = c(1,0.1),
-                                 constr = TRUE) # 10% chance sd is larger than 1
+  HSS_range <- range(species_square$Hours_Since_Sunrise)
+  HSS_meshpoints <- seq(HSS_range[1]-1,HSS_range[2]+1,length.out = 21)
+  HSS_mesh1D = inla.mesh.1d(HSS_meshpoints,boundary="free")
+  HSS_spde = inla.spde2.pcmatern(HSS_mesh1D,
+                                 prior.range = c(3,0.1), # 10% chance range is smaller than 3
+                                 prior.sigma = c(1,0.1), # 10% chance sd is larger than 1
+                                 constr = TRUE) 
   
   # ***************************************************************
   # Model formulas
@@ -401,91 +394,75 @@ for (spec in rev(species_list)){
   sd_linear <- 0.1  # Change to smaller value (e.g., 0.1), if you want to heavily shrink covariate effects and potentially create smoother surfaces
   prec_linear <-  c(1/sd_linear^2,1/(sd_linear/2)^2)
   
-  #TSS(main = Hours_Since_Sunrise,model = TSS_spde) + 
-  #kappa(hex_atlas, model = "iid", constr = TRUE, hyper = list(prec = pc_prec)) +
-  #eta(hexid, model = "iid", constr = TRUE, hyper = list(prec = pc_prec)) +
+  
+  # ----------------------------------------------------------------------------
+  # Fit full model
+  # ----------------------------------------------------------------------------
   
   model_components = as.formula(paste0('~
             Intercept_OBBA2(1,model="linear",mean.linear = -10)+
             Intercept_OBBA3(1,model="linear", mean.linear = -10)+
             range_effect_OBBA2(1,model="linear", mean.linear = -0.046, prec.linear = 10000)+
-            kappa(hex_atlas, model = "iid", constr = TRUE, hyper = list(prec = pc_prec)) +
+            HSS(main = Hours_Since_Sunrise, model = HSS_spde)+
+            kappa(square_atlas, model = "iid", constr = TRUE, hyper = list(prec = pc_prec)) +
             spde_OBBA2(main = geometry, model = matern_abund) +
             spde_change(main = geometry, model = matern_change) +',
                                        paste0("Beta1_",covariates_to_include,'(1,model="linear", mean.linear = 0, prec.linear = ', prec_linear[1],')', collapse = " + "),
                                        '+',
                                        paste0("Beta2_",covariates_to_include,'(1,model="linear", mean.linear = 0, prec.linear = ', prec_linear[2],')', collapse = " + ")))
   
-  #TSS + eta + kappa + 
+  
   model_formula_OBBA2 = as.formula(paste0('count ~
                   Intercept_OBBA2 +
                   log_offset + 
                   kappa + 
                   range_effect_OBBA2 * distance_from_range +
+                  HSS +
                   spde_OBBA2 +',
                                           paste0("Beta1_",covariates_to_include,'*',covariates_to_include, collapse = " + "),
                                           '+',
                                           paste0("Beta2_",covariates_to_include,'*',covariates_to_include,"^2", collapse = " + ")))
   
-  #TSS +  eta + 
   model_formula_OBBA3 = as.formula(paste0('count ~
                   Intercept_OBBA3 +
                   log_offset + 
                   kappa + 
                   range_effect_OBBA2 * distance_from_range +
+                  HSS +
                   spde_OBBA2 + spde_change + ',
                                           paste0("Beta1_",covariates_to_include,'*',covariates_to_include, collapse = " + "),
                                           '+',
                                           paste0("Beta2_",covariates_to_include,'*',covariates_to_include,"^2", collapse = " + ")))
   
-  # ----------------------------------------------------------------------------
-  # Fit model to point counts and ARUs with negative binomial error
-  # ----------------------------------------------------------------------------
   
-  error_type <- "nbinomial"
-  
-  if (file.exists(paste0("../Output/Prediction_Maps/Relative_Abundance/",species_name,".png"))) next
+  fit_model <- function(error_type = NULL,
+                        bru_init = list(Intercept_OBBA2 = -10,
+                                        Intercept_OBBA3 = -10)){
+    tryCatch(expr = {bru(components = model_components,
+                         
+                         like(family = error_type,
+                              formula = model_formula_OBBA2,
+                              data = subset(species_square, year(Date_Time)%in% c(2001:2005))),
+                         
+                         like(family = error_type,
+                              formula = model_formula_OBBA3,
+                              data = subset(species_square, year(Date_Time)%in% c(2021:2025))),
+                         
+                         options = list(inla.mode = "experimental",
+                                        bru_initial = bru_init,
+                                        control.compute = list(waic = FALSE, cpo = FALSE),
+                                        bru_verbose = 4))},
+             error = function(e){NULL})
+  }
   
   start <- Sys.time()
-  
   fit_INLA <- NULL
-  for (tries in 1:2){
+  for (tries in 2){
     
-    if (tries == 1)  error_type <- "nbinomial"
-    if (tries == 2)  error_type <- "poisson"
+    if (tries == 1)  etype <- "nbinomial"
+    if (tries == 2)  etype <- "poisson"
     
-    print(error_type)
-    fit_model <- function(){
-      tryCatch(expr = {bru(components = model_components,
-                           
-                           like(family = error_type,
-                                formula = model_formula_OBBA2,
-                                data = subset(species_hex, year(Date_Time)%in% c(2001:2005))),
-                           
-                           like(family = error_type,
-                                formula = model_formula_OBBA3,
-                                data = subset(species_hex, year(Date_Time)%in% c(2021:2025))),
-                           
-                           
-                           options = list(inla.mode = "experimental",
-                                          bru_initial = list(Intercept_OBBA2 = -10,
-                                                             Intercept_OBBA3 = 0,
-                                                             Beta1_PC1 = 0,
-                                                             Beta1_PC2 = 0,
-                                                             Beta1_PC3 = 0,
-                                                             Beta1_PC4 = 0,
-                                                             Beta1_PC5 = 0,
-                                                             
-                                                             Beta2_PC1 = 0,
-                                                             Beta2_PC2 = 0,
-                                                             Beta2_PC3 = 0,
-                                                             Beta2_PC4 = 0,
-                                                             Beta2_PC5 = 0),
-                                          control.compute = list(waic = FALSE, cpo = FALSE),
-                                          bru_verbose = 4))},
-               error = function(e){NULL})
-    }
-    fit_INLA <- fit_model()
+    fit_INLA <- fit_model(error_type = etype)
     
     if (!is.null(fit_INLA) & ("try-error" %!in% class(fit_INLA))) break
     
@@ -498,11 +475,66 @@ for (spec in rev(species_list)){
   print(paste0(species_name," - ",runtime_INLA," min to fit model"))  # ~8 min
   print(summary(fit_INLA))
   
+  #save(fit_INLA, file = paste0("../Output/Fitted_Models/",species_name,".RData"))
+  
+
   # ****************************************************************************
   # ****************************************************************************
-  # GENERATE PREDICTIONS
+  # GENERATE AND STORE PREDICTIONS
   # ****************************************************************************
   # ****************************************************************************
+  
+  # ----------------------------------------------------------------------------
+  # Predictions of covariate effects (holding all other covariates at zero)
+  # ----------------------------------------------------------------------------
+  
+  covar_values <- as.data.frame(ONGrid_species)[,covariates_to_include]
+  cov_df <- data.frame()
+  for (covar in covariates_to_include){
+    tmp <- data.frame(i = 1:1000)
+    tmp[,covar] = seq(min(covar_values[,covar],na.rm = TRUE),max(covar_values[,covar],na.rm = TRUE),length.out = 1000)
+    cov_df <- bind_rows(cov_df,tmp)
+  }
+  
+  # add hours since sunrise covariate
+  tmp <- data.frame(i = 1:1000)
+  tmp[,"Hours_Since_Sunrise"] = seq(min(species_square$Hours_Since_Sunrise,na.rm = TRUE),max(species_square$Hours_Since_Sunrise,na.rm = TRUE),length.out = 1000)
+  cov_df <- bind_rows(cov_df,tmp)
+  
+  cov_df <- cov_df[,-1]
+  cov_df[is.na(cov_df)] <- 0
+  
+  cov_pred <- generate(fit_INLA,
+                   cov_df,
+                   formula =  
+                     as.formula(paste0("~ Intercept_OBBA3 +log_offset_5min + HSS +" ,
+                                       paste0("Beta1_",covariates_to_include,'*',covariates_to_include, collapse = " + "),
+                                       '+',
+                                       paste0("Beta2_",covariates_to_include,'*',covariates_to_include,"^2", collapse = " + "))) ,
+                   n.samples = 500,
+                   seed = 123) %>% exp()
+  
+  cov_df$pred_q50 <- apply(cov_pred,1, function(x)quantile(x,0.5))
+  cov_df$pred_q05 <- apply(cov_pred,1, function(x)quantile(x,0.05))
+  cov_df$pred_q95 <- apply(cov_pred,1, function(x)quantile(x,0.95))
+  
+  if (file.exists(paste0("../Output/Tables_Summaries/covariate_effect_table.csv"))) covariate_effect_table <- read.csv(paste0("../Output/Tables_Summaries/covariate_effect_table.csv"), header = TRUE)
+  
+  cov_df <- cov_df %>% 
+    mutate(species_name = species_name, sp_code = sp_code, error_type = etype) %>%
+    dplyr::relocate(species_name,sp_code,error_type)
+  
+  covariate_effect_table <- rbind(covariate_effect_table,cov_df)
+  write.csv(covariate_effect_table,paste0("../Output/Tables_Summaries/covariate_effect_table.csv"), row.names = FALSE)
+  
+  ggplot(subset(cov_df, Hours_Since_Sunrise != 0), aes(x = Hours_Since_Sunrise, y = pred_q50, ymin = pred_q05, ymax = pred_q95))+
+    geom_ribbon(alpha = 0.1)+
+    geom_line()+
+    theme_bw()
+  
+  # ----------------------------------------------------------------------------
+  # Spatial predictions
+  # ----------------------------------------------------------------------------
   
   # Colour scale for relative abundance maps
   colscale_relabund <-c("#FEFEFE", "#FBF7E2", "#FCF8D0", "#EEF7C2", "#CEF2B0", "#94E5A0", "#51C987", "#18A065", "#008C59", "#007F53", "#006344")
@@ -510,9 +542,9 @@ for (spec in rev(species_list)){
   
   # For every pixel on landscape, extract distance (in km) from eBird range limit
   ONGrid_species <- ONGrid %>%
-    st_transform(st_crs(species_hex)) %>%
-    mutate(distance_from_range = (st_distance( . , range) %>% 
-                                    as.numeric()))
+    st_transform(st_crs(species_square)) %>%
+    mutate(distance_from_range = (st_distance( . , range) %>% as.numeric()),
+           Hours_Since_Sunrise = 0)
   
   # Convert to CRS of target raster
   #ONGrid_species <- ONGrid_species %>% st_transform(st_crs(target_raster)) %>% st_centroid(.)
@@ -549,23 +581,24 @@ for (spec in rev(species_list)){
   runtime_pred <- difftime( end2,start2, units="mins") %>% round(2)
   print(paste0(species_name," - ",runtime_pred," min to generate predictions")) # 7 min
   
+  # Median of posterior for each pixel
+  ONGrid_species$OBBA2_pred_q50 <- apply(pred_OBBA2,1,median)
+  ONGrid_species$OBBA3_pred_q50 <- apply(pred_OBBA3,1,median)
+  
   # ------------------------------------------------
-  # sf object for ebird range limit (optional - not needed for plotting, but potentially helpful)
+  # clipped ebird range limit
   # ------------------------------------------------
   
   if (!is.na(range)) range_clipped <- range  %>%
     st_transform(st_crs(ONBoundary)) %>%
     st_intersection(ONBoundary)
   
-  # ****************************************************************************
+  # ------------------------------------------------
   # PLOT RELATIVE ABUNDANCE IN OBBA2
-  # ****************************************************************************
-  
-  # Median of posterior for each pixel
-  ONGrid_species$OBBA2_pred_q50 <- apply(pred_OBBA2,1,median)
+  # ------------------------------------------------
   
   # Bounds for plotting
-  upper_bound <- quantile(ONGrid_species$OBBA2_pred_q50,0.99,na.rm = TRUE) %>% signif(2)
+  upper_bound <- quantile(ONGrid_species$OBBA3_pred_q50,0.99,na.rm = TRUE) %>% signif(2)
   lower_bound <- upper_bound/100
   
   ONGrid_species$OBBA2_pred_q50[ONGrid_species$OBBA2_pred_q50 > upper_bound] <-  upper_bound
@@ -592,20 +625,11 @@ for (spec in rev(species_list)){
     annotate(geom="text",x=400,y=1650, label="Predicted OBBA2",lineheight = .85,hjust = 0,size=6,fontface =2) +
     annotate(geom="text",x=400,y=1480, label= paste0("Prepared on ",Sys.Date()),size=2,lineheight = .75,hjust = 0,color="gray75")
   
-  #print(OBBA2_plot_q50)
-  
-  # 
-  # png(paste0("../Output/Prediction_Maps/Relative_Abundance/",species_name,"_OBBA2_q50.png"), width=6.5, height=8, units="in", res=300, type="cairo")
-  # print(OBBA2_plot_q50)
-  # dev.off()
-  # 
-  # ****************************************************************************
-  # RELATIVE ABUNDANCE IN OBBA3
-  # ****************************************************************************
+  # ------------------------------------------------
+  # PLOT RELATIVE ABUNDANCE IN OBBA3
+  # ------------------------------------------------
   
   # Median of posterior for each pixel
-  ONGrid_species$OBBA3_pred_q50 <- apply(pred_OBBA3,1,median)
-  
   ONGrid_species$OBBA3_pred_q50[ONGrid_species$OBBA3_pred_q50 > upper_bound] <-  upper_bound
   ONGrid_species$OBBA3_pred_q50[ONGrid_species$OBBA3_pred_q50 < lower_bound] <-  0
   
@@ -630,17 +654,9 @@ for (spec in rev(species_list)){
     annotate(geom="text",x=400,y=1650, label="Predicted OBBA3",lineheight = .85,hjust = 0,size=6,fontface =2) +
     annotate(geom="text",x=400,y=1480, label= paste0("Prepared on ",Sys.Date()),size=2,lineheight = .75,hjust = 0,color="gray75")
   
-  #print(OBBA3_plot_q50)
-  
-  # 
-  # png(paste0("../Output/Prediction_Maps/Relative_Abundance/",species_name,"_OBBA3_q50.png"), width=6.5, height=8, units="in", res=300, type="cairo")
-  # print(OBBA3_plot_q50)
-  # dev.off()
-  # 
-  
-  # ****************************************************************************
-  # CHANGE BETWEEN ATLASES
-  # ****************************************************************************
+  # ------------------------------------------------
+  # PLOT CHANGE BETWEEN ATLASES
+  # ------------------------------------------------
   
   colscale_change <-c("darkred","orangered","white","dodgerblue","darkblue")
   colpal_change <- colorRampPalette(colscale_change)
@@ -672,33 +688,22 @@ for (spec in rev(species_list)){
     
     
     geom_sf(data = ONBoundary,colour="black",fill=NA,lwd=0.3,show.legend = F) +
-    #geom_sf(data = subset(ONGrid_species, trend_signif == TRUE & change_pred_q50 < 0) %>% st_buffer(5) %>% st_union(), col = "red", fill = "red", alpha = 0.2)+
-    #geom_sf(data = subset(ONGrid_species, trend_signif == TRUE & change_pred_q50 > 0) %>% st_buffer(5) %>% st_union(), col = "blue", fill = "blue", alpha = 0.2)+
-    
-    #geom_sf(data = subset(hex_for_trend, signif == TRUE & change_pred_q50 > 0) %>% st_union(), col = "blue", fill = "blue", alpha = 0.2)+
-    
+
     coord_sf(clip = "off",xlim = range(as.data.frame(st_coordinates(ONBoundary))$X)) +
     theme(panel.background = element_blank(),panel.grid.major = element_blank(), panel.grid.minor = element_blank())+
     theme(axis.title.x=element_blank(), axis.text.x=element_blank(), axis.ticks.x=element_blank())+
     theme(axis.title.y=element_blank(), axis.text.y=element_blank(), axis.ticks.y=element_blank())+
     theme(plot.margin = unit(c(0, 0, 0, 0), "cm"))+
-    # theme(legend.margin=margin(0,0,0,0),legend.box.margin=margin(5,10,5,-20),legend.title.align=0.5,
-    #       legend.title = element_markdown(lineheight=.9,hjust = "left"))
     annotate(geom="text",x=400,y=1650, label= "Change between atlases",lineheight = .85,hjust = 0,size=6,fontface =2) +
-    #annotate(geom="text",x=400,y=1650, label= paste0(species_name),lineheight = .85,hjust = 0,size=6,fontface =2) +
     annotate(geom="text",x=400,y=1550, label= change_label,lineheight = .85,hjust = 0,size=4,fontface =2) +
     annotate(geom="text",x=400,y=1480, label= paste0("Prepared on ",Sys.Date()),size=2,lineheight = .75,hjust = 0,color="gray75")+
     annotation_scale()
   print(change_plot_q50)
   
-  # png(paste0("../Output/Prediction_Maps/Relative_Abundance/",species_name,"_change_q50.png"), width=6.5, height=8, units="in", res=300, type="cairo")
-  # print(change_plot_q50)
-  # dev.off()
-  # 
-  
-  if (file.exists(paste0("../Output/Prediction_Maps/Relative_Abundance/",species_name,".png"))) next
-  
+  # ------------------------------------------------
   # Combine all figures into a single one
+  # ------------------------------------------------
+  
   png(file = paste0("../Output/Prediction_Maps/Relative_Abundance/",species_name,".png"),
       units = "in", 
       width = 30, 
@@ -716,15 +721,16 @@ for (spec in rev(species_list)){
   
   print(summary(fit_INLA))
   
-  # ****************************************************************************
-  # Store estimates of change in a table for comparison to BBS and eBird
-  # ****************************************************************************
+  # ------------------------------------------------
+  # Store estimates of change for comparisons to BBS and eBird
+  # ------------------------------------------------
   
   if (file.exists(paste0("../Output/Tables_Summaries/OBBA3_change_estimate_table.csv"))) change_estimate_table <- read.csv(paste0("../Output/Tables_Summaries/OBBA3_change_estimate_table.csv"), header = TRUE)
   
+  # Overall change across Ontario
   species_change <- data.frame(species_name = species_name,
                                sp_code = sp_code,
-                               error_type = error_type,
+                               error_type = etype,
                                region = "ON",
                                mean_abund = (sum(ONGrid_species$OBBA2_pred_q50,na.rm=TRUE) + sum(ONGrid_species$OBBA3_pred_q50,na.rm=TRUE))/2,
                                change_q50 = quantile(percent_change_overall,0.5),
@@ -734,14 +740,14 @@ for (spec in rev(species_list)){
                                prob_decrease_30_percent = mean(percent_change_overall <= -30),
                                prob_decrease_50_percent = mean(percent_change_overall <= -50))
   
-  # Calculate change within each BCR
+  # Change within each BCR
   for (bcr in unique(ON_BCR$BCR)){
     
     percent_change_bcr <- 100*(apply(pred_OBBA3[which(ONGrid$BCR == bcr),],2,sum,na.rm = TRUE) - apply(pred_OBBA2[which(ONGrid$BCR == bcr),],2,sum,na.rm = TRUE))/apply(pred_OBBA2[which(ONGrid$BCR == bcr),],2,sum,na.rm = TRUE)
     
     species_change <- rbind(species_change,data.frame(species_name = species_name,
                                                       sp_code = sp_code,
-                                                      error_type = error_type,
+                                                      error_type = etype,
                                                       region = paste0("CA-ON-",bcr),
                                                       mean_abund = (sum(ONGrid_species$OBBA2_pred_q50[which(ONGrid$BCR == bcr)],na.rm=TRUE) + sum(ONGrid_species$OBBA3_pred_q50[which(ONGrid$BCR == bcr)],na.rm=TRUE))/2,
                                                       change_q50 = quantile(percent_change_bcr,0.5),

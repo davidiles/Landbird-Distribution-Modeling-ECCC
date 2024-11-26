@@ -147,7 +147,6 @@ full_count_matrix <- full_count_matrix[all_surveys$Obs_Index,]
 
 set.seed(123)
 
-
 # Prepare QPAD offsets for survey effort
 require(napops)
 napops_species <- list_species() %>% rename(Species_Code_NAPOPS = Species,Common_Name_NAPOPS = Common_Name,Scientific_Name_NAPOPS = Scientific_Name)
@@ -176,7 +175,6 @@ species_list <- unique(species_to_model$english_name)
 # Shuffle
 species_list <- sample(species_list,length(species_list))
 
-species_list <- c("Connecticut Warbler", "Canada Jay", "Boreal Chickadee", "Dark-eyed Junco")
 for (spec in species_list){
   
   i <- which(species_to_model$english_name == spec)
@@ -375,12 +373,11 @@ for (spec in species_list){
   # ----------------------------------------------------
   
   HSS_range <- range(species_square$Hours_Since_Sunrise)
-  HSS_meshpoints <- seq(HSS_range[1]-1,HSS_range[2]+1,length.out = 21)
+  HSS_meshpoints <- seq(HSS_range[1]-1,HSS_range[2]+1,length.out = 51)
   HSS_mesh1D = inla.mesh.1d(HSS_meshpoints,boundary="free")
   HSS_spde = inla.spde2.pcmatern(HSS_mesh1D,
-                                 prior.range = c(3,0.1), # 10% chance range is smaller than 3
-                                 prior.sigma = c(1,0.1), # 10% chance sd is larger than 1
-                                 constr = TRUE) 
+                                 prior.range = c(5,0.1), # 10% chance range is smaller than 3
+                                 prior.sigma = c(2,0.1)) # 10% chance sd is larger than 1) 
   
   # ***************************************************************
   # Model formulas
@@ -457,7 +454,7 @@ for (spec in species_list){
   
   start <- Sys.time()
   fit_INLA <- NULL
-  for (tries in 2){
+  for (tries in 1:2){
     
     if (tries == 1)  etype <- "nbinomial"
     if (tries == 2)  etype <- "poisson"
@@ -477,12 +474,98 @@ for (spec in species_list){
   
   #save(fit_INLA, file = paste0("../Output/Fitted_Models/",species_name,".RData"))
   
-
+  
   # ****************************************************************************
   # ****************************************************************************
   # GENERATE AND STORE PREDICTIONS
   # ****************************************************************************
   # ****************************************************************************
+  
+  n_samp <- 500
+  
+  # For every pixel on landscape, extract distance (in km) from eBird range limit
+  ONGrid_species <- ONGrid %>%
+    st_transform(st_crs(species_square)) %>%
+    mutate(distance_from_range = (st_distance( . , range) %>% as.numeric()),
+           Hours_Since_Sunrise = 0)
+  
+  # # ----------------------------------------------------------------------------
+  # # Predictions for each datapoint - for goodness-of-fit evaluation
+  # # ----------------------------------------------------------------------------
+  # 
+  # fit_obs_OBBA2 <- generate(fit_INLA,
+  #                           subset(species_square, year(Date_Time)%in% c(2001:2005)),
+  #                           formula = as.formula(paste0('~
+  #                 Intercept_OBBA2 +
+  #                 log_offset + 
+  #                 kappa + 
+  #                 range_effect_OBBA2 * distance_from_range +
+  #                 HSS +
+  #                 spde_OBBA2 +',
+  #                                                       paste0("Beta1_",covariates_to_include,'*',covariates_to_include, collapse = " + "),
+  #                                                       '+',
+  #                                                       paste0("Beta2_",covariates_to_include,'*',covariates_to_include,"^2", collapse = " + "))),
+  #                           n.samples = n_samp,
+  #                           seed = 123)
+  # 
+  # fit_obs_OBBA3 <- generate(fit_INLA,
+  #                           subset(species_square, year(Date_Time)%in% c(2021:2025)),
+  #                           formula = as.formula(paste0('~
+  #                 Intercept_OBBA3 +
+  #                 log_offset + 
+  #                 kappa + 
+  #                 range_effect_OBBA2 * distance_from_range +
+  #                 HSS +
+  #                 spde_OBBA2 + spde_change +',
+  #                                                       paste0("Beta1_",covariates_to_include,'*',covariates_to_include, collapse = " + "),
+  #                                                       '+',
+  #                                                       paste0("Beta2_",covariates_to_include,'*',covariates_to_include,"^2", collapse = " + "))),
+  #                           n.samples = n_samp,
+  #                           seed = 123)
+  # 
+  # sim_obs_OBBA2 <-  fit_obs_OBBA2 * NA
+  # sim_obs_OBBA3 <-  fit_obs_OBBA3 * NA
+  # 
+  # if (etype == "poisson"){
+  #   for (samp in 1:n_samp){
+  #     sim_obs_OBBA2[,samp] <- rpois(nrow(sim_obs_OBBA2),exp(fit_obs_OBBA2[,samp]))
+  #     sim_obs_OBBA3[,samp] <- rpois(nrow(sim_obs_OBBA3),exp(fit_obs_OBBA3[,samp]))
+  #   }
+  # }
+  # 
+  # 
+  # # if (etype == "nbinomial"){
+  # #     size_OBBA2 <- NA
+  # #     size_OBBA3 <- NA
+  # #   for (samp in 1:n_samples){
+  # # 
+  # #     sim_obs_OBBA2[,samp] <- rnbinom(nrow(sim_obs_OBBA2), size = size_OBBA2, mu = exp(fit_obs_OBBA2[,samp]))
+  # #     sim_obs_OBBA3[,samp] <- rnbinom(nrow(sim_obs_OBBA3), size = size_OBBA2, mu = exp(fit_obs_OBBA3[,samp]))
+  # #   }
+  # # }
+  # 
+  # # Goodness of fit evaluated using the DHARMa package
+  # DHARMaRes_OBBA2 <- createDHARMa(simulatedResponse = sim_obs_OBBA2, 
+  #                                 observedResponse = subset(species_square, year(Date_Time)%in% c(2001:2005))$count, 
+  #                                 fittedPredictedResponse = apply(exp(fit_obs_OBBA2),1,median), 
+  #                                 integerResponse = T)
+  # plot(DHARMaRes_OBBA2, quantreg = F)
+  # testDispersion(DHARMaRes_OBBA2)
+  # testZeroInflation(DHARMaRes_OBBA2)
+  # 
+  # # Goodness of fit evaluated using the DHARMa package
+  # DHARMaRes_OBBA3 <- createDHARMa(simulatedResponse = sim_obs_OBBA3, 
+  #                                 observedResponse = subset(species_square, year(Date_Time)%in% c(2021:2025))$count, 
+  #                                 fittedPredictedResponse = apply(exp(fit_obs_OBBA3),1,median), 
+  #                                 integerResponse = T)
+  # plot(DHARMaRes_OBBA3, quantreg = F)
+  # testDispersion(DHARMaRes_OBBA3)
+  # testZeroInflation(DHARMaRes_OBBA3)
+  # 
+  # # extract scaled residuals (for plotting)
+  # DHARMaRes_OBBA2$scaledResiduals
+  # DHARMaRes_OBBA3$scaledResiduals
+  # 
   
   # ----------------------------------------------------------------------------
   # Predictions of covariate effects (holding all other covariates at zero)
@@ -505,14 +588,14 @@ for (spec in species_list){
   cov_df[is.na(cov_df)] <- 0
   
   cov_pred <- generate(fit_INLA,
-                   cov_df,
-                   formula =  
-                     as.formula(paste0("~ Intercept_OBBA3 +log_offset_5min + HSS +" ,
-                                       paste0("Beta1_",covariates_to_include,'*',covariates_to_include, collapse = " + "),
-                                       '+',
-                                       paste0("Beta2_",covariates_to_include,'*',covariates_to_include,"^2", collapse = " + "))) ,
-                   n.samples = 500,
-                   seed = 123) %>% exp()
+                       cov_df,
+                       formula =  
+                         as.formula(paste0("~ Intercept_OBBA3 +log_offset_5min + HSS +" ,
+                                           paste0("Beta1_",covariates_to_include,'*',covariates_to_include, collapse = " + "),
+                                           '+',
+                                           paste0("Beta2_",covariates_to_include,'*',covariates_to_include,"^2", collapse = " + "))) ,
+                       n.samples = n_samp,
+                       seed = 123) %>% exp()
   
   cov_df$pred_q50 <- apply(cov_pred,1, function(x)quantile(x,0.5))
   cov_df$pred_q05 <- apply(cov_pred,1, function(x)quantile(x,0.05))
@@ -540,12 +623,6 @@ for (spec in species_list){
   colscale_relabund <-c("#FEFEFE", "#FBF7E2", "#FCF8D0", "#EEF7C2", "#CEF2B0", "#94E5A0", "#51C987", "#18A065", "#008C59", "#007F53", "#006344")
   colpal_relabund <- colorRampPalette(colscale_relabund)
   
-  # For every pixel on landscape, extract distance (in km) from eBird range limit
-  ONGrid_species <- ONGrid %>%
-    st_transform(st_crs(species_square)) %>%
-    mutate(distance_from_range = (st_distance( . , range) %>% as.numeric()),
-           Hours_Since_Sunrise = 0)
-  
   # Convert to CRS of target raster
   #ONGrid_species <- ONGrid_species %>% st_transform(st_crs(target_raster)) %>% st_centroid(.)
   
@@ -564,7 +641,7 @@ for (spec in species_list){
                                        '+',
                                        paste0("Beta2_",covariates_to_include,'*',covariates_to_include,"^2", collapse = " + "),
                                        ")" )) ,
-                   n.samples = 500,
+                   n.samples = n_samp,
                    seed = 123)
   
   # Separate into predictions for OBBA2 and OBBA3
@@ -688,7 +765,7 @@ for (spec in species_list){
     
     
     geom_sf(data = ONBoundary,colour="black",fill=NA,lwd=0.3,show.legend = F) +
-
+    
     coord_sf(clip = "off",xlim = range(as.data.frame(st_coordinates(ONBoundary))$X)) +
     theme(panel.background = element_blank(),panel.grid.major = element_blank(), panel.grid.minor = element_blank())+
     theme(axis.title.x=element_blank(), axis.text.x=element_blank(), axis.ticks.x=element_blank())+

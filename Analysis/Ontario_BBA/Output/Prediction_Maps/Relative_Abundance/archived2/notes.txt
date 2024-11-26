@@ -1,0 +1,3 @@
+all of these models were fit with Poisson.
+
+- this fits relatively quickly (40 species ran overnight), but need a way to identify when to fit overdispersed models

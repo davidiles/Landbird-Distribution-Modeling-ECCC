@@ -28,22 +28,17 @@ Models were fit using the integrated nested Laplace approximation (INLA), using 
 
 ### Issues
 
-Oct 16, 2024
-
-- initial draft of change analysis based on point counts working (4_Analysis_INLA_change_integrated.R)
-- confirmed that estimates of change are more precise when analyzing both atlases together
-               - need to store comparisons of "integrated" versus "independent" models for estimates of total change, to illustrate how much the integrated model improves precision on average
+Nov 26, 2024
 
 to do:
-- incorporate QPAD offsets to account for survey duration (there appear to be quite a few 1-minute point counts in northern Ontario, from ARUs)
-- incorporate time-referenced covariates to account for known areas of habitat change (correspond with Lisa Venir, Angela Moreras Dussan)
-     - model currently assumes that habitat associations can change over time.  Is this reasonable, if we have time-referenced covariates?
-            - see example for Black-capped chickadee?
-- incorporate checklists (?)
-- improve maps of change (colour scales)
-- SIMULATION ANALYSES TO CONFIRM CHANGE ANALYSIS IS WORKING AS INTENDED
-- confirm Time Since Sunrise (TSS) estimate is working correctly, with time zones accurately represented
 
-
-- schedule meeting with atlas analysis subgroup
-     - discuss progress, next steps
+- Create a "data visualization" script, prior to analysis to examine things like spatial/temporal coverage of surveys, changes in survey effort, etc
+- store goodness-of-fit statistics produced by DHARMa package
+   - this will also help to evaluate which error distributions are best for each species
+- evaluate predictive accuracy using cross-validation
+- store pixel-level predictions so that maps can be re-generated quickly
+- incorporate time-varying covariates to represent habitat change explicitly
+- incorporate checklists
+- incorporate ARU effect, and ensure that ARU-based surveys are correctly labeled in NatureCounts dataframe
+- confirm time zones / Hours-since-Sunrise are accurately calculated (are time zones correct?)
+- simulations to confirm change analysis is working properly

@@ -1,2 +1,0 @@
-- Models do not include an effect of "hours since sunrise"
-    - later version of the model do

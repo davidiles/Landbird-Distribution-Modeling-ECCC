@@ -35,10 +35,12 @@ to do:
 - Create a "data visualization" script, prior to analysis to examine things like spatial/temporal coverage of surveys, changes in survey effort, etc
 - store goodness-of-fit statistics produced by DHARMa package
    - this will also help to evaluate which error distributions are best for each species
+   - use these to evaluate if there are spatial/temporal patterns in the residuals that indicate lack of model fit
 - evaluate predictive accuracy using cross-validation
 - store pixel-level predictions so that maps can be re-generated quickly
 - incorporate time-varying covariates to represent habitat change explicitly
 - incorporate checklists
+- incorporate data from atlas 1
 - incorporate ARU effect, and ensure that ARU-based surveys are correctly labeled in NatureCounts dataframe
 - confirm time zones / Hours-since-Sunrise are accurately calculated (are time zones correct?)
 - simulations to confirm change analysis is working properly

@@ -179,9 +179,11 @@ species_list <- unique(species_to_model$english_name)
 # Shuffle
 species_list <- sample(species_list,length(species_list))
 
+species_list <- c("Killdeer","Red-winged Blackbird","Barn Swallow","Purple Martin","European Starling","Lesser Yellowlegs","Common Redpoll")
+species_list <- "Canada Warbler"
 for (spec in species_list){
   
-  for (etype in c("poisson","nbinomial")){
+  for (etype in c("nbinomial")){
     
     i <- which(species_to_model$english_name == spec)
     
@@ -411,16 +413,8 @@ for (spec in species_list){
     
     start <- Sys.time()
     fit_INLA <- NULL
-    for (tries in 2:2){
-      
-      if (tries == 1)  etype <- "nbinomial"
-      if (tries == 2)  etype <- "poisson"
-      
-      fit_INLA <- fit_model(error_type = etype)
-      
-      if (!is.null(fit_INLA) & ("try-error" %!in% class(fit_INLA))) break
-      
-    } # tries
+    
+    fit_INLA <- fit_model(error_type = etype)
     
     if ("try-error" %in% class(fit_INLA) | is.null(fit_INLA)) next
     
@@ -811,7 +805,7 @@ for (spec in species_list){
       geom_sf(data = ONGrid_species, aes(col = OBBA3_pred_q50), size = 0.1) +
       scale_color_gradientn(name = "Per point count",
                             colors = colpal_relabund(10),
-                            trans = "log10",
+                            #trans = "log10",
                             na.value = "white")+
       
       geom_sf(data = ONBoundary,colour="black",fill=NA,lwd=0.3,show.legend = F) +

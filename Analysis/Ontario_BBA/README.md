@@ -34,7 +34,7 @@ Nov 26, 2024
 to do:
 
 - Create a "data visualization" script, prior to analysis to examine things like spatial/temporal coverage of surveys, changes in survey effort, etc
-- (Cross-validation for model selection)[https://esajournals.onlinelibrary.wiley.com/doi/10.1002/ecm.1557]
+- [Cross-validation for model selection](https://esajournals.onlinelibrary.wiley.com/doi/10.1002/ecm.1557)
 - Cross-validation for predictive accuracy assessment
 - Store goodness-of-fit statistics produced by DHARMa package
    - this will also help to evaluate which error distributions are best for each species

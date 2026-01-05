@@ -4,9 +4,12 @@
 *.rds
 *.RDS
 *.png
+*.tif
 *.csv
+*.pdf
 Presentations/
 Data/
 text_documents/
 archive_code/
 Analysis/Saskatchewan_BBA/Code/archive/
+Analysis/Ontario_BBA/Code/archive/

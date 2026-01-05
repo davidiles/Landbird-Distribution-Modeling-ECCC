@@ -29,11 +29,22 @@ Models were fit using the integrated nested Laplace approximation (INLA), using 
 ### Issues
 
 
-Nov 26, 2024
+Next steps
+- for NOBMWG model evaluation working group
+    -> extract variable importance scores from BAM, but need a way to decide an importance threshold
+    -> compare to a "standard suite" of covariates?
 
-to do:
+- for Atlas
+    -> formal list of species for model evaluation
+    
+
+Jan 12, 2024
+
+To do:
 
 - Create a "data visualization" script, prior to analysis to examine things like spatial/temporal coverage of surveys, changes in survey effort, etc
+- Ensure project adheres to ODMAP guidelines (https://nsojournals.onlinelibrary.wiley.com/doi/full/10.1111/ecog.04960)
+- 
 - [Cross-validation for model selection](https://esajournals.onlinelibrary.wiley.com/doi/10.1002/ecm.1557)
 - Cross-validation for predictive accuracy assessment
 - Store goodness-of-fit statistics produced by DHARMa package

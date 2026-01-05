@@ -7,6 +7,13 @@
 *.tif
 *.csv
 *.pdf
+*.doc
+*.docx
+*.txt
+*.dbf
+*.prj
+*.shp
+*.shx
 Presentations/
 Data/
 text_documents/

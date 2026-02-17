@@ -38,26 +38,16 @@ Next steps
     -> formal list of species for model evaluation
     
 
-Jan 12, 2024
+Feb 17, 2026
 
 To do:
 
-- Create a "data visualization" script, prior to analysis to examine things like spatial/temporal coverage of surveys, changes in survey effort, etc
 - Ensure project adheres to ODMAP guidelines (https://nsojournals.onlinelibrary.wiley.com/doi/full/10.1111/ecog.04960)
-- 
-- [Cross-validation for model selection](https://esajournals.onlinelibrary.wiley.com/doi/10.1002/ecm.1557)
-- Cross-validation for predictive accuracy assessment
 - Store goodness-of-fit statistics produced by DHARMa package
    - this will also help to evaluate which error distributions are best for each species
    - use these to evaluate if there are spatial/temporal patterns in the residuals that indicate lack of model fit
-
-- store pixel-level predictions so that maps can be re-generated quickly
-- incorporate time-varying covariates to represent habitat change explicitly
 - incorporate checklists
-- incorporate data from atlas 1
-- incorporate ARU effect, and ensure that ARU-based surveys are correctly labeled in NatureCounts dataframe
-- confirm time zones / Hours-since-Sunrise are accurately calculated
-- simulations to confirm change analysis is working properly
+- ensure that ARU-based surveys are correctly labeled in NatureCounts dataframe
 
 ### Refs
 

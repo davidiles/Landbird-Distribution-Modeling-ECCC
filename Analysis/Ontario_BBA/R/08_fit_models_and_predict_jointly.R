@@ -31,17 +31,18 @@ suppressPackageStartupMessages({
 # ------------------------------------------------------------
 # Config
 # ------------------------------------------------------------
+rerun_models = TRUE
 
 in_file <- "data_clean/birds/data_ready_for_analysis.rds"
 
 out_dir <- "data_clean/model_output"
 dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
-dir.create(file.path(out_dir, "models"), recursive = TRUE, showWarnings = FALSE)
-dir.create(file.path(out_dir, "predictions"), recursive = TRUE, showWarnings = FALSE)
-dir.create(file.path(out_dir, "summaries"), recursive = TRUE, showWarnings = FALSE)
+dir.create(file.path(out_dir, "models_joint"), recursive = TRUE, showWarnings = FALSE)
+dir.create(file.path(out_dir, "predictions_joint"), recursive = TRUE, showWarnings = FALSE)
+dir.create(file.path(out_dir, "summaries_joint"), recursive = TRUE, showWarnings = FALSE)
 
 # helper-function source (you should create this)
-source("R/functions/inla_model_utils.R")  # fit_inla_testing(), predict_inla(), summarize_posterior(), etc.
+source("R/functions/inla_model_utils.R")  # fit_inla_multi_atlas(), predict_inla(), summarize_posterior(), etc.
 
 # Which species to run
 min_detections_obba3 <- 100
@@ -50,12 +51,6 @@ n_samples_predict <- 1000
 
 # If model takes more than 15 min to fit, assume it stalled and retry
 timeout_min <- 15
-
-# Priors controlling spatial autocorrelation fields
-prior_range_abund  <- c(500, 0.90)
-prior_sigma_abund  <- c(3,   0.05)
-prior_range_change <- c(500, 0.10)
-prior_sigma_change <- c(0.1, 0.05)
 
 # Derived-covariate logic
 south_bcr <- c(12, 13)
@@ -128,7 +123,7 @@ make_cov_df <- function(covars) {
   tibble(
     covariate = covars,
     beta = 1,
-    sd_linear = 1,
+    sd_linear = 3,
     model = "linear",
     mean = 0,
     prec = 1 / (sd_linear^2)
@@ -195,18 +190,10 @@ all_surveys <- tmp$surveys
 grid_OBBA2  <- tmp$grid2
 grid_OBBA3  <- tmp$grid3
 
-# Select species list
-species_run <- species_to_model %>%
-  filter(total_detections_OBBA3 >= min_detections_obba3 &
-           total_squares_OBBA3 >= min_squares_obba3) %>%
-  na.omit()
-
-message("Species queued: ", nrow(species_run))
-
 # Summary caches
-model_summaries_path  <- file.path(out_dir, "summaries", "model_summaries.rds")
-change_summaries_path <- file.path(out_dir, "summaries", "change_summaries.rds")
-hss_doy_path          <- file.path(out_dir, "summaries", "HSS_DOY_summaries.rds")
+model_summaries_path  <- file.path(out_dir, "summaries_joint", "model_summaries.rds")
+change_summaries_path <- file.path(out_dir, "summaries_joint", "change_summaries.rds")
+hss_doy_path          <- file.path(out_dir, "summaries_joint", "HSS_DOY_summaries.rds")
 
 model_summaries  <- load_or_empty_list(model_summaries_path)
 change_summaries <- load_or_empty_list(change_summaries_path)
@@ -216,8 +203,52 @@ hss_doy_summaries <- load_or_empty_list(hss_doy_path)
 # Main loop (~ 30 min per species)
 # ------------------------------------------------------------
 
-# for testing
-species_run <- sample_n(species_run, nrow(species_run))
+# Select species list
+species_run <- species_to_model %>%
+  filter(total_detections_OBBA3 >= min_detections_obba3 &
+           total_squares_OBBA3 >= min_squares_obba3) %>%
+  na.omit()
+
+message("Species queued: ", nrow(species_run))
+
+# species_run <- sample_n(species_run, nrow(species_run))
+
+species_to_check <- c(
+  #"Bobolink",
+  #"Blue Jay",
+  "Canada Jay",
+  "Olive-sided Flycatcher",
+  "Winter Wren",
+  "Lesser Yellowlegs",
+  "Blackpoll Warbler",
+  #"Connecticut Warbler",
+  "Palm Warbler",
+  "Lincoln's Sparrow",
+  "Fox Sparrow",
+  "Common Nighthawk",
+  # "Long-eared Owl",
+  "American Tree Sparrow",
+  # "LeConte's Sparrow",
+  # "Nelson's Sparrow",
+  "Boreal Chickadee",
+  "Rusty Blackbird",
+  "Yellow-bellied Flycatcher",
+  # "Greater Yellowlegs",
+  # "Hudsonian Godwit",
+  # "Canada Warbler",
+  "Eastern Wood-Peewee",
+  "Grasshopper Sparrow",
+  "Solitary Sandpiper"
+  #"White-throated Sparrow"
+  # "Bay-breasted Warbler"
+)
+
+species_to_check <- "Canada Warbler"
+
+species_run <- species_run %>%
+  subset(english_name %in% species_to_check)
+
+message("Species queued: ", nrow(species_run))
 
 for (i in seq_len(nrow(species_run))) {
   
@@ -229,8 +260,8 @@ for (i in seq_len(nrow(species_run))) {
   
   message("\n====================\n", i, "/", nrow(species_run), ": ", sp_english, " (", sp_code, ")\n====================")
   
-  model_path <- file.path(out_dir, "models", paste0(sp_file, ".rds"))
-  pred_path  <- file.path(out_dir, "predictions", paste0(sp_file, ".rds"))
+  model_path <- file.path(out_dir, "models_joint", paste0(sp_file, ".rds"))
+  pred_path  <- file.path(out_dir, "predictions_joint", paste0(sp_file, ".rds"))
   
   # --- Build species data
   if (!(sp_code %in% names(counts))) {
@@ -250,14 +281,26 @@ for (i in seq_len(nrow(species_run))) {
   covars_present <- intersect(base_covars, names(sp_dat))
   cov_df_sp <- make_cov_df(covars_present)
   
+  # Note: previous defaults were stable as:
+  # prior_range_abund  <- c(500, 0.90)
+  # prior_sigma_abund  <- c(3,   0.05)
+  # prior_range_change <- c(500, 0.10)
+  # prior_sigma_change <- c(0.1, 0.05)
+  
+  # Priors controlling spatial autocorrelation fields
+  prior_range_abund  <- c(100, 0.50) # 50% chance spatial autocorrelation is smaller than 100 km
+  prior_sigma_abund  <- c(0.1, 0.50)
+  prior_range_change <- c(250, 0.10) # 10 chance spatial autocorrelation is less than 250 km
+  prior_sigma_change <- c(0.1, 0.05)
+  
   # --- Fit (or load existing)
   mod <- NULL
-  if (file.exists(model_path)) {
+  if (file.exists(model_path) & rerun_models == FALSE) {
     mod <- readRDS(model_path)
     message("Loaded existing model: ", model_path)
   } else {
     mod <- try(
-      fit_inla_testing(
+      fit_inla_multi_atlas(
         sp_dat = sp_dat,
         study_boundary = study_boundary,
         covariates = cov_df_sp,
@@ -265,7 +308,8 @@ for (i in seq_len(nrow(species_run))) {
         prior_range_abund = prior_range_abund,
         prior_sigma_abund = prior_sigma_abund,
         prior_range_change = prior_range_change,
-        prior_sigma_change = prior_sigma_change
+        prior_sigma_change = prior_sigma_change,
+        family = "poisson"
       ),
       silent = TRUE
     )
@@ -291,7 +335,7 @@ for (i in seq_len(nrow(species_run))) {
   # --- Predictions (or load existing)
   
   preds_obj <- NULL
-  if (file.exists(pred_path)) {
+  if (file.exists(pred_path)  & rerun_models == FALSE) {
     preds_obj <- readRDS(pred_path)
     message("Loaded existing predictions: ", pred_path)
     
@@ -372,7 +416,7 @@ for (i in seq_len(nrow(species_run))) {
       prob_decline = mean(pct_change <= 0),
       prob_decline_30 = mean(pct_change <= -30)
     )
-
+    
     # --- HSS / DOY curves (lightweight)
     ref_doy <- -7
     ref_hss <- 0
@@ -433,4 +477,4 @@ for (i in seq_len(nrow(species_run))) {
   message("Done: ", sp_english," - ",round(end-start,2)," min")
 }
 
-message("\n08_fit_models_and_predict.R complete.")
+message("\n08_fit_models_and_predict_jointly.R complete.")

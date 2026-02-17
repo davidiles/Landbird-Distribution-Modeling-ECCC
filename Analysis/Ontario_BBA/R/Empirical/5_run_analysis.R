@@ -210,12 +210,13 @@ species_to_model <- dat$species_to_model %>%
                              "Eastern Wood-Peewee",
                              "Grasshopper Sparrow",
                              "Solitary Sandpiper",
-                             "White-throated Sparrow"
+                             "White-throated Sparrow",
+                             "Bay-breasted Warbler"
   )) %>%
   subset(total_detections_OBBA3 > 100)
 
 
-for (i in c(17,18,19,20)){
+for (i in 15:nrow(species_to_model)){
   
   model_summaries <- list()
   if (file.exists("Analysis/Ontario_BBA/Output/Tables_Summaries/model_summaries.rds")) model_summaries <- readRDS("Analysis/Ontario_BBA/Output/Tables_Summaries/model_summaries.rds")
@@ -283,380 +284,355 @@ for (i in c(17,18,19,20)){
   # ---- Fit models
   # ---------------------------------------------
   
-  sp_dat <- subset(sp_dat, BCR %in% BCRs_to_model$BCR)
-  
-  # n_sq <- min(c(species_to_model$total_squares_OBBA2[i],species_to_model$total_squares_OBBA3[i]))
-  # 
-  # if (n_sq < 100) {
-  #   prior_range_abund  <- c(200, 0.1)
-  #   prior_range_change <- c(200, 0.1)
-  # }
-  
   # Fit model to both atlas periods
   source("Analysis/Ontario_BBA/Code/inla_model_functions.R")
   mod <- fit_inla_testing(sp_dat,  
                           model_boundary_sp, 
                           covariates = cov_df_sp,
-                          prior_range_abund = c(500,0.99),  # 90% chance range is smaller than 250 km 
-                          prior_sigma_abund = c(5,0.1),     # 10% chance SD is larger than 5  c(5,0.1)
-                          prior_range_change = c(500,0.1),  # 10% chance range is smaller than 500 km c(500,0.1)
-                          prior_sigma_change = c(0.1,0.01)  # 10% chance SD is larger than 0.1 c(0.1,0.1)
+                          timeout_min = 10,
+                          prior_range_abund = c(500,0.90),  # 90% chance range is smaller than 500 km 
+                          prior_sigma_abund = c(3,0.05),    # 5% chance SD is larger than 3
+                          prior_range_change = c(500,0.1),  # 10% chance range is smaller than 500 km 
+                          prior_sigma_change = c(0.1,0.05)  # 5% chance SD is larger than 0.1 
   )
   
   print(sp_english)
-  print(summary(mod)) # 14 min to fit
-  
-  # ---------------------------------------------
-  # ---- Save model summary
-  # ---------------------------------------------
-  
-  model_summaries[[sp_english]]$summary.fixed <- mod$summary.fixed
-  model_summaries[[sp_english]]$summary.hyperpar <- mod$summary.hyperpar
-  saveRDS(model_summaries, "Analysis/Ontario_BBA/Output/Tables_Summaries/model_summaries.rds")
-  
-  # ---------------------------------------------
-  # ---- Predictions onto grid across study area
-  # ---------------------------------------------
-  
-  # Collapse covariate formulas into one string
-  covariates <- cov_df_sp %>%
-    mutate(formula = paste0("Beta", beta, "_", covariate, "*", covariate, "^", beta))
-  
-  covariate_terms <- paste(covariates$formula, collapse = " + ")
-  
-  # Prediction expression
-  pred_expr <- paste(
-    "Intercept",
-    "spde_abund",
-    "Atlas3 * effect_Atlas3",
-    "Atlas3 * spde_change",
-    "DOY_global",
-    "DOY_BCR",
-    covariate_terms,
-    sep = " + "
-  )
-  
-  # Assemble into single prediction formula
-  pred_formula <- as.formula(
-    paste0("~ data.frame(pred = ", pred_expr,")")
-  )
-  
-  
-  grid_OBBA2_model <- grid_OBBA2 
-  grid_OBBA3_model <- grid_OBBA3
-  
-  pred_grid <- bind_rows(grid_OBBA2_model,grid_OBBA3_model) %>%
-    mutate(Hours_Since_Sunrise = 0,
-           days_since_june15 = -7,
-           Atlas3 = ifelse(Atlas == "OBBA2",0,1)) %>%
-    left_join(BCRs_to_model)
-  
-  # Predict relative abundance for every pixel
-  start_pred <- Sys.time()
-  preds <- predict_inla(mod = mod,
-                        grid = pred_grid,
-                        pred_formula = pred_formula)
-  end_pred <- Sys.time()
-  end_pred - start_pred # ~ 20 min to generate predictions
-  
-  # Reformat predictions
-  OBBA2_indices <- which(pred_grid$Atlas == "OBBA2")
-  OBBA3_indices <- which(pred_grid$Atlas == "OBBA3")
-  
-  preds$OBBA2 <- exp(preds$pred[OBBA2_indices,])
-  preds$OBBA3 <- exp(preds$pred[OBBA3_indices,])
-  preds$pred <- NULL
-  
-  ## Save full posterior of prediction if desired
-  #if (sp_english %in% example_species){
-  #  saveRDS(preds,file = paste0("model_output/species_predictions_full/",sp_english,".rds"))
-  #}
-  
-  preds$abs_change <- preds$OBBA3 - preds$OBBA2
-  
-  # ---------------------------------------------
-  # ---- Summarize predictions for every pixel
-  # ---------------------------------------------
-  
-  # ---- OBBA2
-  preds_OBBA2_summary <- summarize_posterior(preds$OBBA2,CI_probs = c(0.05,0.95),prefix = "OBBA2")
-  
-  # ---- OBBA3
-  preds_OBBA3_summary <- summarize_posterior(preds$OBBA3,CI_probs = c(0.05,0.95),prefix = "OBBA3")
-  
-  # ---- Change between atlases (OBBA3 - OBBA2)
-  preds_abs_change_summary <- summarize_posterior(preds$abs_change, prefix = "abs_change")
-  
-  saveRDS(list(sp_english = sp_english,
-               sp_code = sp_code,
-               preds_OBBA2_summary = preds_OBBA2_summary,
-               preds_OBBA3_summary = preds_OBBA3_summary,
-               preds_abs_change_summary = preds_abs_change_summary),
-          file = paste0("Analysis/Ontario_BBA/Output/Species_Predictions/",sp_filename,".rds"))
-  
-  
-  # ---------------------------------------------
-  # ---- Create maps
-  # ---------------------------------------------
-  
-  map_res <- max(st_distance(grid_OBBA2[1:2,]))
-  
-  # ---- Relative abundance during each atlas period
-  
-  upper_bound <- quantile(c(preds_OBBA2_summary$OBBA2_q50,preds_OBBA2_summary$OBBA3_q50),0.99,na.rm = TRUE) %>% as.numeric()
-  lower_bound <- 0.01
-  if (lower_bound >= upper_bound) lower_bound <- upper_bound/100
-  if (lower_bound >= upper_bound/100) lower_bound <- upper_bound/100
-  
-  # Atlas 3
-  map_relabund(species_name = sp_english,
-               species_filename = sp_filename,
-               obs_dat = sp_dat %>% subset(Atlas == "OBBA3"),
-               grid = grid_OBBA3,
-               preds_summarized = preds_OBBA3_summary,
-               atlas_squares = atlas_squares,
-               study_boundary = study_boundary,
-               BCR_shapefile = allBCR,
-               water_shapefile = water,
-               map_dir = "Analysis/Ontario_BBA/Output/Prediction_Maps/Relative_Abundance/",
-               train_dat_filter = "TRUE",
-               prefix = "OBBA3",
-               plot_obs_data = TRUE,
-               title = "Atlas 3",
-               subtitle = "Relative Abundance",
-               upper_bound = upper_bound,
-               lower_bound = lower_bound,
-               res = map_res*1.01)
-  
-  # Atlas 2
-  map_relabund(species_name = sp_english,
-               species_filename = sp_filename,
-               obs_dat = sp_dat %>% subset(Atlas == "OBBA2"),
-               grid = grid_OBBA2,
-               preds_summarized = preds_OBBA2_summary,
-               atlas_squares = atlas_squares,
-               study_boundary = study_boundary,
-               BCR_shapefile = allBCR,
-               water_shapefile = water,
-               map_dir = "Analysis/Ontario_BBA/Output/Prediction_Maps/Relative_Abundance/",
-               train_dat_filter = "TRUE",
-               prefix = "OBBA2",
-               plot_obs_data = TRUE,
-               title = "Atlas 2",
-               subtitle = "Relative Abundance",
-               upper_bound = upper_bound,
-               lower_bound = lower_bound,
-               res = map_res*1.01)
-  
-  # Change between atlas periods
-  map_change(species_name = sp_english,
-             species_filename = sp_filename,
-             grid = grid_OBBA3,
-             preds_summarized = preds_abs_change_summary,
-             study_boundary = study_boundary,
-             BCR_shapefile = allBCR,
-             water_shapefile = water,
-             map_dir = "Analysis/Ontario_BBA/Output/Prediction_Maps/Relative_Abundance/",
-             res = map_res*1.01,
-             upper_bound = upper_bound,
-             lower_bound = -upper_bound,
-             change_type = "Absolute")
-  
-  # ---------------------------------------------
-  # ---- Mask out water pixels prior to summarizing overall change
-  # ---------------------------------------------
-  
-  preds$OBBA2[grid_OBBA2$on_water,] <- 0
-  preds$OBBA3[grid_OBBA3$on_water,] <- 0
-  
-  # ---------------------------------------------
-  # ---- Summarize percent change in each BCR
-  # ---------------------------------------------
-  
-  # Initialize a list to store results
-  BCR_vec <- unique(sp_dat$BCR)
-  bcr_change_list <- vector("list", length(BCR_vec))
-  for (j in seq_len(length(BCR_vec))) {
-    
-    bcr_id <- BCR_vec[j]
-    
-    # -----------------------------------------
-    # Using all pixels in BCR
-    # -----------------------------------------
-    
-    # Identify pixels in this BCR
-    pixels_in_bcr <- which(grid_OBBA2$BCR == bcr_id)
-    
-    # Sum posterior draws across pixels
-    sum_OBBA2 <- colSums(preds$OBBA2[pixels_in_bcr, , drop = FALSE])
-    sum_OBBA3 <- colSums(preds$OBBA3[pixels_in_bcr, , drop = FALSE])
-    
-    # Percent change:
-    percent_change <- (sum_OBBA3 - sum_OBBA2) / sum_OBBA2 * 100
-    
-    # -----------------------------------------
-    # Probability change estimate is lower in bbs area
-    # -----------------------------------------
-    
-    # Store results in a tibble
-    bcr_change_list[[j]] <- tibble(
-      BCR = bcr_id,
-      
-      # Overall across the BCR
-      mean_change = mean(percent_change),
-      median_change = median(percent_change),
-      lower_change = quantile(percent_change, 0.05),
-      upper_change = quantile(percent_change, 0.95),
-      prob_decline = mean(percent_change<=0),
-      prob_decline_30 = mean(percent_change<=-30))
-    
-  }
-  
-  # ---------------------------------------------
-  # ---- Summarize overall percent change across all pixels
-  # ---------------------------------------------
-  
-  # Sum posterior draws across all pixels
-  sum_all_OBBA2 <- colSums(preds$OBBA2)
-  sum_all_OBBA3 <- colSums(preds$OBBA3)
-  
-  # Percent change across the full study area
-  overall_percent_change <- (sum_all_OBBA3 - sum_all_OBBA2) / sum_all_OBBA2 * 100
-  
-  overall_summary <- tibble(
-    mean_change = mean(overall_percent_change),
-    median_change = median(overall_percent_change),
-    lower_change = quantile(overall_percent_change, 0.05),
-    upper_change = quantile(overall_percent_change, 0.95),
-    prob_decline = mean(overall_percent_change <= 0),
-    prob_decline_30 = mean(overall_percent_change <= -30)
-  )
-  
-  # ---------------------------------------------
-  # ---- Save change results
-  # ---------------------------------------------
-  
-  # Initialize a list for this species
-  species_change_summary <- list()
-  species_change_summary[[sp_english]]$sp_english <- sp_english
-  species_change_summary[[sp_english]]$sp_code <- sp_code
-  
-  # --- Overall change ---
-  species_change_summary[[sp_english]]$overall <- overall_summary
-  
-  # --- BCR-level summaries ---
-  species_change_summary[[sp_english]]$BCR <- bcr_change_list
-  
-  # Save BCR-level summaries
-  change_summaries <- list()
-  if (file.exists("Analysis/Ontario_BBA/Output/Tables_Summaries/change_summaries.rds")) change_summaries <- readRDS("Analysis/Ontario_BBA/Output/Tables_Summaries/change_summaries.rds")
-  
-  # Append species summary using species English name as the list name
-  change_summaries[[sp_english]] <- species_change_summary[[sp_english]]
-  saveRDS(change_summaries,"Analysis/Ontario_BBA/Output/Tables_Summaries/change_summaries.rds")
+  print(summary(mod)) # ~ 5 min
   
   # # ---------------------------------------------
-  # # ---- Examine HSS and DOY effects
+  # # ---- Save model summary
   # # ---------------------------------------------
   # 
-  # # Reference values
-  # ref_doy <- 0
-  # ref_hss <- 0
-  # ref_bcr <- 1
+  # model_summaries[[sp_english]]$summary.fixed <- mod$summary.fixed
+  # model_summaries[[sp_english]]$summary.hyperpar <- mod$summary.hyperpar
+  # saveRDS(model_summaries, "Analysis/Ontario_BBA/Output/Tables_Summaries/model_summaries.rds")
   # 
-  # # HSS prediction block
-  # HSS_pred <- tibble(
-  #   Hours_Since_Sunrise = seq(
-  #     min(sp_dat$Hours_Since_Sunrise, na.rm = TRUE),
-  #     max(sp_dat$Hours_Since_Sunrise, na.rm = TRUE),
-  #     length.out = 100
-  #   ),
-  #   days_since_june15 = ref_doy,
-  #   BCR_factor = ref_bcr,
-  #   effect = "HSS"
+  # # ---------------------------------------------
+  # # ---- Predictions onto grid across study area
+  # # ---------------------------------------------
+  # 
+  # # Collapse covariate formulas into one string
+  # covariates <- cov_df_sp %>%
+  #   mutate(formula = paste0("Beta", beta, "_", covariate, "*", covariate, "^", beta))
+  # 
+  # covariate_terms <- paste(covariates$formula, collapse = " + ")
+  # 
+  # # Prediction expression
+  # pred_expr <- paste(
+  #   "Intercept",
+  #   "spde_abund",
+  #   "Atlas3 * effect_Atlas3",
+  #   "Atlas3 * spde_change",
+  #   "DOY_global",
+  #   #"DOY_BCR",
+  #   covariate_terms,
+  #   sep = " + "
   # )
   # 
-  # # DOY-by-BCR prediction block
-  # DOY_seq <- seq(
-  #   min(sp_dat$days_since_june15, na.rm = TRUE),
-  #   max(sp_dat$days_since_june15, na.rm = TRUE),
-  #   by = 1
+  # # Assemble into single prediction formula
+  # pred_formula <- as.formula(
+  #   paste0("~ data.frame(pred = ", pred_expr,")")
   # )
   # 
-  # DOY_pred <- tidyr::expand_grid(
-  #   days_since_june15 = DOY_seq,
-  #   BCR_factor = sort(unique(sp_dat$BCR_factor))
-  # ) %>%
-  #   mutate(
-  #     Hours_Since_Sunrise = ref_hss,
-  #     effect = "DOY"
-  #   )
+  # grid_OBBA2_model <- grid_OBBA2 
+  # grid_OBBA3_model <- grid_OBBA3
   # 
-  # # Combine into a single dataframe
-  # pred_df <- bind_rows(HSS_pred, DOY_pred) %>%
-  #   mutate(
-  #     BCR_factor = if_else(
-  #       effect == "HSS",
-  #       ref_bcr,
-  #       BCR_factor
-  #     )
-  #   )
+  # pred_grid <- bind_rows(grid_OBBA2_model,grid_OBBA3_model) %>%
+  #   mutate(Hours_Since_Sunrise = 0,
+  #          days_since_june15 = -7,
+  #          Atlas3 = ifelse(Atlas == "OBBA2",0,1)) %>%
+  #   left_join(BCRs_to_model)
   # 
-  # pred_all <- predict_inla(
-  #   mod,
-  #   pred_df,
-  #   as.formula(~ data.frame(pred = HSS + DOY_global + DOY_BCR))
+  # # Predict relative abundance for every pixel
+  # start_pred <- Sys.time()
+  # preds <- predict_inla(mod = mod,
+  #                       grid = pred_grid,
+  #                       pred_formula = pred_formula)
+  # end_pred <- Sys.time()
+  # end_pred - start_pred # ~ 20 min to generate predictions
+  # 
+  # # Reformat predictions
+  # OBBA2_indices <- which(pred_grid$Atlas == "OBBA2")
+  # OBBA3_indices <- which(pred_grid$Atlas == "OBBA3")
+  # 
+  # preds$OBBA2 <- exp(preds$pred[OBBA2_indices,])
+  # preds$OBBA3 <- exp(preds$pred[OBBA3_indices,])
+  # preds$pred <- NULL
+  # 
+  # ## Save full posterior of prediction if desired
+  # #if (sp_english %in% example_species){
+  # #  saveRDS(preds,file = paste0("model_output/species_predictions_full/",sp_english,".rds"))
+  # #}
+  # 
+  # preds$abs_change <- preds$OBBA3 - preds$OBBA2
+  # 
+  # # ---------------------------------------------
+  # # ---- Summarize predictions for every pixel
+  # # ---------------------------------------------
+  # 
+  # # ---- OBBA2
+  # preds_OBBA2_summary <- summarize_posterior(preds$OBBA2,CI_probs = c(0.05,0.95),prefix = "OBBA2")
+  # 
+  # # ---- OBBA3
+  # preds_OBBA3_summary <- summarize_posterior(preds$OBBA3,CI_probs = c(0.05,0.95),prefix = "OBBA3")
+  # 
+  # # ---- Change between atlases (OBBA3 - OBBA2)
+  # preds_abs_change_summary <- summarize_posterior(preds$abs_change, prefix = "abs_change")
+  # 
+  # saveRDS(list(sp_english = sp_english,
+  #              sp_code = sp_code,
+  #              preds_OBBA2_summary = preds_OBBA2_summary,
+  #              preds_OBBA3_summary = preds_OBBA3_summary,
+  #              preds_abs_change_summary = preds_abs_change_summary),
+  #         file = paste0("Analysis/Ontario_BBA/Output/Species_Predictions/",sp_filename,".rds"))
+  # 
+  # 
+  # # ---------------------------------------------
+  # # ---- Create maps
+  # # ---------------------------------------------
+  # 
+  # map_res <- max(st_distance(grid_OBBA2[1:2,]))
+  # 
+  # # ---- Relative abundance during each atlas period
+  # 
+  # upper_bound <- quantile(c(preds_OBBA2_summary$OBBA2_q50,preds_OBBA2_summary$OBBA3_q50),0.99,na.rm = TRUE) %>% as.numeric()
+  # lower_bound <- 0.01
+  # if (lower_bound >= upper_bound) lower_bound <- upper_bound/100
+  # if (lower_bound >= upper_bound/100) lower_bound <- upper_bound/100
+  # 
+  # # Atlas 3
+  # map_relabund(species_name = sp_english,
+  #              species_filename = sp_filename,
+  #              obs_dat = sp_dat %>% subset(Atlas == "OBBA3"),
+  #              grid = grid_OBBA3,
+  #              preds_summarized = preds_OBBA3_summary,
+  #              atlas_squares = atlas_squares,
+  #              study_boundary = study_boundary,
+  #              BCR_shapefile = allBCR,
+  #              water_shapefile = water,
+  #              map_dir = "Analysis/Ontario_BBA/Output/Prediction_Maps/Relative_Abundance/",
+  #              train_dat_filter = "TRUE",
+  #              prefix = "OBBA3",
+  #              plot_obs_data = TRUE,
+  #              title = "Atlas 3",
+  #              subtitle = "Relative Abundance",
+  #              upper_bound = upper_bound,
+  #              lower_bound = lower_bound,
+  #              res = map_res*1.01)
+  # 
+  # # Atlas 2
+  # map_relabund(species_name = sp_english,
+  #              species_filename = sp_filename,
+  #              obs_dat = sp_dat %>% subset(Atlas == "OBBA2"),
+  #              grid = grid_OBBA2,
+  #              preds_summarized = preds_OBBA2_summary,
+  #              atlas_squares = atlas_squares,
+  #              study_boundary = study_boundary,
+  #              BCR_shapefile = allBCR,
+  #              water_shapefile = water,
+  #              map_dir = "Analysis/Ontario_BBA/Output/Prediction_Maps/Relative_Abundance/",
+  #              train_dat_filter = "TRUE",
+  #              prefix = "OBBA2",
+  #              plot_obs_data = TRUE,
+  #              title = "Atlas 2",
+  #              subtitle = "Relative Abundance",
+  #              upper_bound = upper_bound,
+  #              lower_bound = lower_bound,
+  #              res = map_res*1.01)
+  # 
+  # # Change between atlas periods
+  # map_change(species_name = sp_english,
+  #            species_filename = sp_filename,
+  #            grid = grid_OBBA3,
+  #            preds_summarized = preds_abs_change_summary,
+  #            study_boundary = study_boundary,
+  #            BCR_shapefile = allBCR,
+  #            water_shapefile = water,
+  #            map_dir = "Analysis/Ontario_BBA/Output/Prediction_Maps/Relative_Abundance/",
+  #            res = map_res*1.01,
+  #            upper_bound = upper_bound,
+  #            lower_bound = -upper_bound,
+  #            change_type = "Absolute")
+  # 
+  # # ---------------------------------------------
+  # # ---- Mask out water pixels prior to summarizing overall change
+  # # ---------------------------------------------
+  # 
+  # preds$OBBA2[grid_OBBA2$on_water,] <- 0
+  # preds$OBBA3[grid_OBBA3$on_water,] <- 0
+  # 
+  # # ---------------------------------------------
+  # # ---- Summarize percent change in each BCR
+  # # ---------------------------------------------
+  # 
+  # # Initialize a list to store results
+  # BCR_vec <- unique(sp_dat$BCR)
+  # bcr_change_list <- vector("list", length(BCR_vec))
+  # for (j in seq_len(length(BCR_vec))) {
+  #   
+  #   bcr_id <- BCR_vec[j]
+  #   
+  #   # -----------------------------------------
+  #   # Using all pixels in BCR
+  #   # -----------------------------------------
+  #   
+  #   # Identify pixels in this BCR
+  #   pixels_in_bcr <- which(grid_OBBA2$BCR == bcr_id)
+  #   
+  #   # Sum posterior draws across pixels
+  #   sum_OBBA2 <- colSums(preds$OBBA2[pixels_in_bcr, , drop = FALSE])
+  #   sum_OBBA3 <- colSums(preds$OBBA3[pixels_in_bcr, , drop = FALSE])
+  #   
+  #   # Percent change:
+  #   percent_change <- (sum_OBBA3 - sum_OBBA2) / sum_OBBA2 * 100
+  #   
+  #   # -----------------------------------------
+  #   # Probability change estimate is lower in bbs area
+  #   # -----------------------------------------
+  #   
+  #   # Store results in a tibble
+  #   bcr_change_list[[j]] <- tibble(
+  #     BCR = bcr_id,
+  #     
+  #     # Overall across the BCR
+  #     mean_change = mean(percent_change),
+  #     median_change = median(percent_change),
+  #     lower_change = quantile(percent_change, 0.05),
+  #     upper_change = quantile(percent_change, 0.95),
+  #     prob_decline = mean(percent_change<=0),
+  #     prob_decline_30 = mean(percent_change<=-30))
+  #   
+  # }
+  # 
+  # # ---------------------------------------------
+  # # ---- Summarize overall percent change across all pixels
+  # # ---------------------------------------------
+  # 
+  # # Sum posterior draws across all pixels
+  # sum_all_OBBA2 <- colSums(preds$OBBA2)
+  # sum_all_OBBA3 <- colSums(preds$OBBA3)
+  # 
+  # # Percent change across the full study area
+  # overall_percent_change <- (sum_all_OBBA3 - sum_all_OBBA2) / sum_all_OBBA2 * 100
+  # 
+  # overall_summary <- tibble(
+  #   mean_change = mean(overall_percent_change),
+  #   median_change = median(overall_percent_change),
+  #   lower_change = quantile(overall_percent_change, 0.05),
+  #   upper_change = quantile(overall_percent_change, 0.95),
+  #   prob_decline = mean(overall_percent_change <= 0),
+  #   prob_decline_30 = mean(overall_percent_change <= -30)
   # )
   # 
-  # pred_summary <- apply(pred_all$pred, 1, function(x)
-  #   quantile(exp(x), c(0.025, 0.5, 0.975))) %>%
-  #   t() %>%
-  #   as.data.frame()
+  # # ---------------------------------------------
+  # # ---- Save change results
+  # # ---------------------------------------------
   # 
-  # pred_df <- cbind(pred_df,pred_summary)
+  # # Initialize a list for this species
+  # species_change_summary <- list()
+  # species_change_summary[[sp_english]]$sp_english <- sp_english
+  # species_change_summary[[sp_english]]$sp_code <- sp_code
   # 
-  # # Simple method for calculating peak DOY
-  # peak_DOY <- pred_df %>%
-  #   filter(effect == "DOY" & days_since_june15 >= -15 & days_since_june15 <= 25) %>%
-  #   group_by(BCR_factor) %>%
-  #   slice_max(`50%`, n = 1, with_ties = FALSE) %>%
-  #   ungroup() %>%
-  #   transmute(
-  #     BCR_factor,
-  #     days_since_june15_peak = days_since_june15
-  #   )
+  # # --- Overall change ---
+  # species_change_summary[[sp_english]]$overall <- overall_summary
   # 
-  # # Plots
-  # HSS_plot <- ggplot(subset(pred_df, effect == "HSS"), aes(x = Hours_Since_Sunrise, y = `50%`, ymin = `2.5%`, ymax = `97.5%`))+
-  #   geom_ribbon(fill = "gray90") +
-  #   geom_line() +
-  #   theme_bw()+
-  #   xlab("Hours Since Sunrise")+
-  #   ylab("Relative abundance")+
-  #   ggtitle(sp_english)
+  # # --- BCR-level summaries ---
+  # species_change_summary[[sp_english]]$BCR <- bcr_change_list
   # 
-  # print(HSS_plot)
-  # 
-  # DOY_plot <- ggplot(subset(pred_df, effect == "DOY" & days_since_june15 >= -15 & days_since_june15 <= 25), aes(x = days_since_june15, y = `50%`, ymin = `2.5%`, ymax = `97.5%`))+
-  #   geom_ribbon(fill = "gray90") +
-  #   geom_line() +
-  #   geom_vline(data = peak_DOY, aes(xintercept = days_since_june15_peak), col = "dodgerblue", linewidth = 2, alpha = 0.5)+
-  #   facet_wrap(BCR_factor~., scales = "free_y")+
-  #   theme_bw()+
-  #   xlab("Days since June 15")+
-  #   ylab("Relative abundance")+
-  #   ggtitle(sp_english)
-  # 
-  # print(DOY_plot)
-  # 
-  # # Save time-of-day and day-of-year results
-  # HSS_DOY_summaries <- list()
-  # if (file.exists("Analysis/Ontario_BBA/Output/Tables_Summaries/HSS_DOY_summaries.rds")) HSS_DOY_summaries <- readRDS("Analysis/Ontario_BBA/Output/Tables_Summaries/HSS_DOY_summaries.rds")
+  # # Save BCR-level summaries
+  # change_summaries <- list()
+  # if (file.exists("Analysis/Ontario_BBA/Output/Tables_Summaries/change_summaries.rds")) change_summaries <- readRDS("Analysis/Ontario_BBA/Output/Tables_Summaries/change_summaries.rds")
   # 
   # # Append species summary using species English name as the list name
-  # HSS_DOY_summaries[[sp_english]] <- pred_df
-  # saveRDS(HSS_DOY_summaries,"Analysis/Ontario_BBA/Output/Tables_Summaries/HSS_DOY_summaries.rds")
+  # change_summaries[[sp_english]] <- species_change_summary[[sp_english]]
+  # saveRDS(change_summaries,"Analysis/Ontario_BBA/Output/Tables_Summaries/change_summaries.rds")
   # 
+  # ---------------------------------------------
+  # ---- Examine HSS and DOY effects
+  # ---------------------------------------------
+
+  # Reference values
+  ref_doy <- -7
+  ref_hss <- 0
+
+  # HSS prediction block
+  HSS_pred <- tibble(
+    Hours_Since_Sunrise = seq(
+      min(sp_dat$Hours_Since_Sunrise, na.rm = TRUE),
+      max(sp_dat$Hours_Since_Sunrise, na.rm = TRUE),
+      length.out = 100
+    ),
+    days_since_june15 = ref_doy,
+    effect = "HSS"
+  )
+
+  # DOY-by-BCR prediction block
+  DOY_seq <- seq(
+    min(sp_dat$days_since_june15, na.rm = TRUE),
+    max(sp_dat$days_since_june15, na.rm = TRUE),
+    by = 1
+  )
+
+  DOY_pred <- data.frame(days_since_june15 = DOY_seq) %>%
+    mutate(
+      Hours_Since_Sunrise = ref_hss,
+      effect = "DOY"
+    )
+
+  # Combine into a single dataframe
+  pred_df <- bind_rows(HSS_pred, DOY_pred)
+
+  pred_all <- predict_inla(
+    mod,
+    pred_df,
+    as.formula(~ data.frame(pred = HSS + DOY_global))
+  )
+
+  pred_summary <- apply(pred_all$pred, 1, function(x)
+    quantile(exp(x), c(0.025, 0.5, 0.975))) %>%
+    t() %>%
+    as.data.frame()
+
+  pred_df <- cbind(pred_df,pred_summary)
+
+  # Simple method for calculating peak DOY
+  peak_DOY <- pred_df %>%
+    filter(effect == "DOY" & days_since_june15 >= -15 & days_since_june15 <= 25) %>%
+    slice_max(`50%`, n = 1, with_ties = FALSE) %>%
+    ungroup() %>%
+    transmute(
+      days_since_june15_peak = days_since_june15
+    )
+
+  # Plots
+  HSS_plot <- ggplot(subset(pred_df, effect == "HSS"), aes(x = Hours_Since_Sunrise, y = `50%`, ymin = `2.5%`, ymax = `97.5%`))+
+    geom_ribbon(fill = "gray90") +
+    geom_line() +
+    theme_bw()+
+    xlab("Hours Since Sunrise")+
+    ylab("Relative abundance")+
+    ggtitle(sp_english)
+
+  print(HSS_plot)
+
+  DOY_plot <- ggplot(subset(pred_df, effect == "DOY" & days_since_june15 >= -15 & days_since_june15 <= 25), aes(x = days_since_june15, y = `50%`, ymin = `2.5%`, ymax = `97.5%`))+
+    geom_ribbon(fill = "gray90") +
+    geom_line() +
+    geom_vline(data = peak_DOY, aes(xintercept = days_since_june15_peak), col = "dodgerblue", linewidth = 2, alpha = 0.5)+
+    theme_bw()+
+    xlab("Days since June 15")+
+    ylab("Relative abundance")+
+    ggtitle(sp_english)
+  print(DOY_plot)
+
+  # Save time-of-day and day-of-year results
+  HSS_DOY_summaries <- list()
+  if (file.exists("Analysis/Ontario_BBA/Output/Tables_Summaries/HSS_DOY_summaries.rds")) HSS_DOY_summaries <- readRDS("Analysis/Ontario_BBA/Output/Tables_Summaries/HSS_DOY_summaries.rds")
+
+  # Append species summary using species English name as the list name
+  HSS_DOY_summaries[[sp_english]] <- pred_df
+  saveRDS(HSS_DOY_summaries,"Analysis/Ontario_BBA/Output/Tables_Summaries/HSS_DOY_summaries.rds")
+
   
 }
 

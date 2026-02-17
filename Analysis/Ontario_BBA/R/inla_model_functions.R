@@ -5,11 +5,11 @@
 fit_inla_testing <- function(sp_dat,
                      study_boundary,
                      covariates,
-                     timeout_min = 10,
-                     prior_range_abund = c(150,0.1),  # 50% chance range is smaller than 250 km
-                     prior_sigma_abund = c(0.5,0.1),    # 10% chance SD is larger than 0.1
-                     prior_range_change = c(500,0.1), # 50% chance range is smaller than 250 km
-                     prior_sigma_change = c(0.1,0.1)    # 10% chance SD is larger than 0.1
+                     timeout_min,
+                     prior_range_abund = c(150,0.1),  
+                     prior_sigma_abund = c(0.5,0.1),    
+                     prior_range_change = c(500,0.1), 
+                     prior_sigma_change = c(0.1,0.1)
 ) {
   
   # Timeout INLA after 10 minutes (if it has not fit by then, it has likely stalled)
@@ -25,11 +25,15 @@ fit_inla_testing <- function(sp_dat,
   mesh_spatial <- fm_mesh_2d_inla(
     loc = st_as_sfc(sp_dat),
     boundary = hull,
-    max.edge = c(75, 200), # km inside and outside
-    cutoff = 40,
+    max.edge = c(100, 200), # triangle size near data
+    cutoff = 50,           # minimum node separation
     crs = st_crs(sp_dat)
   )
-
+  
+  #dim(mesh_spatial$loc)
+  #plot(mesh_spatial)
+  
+  
   # Controls residual spatial field for abundance
   matern_abund <- inla.spde2.pcmatern(mesh_spatial,
                                       prior.range = prior_range_abund,
@@ -96,6 +100,9 @@ fit_inla_testing <- function(sp_dat,
     )
   
   
+  # DOY_BCR(main = days_since_june15, model = DOY_spde_BCR,group = BCR_factor, control.group = list(model = "exchangeable")) +
+  # DOY_BCR +
+  
   model_components <- as.formula(paste0(
     '~Intercept(1) +
    effect_Atlas3(1, model="linear", mean.linear = 0, prec.linear = 1) +
@@ -107,11 +114,7 @@ fit_inla_testing <- function(sp_dat,
    HSS(main = Hours_Since_Sunrise, model = HSS_spde) +
    
    DOY_global(main = days_since_june15, model = DOY_spde_global) +
-   DOY_BCR(main = days_since_june15,
-           model = DOY_spde_BCR,
-           group = BCR_factor,
-           control.group = list(model = "exchangeable")) +
-   
+    
    kappa(square_atlas, model = "iid", constr = TRUE, hyper = list(prec = pc_prec))',
     if (length(covariates$components) > 0)
       paste0(" + ", paste(covariates$components, collapse = " + "))
@@ -119,13 +122,14 @@ fit_inla_testing <- function(sp_dat,
   
   covar_terms <- paste(covariates$formula, collapse = " + ")
   
+  
+  # 
   model_formula <- as.formula(paste0(
     "count ~
      Intercept +
      ARU * effect_ARU +
      HSS +
      DOY_global +
-     DOY_BCR +
      kappa +
      spde_abund +
      Atlas3 * spde_change +
@@ -196,137 +200,6 @@ fit_inla_testing <- function(sp_dat,
   runtime_INLA <- difftime(end, start, units = "mins") %>% round(2)
   message(paste0(sp_code, " - ", runtime_INLA, " min to fit model"))
   
-  return(fit_INLA)
-}
-
-
-fit_inla <- function(sp_dat,
-                     study_boundary,
-                     covariates,
-                     prior_range_abund = c(250,0.5),  # 50% chance range is smaller than 250 km
-                     prior_sigma_abund = c(1,0.1),    # 10% chance SD is larger than 0.1
-                     prior_range_change = c(250,0.5), # 50% chance range is smaller than 250 km
-                     prior_sigma_change = c(1,0.1)    # 10% chance SD is larger than 0.1
-) {
-
-  # Create spatial mesh
-  hull <- fm_extensions(
-    study_boundary,
-    convex = c(50, 150),
-    concave = c(50, 150)
-  )
-
-  mesh_spatial <- fm_mesh_2d_inla(
-    loc = st_as_sfc(sp_dat),
-    boundary = hull,
-    max.edge = c(100, 200), # km inside and outside
-    cutoff = 50,
-    crs = st_crs(sp_dat)
-  )
-
-  # Controls residual spatial field for abundance
-  matern_abund <- inla.spde2.pcmatern(mesh_spatial,
-                                      prior.range = prior_range_abund,
-                                      prior.sigma = prior_sigma_abund,
-                                      constr = TRUE
-  )
-
-  # Controls residual spatial field for change over time
-  matern_change <- inla.spde2.pcmatern(mesh_spatial,
-                                       prior.range = prior_range_change,
-                                       prior.sigma = prior_sigma_change,
-                                       constr = TRUE
-  )
-
-  # Create mesh to model effect of time since sunrise (HSS)
-  sp_dat$Hours_Since_Sunrise <- as.numeric(sp_dat$Hours_Since_Sunrise)
-  HSS_range <- range(sp_dat$Hours_Since_Sunrise)
-  HSS_meshpoints <- seq(HSS_range[1] - 1, HSS_range[2] + 1, length.out = 21)
-  HSS_mesh1D <- INLA::inla.mesh.1d(HSS_meshpoints, boundary = "free")
-  HSS_spde <- INLA::inla.spde2.pcmatern(HSS_mesh1D,
-                                        prior.range = c(2, 0.1),
-                                        prior.sigma = c(1, 0.1),
-                                        constr = TRUE
-  )
-
-  # iid random effect for atlas squares
-  pc_prec <- list(prior = "pcprec", param = c(1, 0.1)) #10% chance SD is larger than 1
-
-  # Model formulas
-  covariates <- covariates %>%
-    mutate(
-      components = paste0(
-        "Beta", beta, "_", covariate, '(1,model=\"', model,
-        '\"', ", mean.linear = ", mean, ", prec.linear = ",
-        prec, ")"
-      ),
-      formula = paste0("Beta", beta, "_", covariate, "*", covariate, "^", beta)
-    )
-
-  model_components <- as.formula(paste0(
-    '~Intercept(1)+
-    effect_Atlas3(1,model="linear", mean.linear = 0, prec.linear = 1)+
-    effect_ARU(1,model="linear", mean.linear = 0, prec.linear = 1)+
-    HSS(main = Hours_Since_Sunrise, model = HSS_spde) +
-    spde_abund(main = geometry, model = matern_abund) +
-    spde_change(main = geometry, model = matern_change) +
-  
-    kappa(square_atlas, model = "iid", constr = TRUE, hyper = list(prec = pc_prec)) +
-    ',
-    if(length(covariates$components) > 0) paste0(" + ", paste0(covariates$components, collapse = " + ")) else ""
-  ))
-
-  model_formula <- as.formula(paste0("count ~
-                  Intercept +
-                  ARU * effect_ARU +
-                  HSS +
-                  kappa +
-                  spde_abund +
-                  Atlas3 * spde_change +
-                  Atlas3 * effect_Atlas3 +
-                  ",
-                                     paste0(covariates$formula, collapse = " + ")
-  ))
-
-  # Specify penalize complexity prior for negative binomial overdispersion
-  # (50% chance the size parameter is larger than 5, favouring little overdispersion)
-  lambda <- calibrate_pc_lambda(target_prob = 0.5,threshold_theta = 5)
-
-  # Fit model
-  start <- Sys.time()
-  fit_INLA <- NULL
-  while (is.null(fit_INLA)) {
-
-      fit_INLA <- inlabru::bru(
-
-        components = model_components,
-
-        # For point counts
-        inlabru::like(
-          family = "poisson",
-          formula = model_formula,
-          data = subset(sp_dat, ARU == 0)),
-        
-        # For ARUs
-        inlabru::like(
-          family = "poisson",
-          formula = model_formula,
-          data = subset(sp_dat, ARU == 1)),
-        
-        options = list(
-          inla.mode = "experimental",
-          control.compute = list(waic = FALSE, cpo = FALSE),
-          bru_verbose = 4)
-
-      )
-
-    if ("try-error" %in% class(fit_INLA)) fit_INLA <- NULL
-  }
-
-  end <- Sys.time()
-  runtime_INLA <- difftime(end, start, units = "mins") %>% round(2)
-  message(paste0(sp_code, " - ", runtime_INLA, " min to fit model"))
-
   return(fit_INLA)
 }
 
@@ -577,8 +450,8 @@ map_relabund <- function(species_name,
     ) +
 
     geom_sf(data = water_shapefile, fill = "#EDF7FB", col = "transparent")+
-    geom_sf(data = atlas_squares_centroids %>% subset(!is.na(sp_mean_count)), colour = "black", size = 0.75, shape = 1, stroke = 0.1) +
-    geom_sf(data = atlas_squares_centroids %>% subset(sp_mean_count>0), colour = "black", size = 0.75, shape = 19, stroke = 0.2) +
+    geom_sf(data = atlas_squares_centroids %>% subset(!is.na(sp_mean_count)), colour = "black", size = 0.75, shape = 1, stroke = 0.1, alpha = 0.5) +
+    geom_sf(data = atlas_squares_centroids %>% subset(sp_mean_count>0), colour = "black", size = 0.75, shape = 4, stroke = 0.2, alpha = 0.5) +
     geom_sf(data = study_boundary, colour = "black", fill = NA, lwd = 0.5, show.legend = FALSE) +
 
     coord_sf(
@@ -664,8 +537,8 @@ map_relabund <- function(species_name,
       limits = c(min(breaks) / 1.1, max(breaks) * 1.1)
     ) +
     geom_sf(data = water_shapefile, fill = "#EDF7FB", col = "transparent")+
-    geom_sf(data = atlas_squares_centroids %>% subset(!is.na(sp_mean_count)), colour = "black", size = 0.75, shape = 1, stroke = 0.1) +
-    geom_sf(data = atlas_squares_centroids %>% subset(sp_mean_count>0), colour = "black", size = 0.75, shape = 19, stroke = 0.2) +
+    geom_sf(data = atlas_squares_centroids %>% subset(!is.na(sp_mean_count)), colour = "black", size = 0.75, shape = 1, stroke = 0.1, alpha = 0.5) +
+    geom_sf(data = atlas_squares_centroids %>% subset(sp_mean_count>0), colour = "black", size = 0.75, shape = 4, stroke = 0.2, alpha = 0.5) +
     geom_sf(data = study_boundary, colour = "black", fill = NA, lwd = 0.5, show.legend = FALSE) +
 
     coord_sf(
@@ -902,7 +775,7 @@ map_change <- function(species_name,
   } else{
     break_labels = breaks %>% signif(2)
     prefix = "abs_change"
-    title = "CI Width"
+    title = "Absolute Change"
   }
   break_labels[breaks>0] <- paste0("+",break_labels[breaks>0])
   break_labels[length(break_labels)] <- paste0("> ", break_labels[length(break_labels)])
@@ -915,7 +788,7 @@ map_change <- function(species_name,
         "<span style='font-size:20pt; font-weight:bold'>", wrap_species_label(species_name), "</span><br><br>",
         "<span style='font-size:14pt'>", title, "</span><br>",
         "<span style='font-size:7pt'>OBBA2 to OBBA3</span><br>",
-        "<span style='font-size:7pt'>Posterior Median</span>"
+        "<span style='font-size:7pt'>90% CI width</span>"
       ),
       colors = colpal_uncertainty(11),
       na.value = "transparent",

@@ -212,6 +212,7 @@ process_ohn_water <- function(water_path,
                               boundary_sf,
                               crs_wkt,
                               raster_res_m = 30,
+                              river_buffer_m = 100,
                               simplify_tolerance_m = 10,
                               min_area_m2_for_filtered = 1e6,
                               touches = TRUE) {
@@ -266,11 +267,15 @@ process_ohn_water <- function(water_path,
   water_open  <- water %>% dplyr::filter(.data$water_class == "Open Water")
   water_river <- water %>% dplyr::filter(.data$water_class == "River")
   
+
   # ---- simplify (optional) ----
   if (!is.null(simplify_tolerance_m) && simplify_tolerance_m > 0) {
     if (nrow(water_open)  > 0) water_open  <- suppressWarnings(sf::st_simplify(water_open,  dTolerance = simplify_tolerance_m))
     if (nrow(water_river) > 0) water_river <- suppressWarnings(sf::st_simplify(water_river, dTolerance = simplify_tolerance_m))
   }
+  
+  # Buffer river layer (to incorporate some notion of riparian habitat)
+  water_river <- water_river %>% st_buffer(river_buffer_m)
   
   # ---- template raster ----
   template <- make_template_raster_m(

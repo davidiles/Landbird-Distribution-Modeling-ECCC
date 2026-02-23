@@ -44,6 +44,9 @@ suppressPackageStartupMessages({
   library(lubridate)
 })
 
+# helper-functions
+source("R/functions/survey_processing_utils.R")  
+
 # ------------------------------------------------------------
 # Config
 # ------------------------------------------------------------
@@ -68,65 +71,6 @@ covars_for_stats <- c(
   "lc_1","lc_4","lc_5","lc_8","lc_9","lc_10","lc_11","lc_12","lc_14","lc_17"
 )
 covars_to_standardize <- c("prec","tmax")
-
-# ------------------------------------------------------------
-# Helper functions (could optionally be moved to a separate file survey_processing_utils.R but kept here because they arent reused)
-# ------------------------------------------------------------
-
-as_counts_tbl <- function(count_matrix, obs_idx_name = "obs_idx") {
-  # count_matrix is expected to have rows aligned to all_surveys_with_covs
-  # Convert to tibble and add obs_idx so we can subset by obs_idx safely.
-  if (inherits(count_matrix, "matrix")) count_matrix <- as.data.frame(count_matrix)
-  counts <- as_tibble(count_matrix)
-  counts <- counts %>% mutate(!!obs_idx_name := row_number(), .before = 1)
-  counts
-}
-
-# For selecting a single survey per site
-dedupe_by_location <- function(surveys_sf, digits = 5) {
-  xy <- st_coordinates(surveys_sf)
-  surveys_sf %>%
-    mutate(
-      x = round(xy[, 1], digits = digits),
-      y = round(xy[, 2], digits = digits)
-    ) %>%
-    group_by(x, y) %>%
-    slice_sample(n = 1) %>%
-    ungroup() %>%
-    select(-x, -y)
-}
-
-# Standardizing covariates
-standardize_covars <- function(surveys_sf, grid2, grid3, covars_for_stats, covars_to_standardize) {
-  present_stats <- intersect(covars_for_stats, names(surveys_sf))
-  present_std   <- intersect(covars_to_standardize, names(surveys_sf))
-  
-  if (length(present_std) == 0) {
-    return(list(surveys = surveys_sf, grid2 = grid2, grid3 = grid3, stats = NULL))
-  }
-  
-  stats <- surveys_sf %>%
-    st_drop_geometry() %>%
-    select(all_of(present_stats)) %>%
-    summarise(across(
-      everything(),
-      list(mean = \(x) mean(x, na.rm = TRUE),
-           sd   = \(x) sd(x, na.rm = TRUE))
-    ))
-  
-  for (col in present_std) {
-    mu <- stats[[paste0(col, "_mean")]]
-    sd <- stats[[paste0(col, "_sd")]]
-    
-    if (is.na(sd) || sd == 0) next
-    
-    surveys_sf[[col]] <- (surveys_sf[[col]] - mu) / sd
-    if (col %in% names(grid2)) grid2[[col]] <- (grid2[[col]] - mu) / sd
-    if (col %in% names(grid3)) grid3[[col]] <- (grid3[[col]] - mu) / sd
-  }
-  
-  list(surveys = surveys_sf, grid2 = grid2, grid3 = grid3, stats = stats)
-}
 
 # ------------------------------------------------------------
 # Load input object
@@ -263,7 +207,63 @@ grid_OBBA3 <- std$grid3
 covar_stats <- std$stats
 
 # ------------------------------------------------------------
-# 8) Species summary tables (for triage / reporting)
+# 8) Create several "derived" covariates, to separate their effects into
+#    north and south components
+# ------------------------------------------------------------
+
+# Create “derived” covariates consistently across surveys + grids
+add_derived_covariates <- function(surveys, grid2, grid3,
+                                   south_bcr = c(12, 13), north_bcr = c(7, 8)) {
+  
+  make_bits <- function(df) {
+    if (!("water_river" %in% names(df))) df$water_river <- NA_real_
+    if (!("BCR" %in% names(df))) stop("BCR missing; required for lc_* split.")
+    
+    df %>%
+      mutate(
+        on_river = as.integer(!is.na(water_river) & water_river > 0),
+        on_road = as.integer(!is.na(road) & road > 0),
+        
+        lc_1S  = ifelse(BCR %in% south_bcr, lc_1, 0),
+        lc_1N  = ifelse(BCR %in% north_bcr, lc_1, 0),
+        
+        lc_4S  = ifelse(BCR %in% south_bcr, lc_4, 0),
+        lc_4N  = ifelse(BCR %in% north_bcr, lc_4, 0),
+        
+        lc_5S  = ifelse(BCR %in% south_bcr, lc_5, 0),
+        lc_5N  = ifelse(BCR %in% north_bcr, lc_5, 0),
+        
+        lc_8S  = ifelse(BCR %in% south_bcr, lc_8, 0),
+        lc_8N  = ifelse(BCR %in% north_bcr, lc_8, 0),
+        
+        lc_9S  = ifelse(BCR %in% south_bcr, lc_9, 0),
+        lc_9N  = ifelse(BCR %in% north_bcr, lc_9, 0),
+        
+        lc_10S = ifelse(BCR %in% south_bcr, lc_10, 0),
+        lc_10N = ifelse(BCR %in% north_bcr, lc_10, 0)
+      ) %>%
+      mutate(onriver_S  = ifelse(BCR %in% south_bcr, on_river, 0),
+             onriver_N  = ifelse(BCR %in% north_bcr, on_river, 0))
+  }
+  
+  surveys <- make_bits(surveys)
+  grid2   <- make_bits(grid2)
+  grid3   <- make_bits(grid3)
+  
+  list(surveys = surveys, grid2 = grid2, grid3 = grid3)
+}
+
+# Several covariates will be divied into north and south components
+south_bcr <- c(12, 13)
+north_bcr <- c(7, 8)
+
+tmp <- add_derived_covariates(surveys_f, grid_OBBA2, grid_OBBA3, south_bcr, north_bcr)
+surveys_f <- tmp$surveys
+grid_OBBA2  <- tmp$grid2
+grid_OBBA3  <- tmp$grid3
+
+# ------------------------------------------------------------
+# 9) Species summary tables (for triage / reporting)
 # ------------------------------------------------------------
 
 all_species_unique <- dat$all_species %>%

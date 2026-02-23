@@ -857,3 +857,94 @@ sim_yrep_draws <- function(mu_draws, dat_test, mod) {
   
   stop("Unsupported family: ", fam)
 }
+
+
+sp_filename <- function(sp_english) {
+  sp_english %>%
+    str_to_lower() %>%
+    str_replace_all("[^a-z0-9]+", "_") %>%
+    str_replace_all("^_|_$", "")
+}
+
+load_or_empty_list <- function(path) {
+  if (file.exists(path)) readRDS(path) else list()
+}
+
+# Save RDS
+save_atomic <- function(obj, path) {
+  tmp <- paste0(path, ".tmp")
+  saveRDS(obj, tmp)
+  file.rename(tmp, path)
+}
+
+# Create “derived” covariates consistently across surveys + grids
+add_derived_covariates <- function(surveys, grid2, grid3,
+                                   south_bcr = c(12, 13), north_bcr = c(7, 8)) {
+  
+  make_bits <- function(df) {
+    if (!("water_river" %in% names(df))) df$water_river <- NA_real_
+    if (!("BCR" %in% names(df))) stop("BCR missing; required for lc_* split.")
+    
+    df %>%
+      mutate(
+        on_river = as.integer(!is.na(water_river) & water_river > 0),
+        on_road = as.integer(!is.na(road) & road > 0),
+        lc_8S  = ifelse(BCR %in% south_bcr, lc_8, 0),
+        lc_8N  = ifelse(BCR %in% north_bcr, lc_8, 0),
+        lc_9S  = ifelse(BCR %in% south_bcr, lc_9, 0),
+        lc_9N  = ifelse(BCR %in% north_bcr, lc_9, 0),
+        lc_10S = ifelse(BCR %in% south_bcr, lc_10, 0),
+        lc_10N = ifelse(BCR %in% north_bcr, lc_10, 0)
+      )
+  }
+  
+  surveys <- make_bits(surveys)
+  grid2   <- make_bits(grid2)
+  grid3   <- make_bits(grid3)
+  
+  list(surveys = surveys, grid2 = grid2, grid3 = grid3)
+}
+
+# Build a covariate specification dataframe (simple linear priors)
+make_cov_df <- function(covars) {
+  tibble(
+    covariate = covars,
+    beta = 1,
+    sd_linear = 3,
+    model = "linear",
+    mean = 0,
+    prec = 1 / (sd_linear^2)
+  )
+}
+
+# Prediction formula builder: returns an inlabru generate() formula that outputs one column "eta"
+make_pred_formula <- function(cov_df = NULL, include_kappa = FALSE, include_aru = FALSE) {
+  cov_terms <- character(0)
+  
+  if (!is.null(cov_df) && nrow(cov_df) > 0) {
+    cov_terms <- cov_df %>%
+      dplyr::mutate(term = paste0("Beta", beta, "_", covariate, "*I(", covariate, "^", beta, ")")) %>%
+      dplyr::pull(term)
+  }
+  
+  base_terms <- c(
+    "Intercept",
+    "spde_abund",
+    "Atlas3 * effect_Atlas3",
+    "Atlas3 * spde_change",
+    "DOY_global",
+    "HSS"
+  )
+  
+  if (include_aru) {
+    base_terms <- c(base_terms, "ARU * effect_ARU")
+  }
+  
+  eta_expr <- paste(c(base_terms, cov_terms), collapse = " + ")
+  
+  if (include_kappa) {
+    eta_expr <- paste0(eta_expr, " + kappa")
+  }
+  
+  as.formula(paste0("~ data.frame(eta = ", eta_expr, ")"))
+}

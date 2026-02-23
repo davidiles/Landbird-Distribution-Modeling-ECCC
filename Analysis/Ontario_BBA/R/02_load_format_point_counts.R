@@ -60,14 +60,17 @@ NC_OBBA3 <- read.table(
     Data_Source = "NatureCounts",
     Survey_Type = infer_survey_type_OBBA3(
       Remarks, Remarks2, EffortMeasurement1, SurveyAreaIdentifier
-    )
+    ),
+    Special_Survey = ifelse(EffortMeasurement1 == "Special","Special","No")
   ) %>%
   select(
-    Data_Source, Project_Name, Survey_Type,
+    Data_Source, Project_Name, Survey_Type,Special_Survey,
     DecimalLatitude, DecimalLongitude,
     Date_Time, DurationInHours,
     species_id, ObservationCount
   )
+
+
 
 # ------------------------------------------------------------
 # Load and process OBBA2 data
@@ -132,6 +135,7 @@ survey_info <- NC_long %>%
     Project_Name = first(Project_Name),
     Data_Source  = first(Data_Source),
     Survey_Type  = first(Survey_Type),
+    Special_Survey = first(Special_Survey),
     Latitude     = first(Latitude),
     Longitude    = first(Longitude),
     Date_Time    = first(Date_Time),

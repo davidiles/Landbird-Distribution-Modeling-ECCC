@@ -28,6 +28,7 @@ dir.create("data_clean/spatial", recursive = TRUE, showWarnings = FALSE)
 # Config
 # ------------------------------------------------------------
 
+# modis settings
 years_modis_obba2 <- 2001:2005
 years_modis_obba3 <- 2020:2024
 
@@ -56,8 +57,51 @@ crs_aea_km <- study_area$crs
 # Terra wants WKT; sf::st_crs works fine too
 terra_crs_raster_m <- sf::st_crs(3978)$wkt
 
+# # ------------------------------------------------------------
+# # 1a) NTEMS land cover classes (not available for BCR 13)
+# # ------------------------------------------------------------
+# 
+# # Atlas 2 period (1998 - 2002)
+# rasters_obba2 <- c(
+#   rast("../../Data/Spatial/NTEMS/CA_forest_VLCE2_1998/CA_forest_VLCE2_1998.tif"),
+#   rast("../../Data/Spatial/NTEMS/CA_forest_VLCE2_1999/CA_forest_VLCE2_1999.tif"),
+#   rast("../../Data/Spatial/NTEMS/CA_forest_VLCE2_2000/CA_forest_VLCE2_2000.tif"),
+#   rast("../../Data/Spatial/NTEMS/CA_forest_VLCE2_2001/CA_forest_VLCE2_2001.tif"),
+#   rast("../../Data/Spatial/NTEMS/CA_forest_VLCE2_2002/CA_forest_VLCE2_2002.tif")
+# )
+# names(rasters_obba2) <- 1998:2002
+# rasters_obba2 <- crop_mask_to_boundary(rasters_obba2, boundary_buf)
+# mode_obba2 <- terra::modal(
+#   rasters_obba2,
+#   ties = "first",
+#   na.rm = TRUE
+# ) # select modal value
+# 
+# 
+# # Atlas 3 period (2018 - 2022)
+# rasters_obba3 <- c(
+#   rast("../../Data/Spatial/NTEMS/CA_forest_VLCE2_2018/CA_forest_VLCE2_2018.tif"),
+#   rast("../../Data/Spatial/NTEMS/CA_forest_VLCE2_2019/CA_forest_VLCE2_2019.tif"),
+#   rast("../../Data/Spatial/NTEMS/CA_forest_VLCE2_2020/CA_forest_VLCE2_2020.tif"),
+#   rast("../../Data/Spatial/NTEMS/CA_forest_VLCE2_2021/CA_forest_VLCE2_2021.tif"),
+#   rast("../../Data/Spatial/NTEMS/CA_forest_VLCE2_2022/CA_forest_VLCE2_2022.tif")
+# )
+# names(rasters_obba3) <- 2018:2022
+# rasters_obba3 <- crop_mask_to_boundary(rasters_obba3, boundary_buf)
+# 
+# mode_obba3 <- terra::modal(
+#   rasters_obba3,
+#   ties = "first",
+#   na.rm = TRUE
+# ) # select modal value
+# 
+# # Reproject to canonical CRS (categorical -> nearest)
+# rasters_obba2 <- project(rasters_obba2, terra_crs_raster_m, method = "near")
+# rasters_obba3 <- project(rasters_obba3, terra_crs_raster_m, method = "near")
+# 
+
 # ------------------------------------------------------------
-# 1) MODIS composites (mode across years)
+# 1b) MODIS composites (mode across years)
 # ------------------------------------------------------------
 
 modis_files_obba2 <- file.path(raw_modis_dir, sprintf("modis_lc_%d.tif", years_modis_obba2))
@@ -233,6 +277,7 @@ if (file.exists(water_src)) {
     boundary_sf = boundary_buf,
     crs_wkt = terra_crs_raster_m,
     raster_res_m = 30,
+    river_buffer_m = 100,
     simplify_tolerance_m = 10,
     min_area_m2_for_filtered = 1e6
   )

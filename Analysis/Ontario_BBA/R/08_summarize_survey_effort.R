@@ -1,5 +1,5 @@
 # ============================================================
-# 01_sampling_change_summaries_by_BCR.R
+# sampling_change_summaries_by_BCR.R
 #
 # Purpose:
 #   Generate within-BCR summaries of how sampling changed between
@@ -30,36 +30,28 @@ suppressPackageStartupMessages({
   library(readr)
   library(stringr)
   library(viridis)
+  library(grid)
+  library(gridBase)
 })
 
 source("R/functions/figure_utils.R")
+source("R/functions/spatial_utils.R")
 
-# Create “derived” covariates consistently across surveys + grids
-add_derived_covariates <- function(surveys, grid2, grid3,
-                                   south_bcr = c(12, 13), north_bcr = c(7, 8)) {
-  
-  make_bits <- function(df) {
-    if (!("water_river" %in% names(df))) df$water_river <- NA_real_
-    if (!("BCR" %in% names(df))) stop("BCR missing; required for lc_* split.")
-    
-    df %>%
-      mutate(
-        on_river = as.integer(!is.na(water_river) & water_river > 0.1),
-        on_road = as.integer(!is.na(road) & road > 0.1),
-        lc_8S  = ifelse(BCR %in% south_bcr, lc_8, 0),
-        lc_8N  = ifelse(BCR %in% north_bcr, lc_8, 0),
-        lc_9S  = ifelse(BCR %in% south_bcr, lc_9, 0),
-        lc_9N  = ifelse(BCR %in% north_bcr, lc_9, 0),
-        lc_10S = ifelse(BCR %in% south_bcr, lc_10, 0),
-        lc_10N = ifelse(BCR %in% north_bcr, lc_10, 0)
-      )
-  }
-  
-  surveys <- make_bits(surveys)
-  grid2   <- make_bits(grid2)
-  grid3   <- make_bits(grid3)
-  
-  list(surveys = surveys, grid2 = grid2, grid3 = grid3)
+# ---------------------------
+# Helpers
+# ---------------------------
+
+as_numeric_df <- function(df, cols) {
+  df %>% mutate(across(all_of(cols), ~ suppressWarnings(as.numeric(.x))))
+}
+
+# helper: draw a ggplot into the current base graphics panel
+draw_ggplot_in_base_panel <- function(p) {
+  plot.new()
+  vp <- gridBase::baseViewports()
+  pushViewport(vp$figure)
+  grid.draw(ggplotGrob(p))
+  popViewport()
 }
 
 # ---------------------------
@@ -74,45 +66,27 @@ counts      <- dat$counts
 grid_OBBA2  <- dat$grid_OBBA2
 grid_OBBA3  <- dat$grid_OBBA3
 study_boundary <- dat$study_boundary %>% st_as_sf()
-
 species_to_model <- dat$species_to_model
-
-stopifnot(nrow(all_surveys) == nrow(counts))
-
-# Add Atlas labels to grids (helps later)
-grid_OBBA2 <- grid_OBBA2 %>% mutate(Atlas = "OBBA2")
-grid_OBBA3 <- grid_OBBA3 %>% mutate(Atlas = "OBBA3")
-
-# Derived covariates
-south_bcr <- c(12, 13)
-north_bcr <- c(7, 8)
-
-tmp <- add_derived_covariates(all_surveys, grid_OBBA2, grid_OBBA3, south_bcr, north_bcr)
-all_surveys <- tmp$surveys
-grid_OBBA2  <- tmp$grid2
-grid_OBBA3  <- tmp$grid3
-
-# Covariates for novelty metric
-base_covars <- c(
-  "tmax", "prec",
-  "on_river",
-  "on_road",
-  "urban_3",
-  "lc_1","lc_4","lc_5",
-  "lc_8S","lc_8N",
-  "lc_9S","lc_9N",
-  "lc_10S","lc_10N",
-  "lc_11","lc_12","lc_14","lc_17"
-)
 
 # Temporal variables (names in all_surveys)
 doy_var  <- "DayOfYear"
 hsr_var  <- "Hours_Since_Sunrise"  # already in your data
 
+# # Create a "Method" variable that is robust to how Survey_Type is recorded
+# # Priority: ARU flag; else use Survey_Type
+# all_surveys <- all_surveys %>%
+#   mutate(
+#     Method = case_when(
+#       .data[[aru_var]] == 1 ~ "ARU",
+#       TRUE ~ "Human"
+#     ),
+#     Method = factor(Method, levels = c("Human", "ARU"))
+#   )
+
 # Method variables
 aru_var  <- "ARU"          # 1/0
-stype_var <- "Survey_Type" # e.g., "Point_Count" (ARUs may still be Point_Count in some pipelines)
-atlas_var <- "Atlas"       # "OBBA2", "OBBA3"
+stype_var <- "Survey_Type" 
+atlas_var <- "Project_Name"       # "OBBA2", "OBBA3"
 bcr_var   <- "BCR"
 
 # Output dirs
@@ -130,113 +104,17 @@ fig_w <- 10
 fig_h <- 6
 fig_dpi <- 300
 
-# ---------------------------
-# Helpers
-# ---------------------------
-
-stop_if_missing_cols <- function(df, cols, df_name = "object") {
-  missing <- setdiff(cols, names(df))
-  if (length(missing) > 0) {
-    stop(
-      sprintf("%s is missing required columns: %s",
-              df_name, paste(missing, collapse = ", ")),
-      call. = FALSE
-    )
-  }
-}
-
-as_numeric_df <- function(df, cols) {
-  df %>% mutate(across(all_of(cols), ~ suppressWarnings(as.numeric(.x))))
-}
-
-safe_factor_atlas <- function(x) {
-  factor(x, levels = c("OBBA2", "OBBA3"))
-}
-
-# ----- Novelty metric helpers -----
-
-compute_scaler_from_grid <- function(grid2, grid3, covars) {
-  pooled <- bind_rows(
-    st_drop_geometry(grid2) %>% select(all_of(covars)),
-    st_drop_geometry(grid3) %>% select(all_of(covars))
-  ) %>% as_numeric_df(covars)
-  
-  mu <- vapply(pooled[, covars, drop = FALSE], function(z) mean(z, na.rm = TRUE), numeric(1))
-  sd <- vapply(pooled[, covars, drop = FALSE], function(z) stats::sd(z, na.rm = TRUE), numeric(1))
-  
-  sd[!is.finite(sd) | sd == 0] <- 1
-  list(mu = mu, sd = sd)
-}
-
-scale_matrix <- function(df, covars, scaler) {
-  x <- as_numeric_df(df, covars) %>% select(all_of(covars))
-  for (nm in covars) {
-    x[[nm]][is.na(x[[nm]])] <- scaler$mu[[nm]]
-  }
-  m <- as.matrix(x)
-  m <- sweep(m, 2, scaler$mu, FUN = "-")
-  m <- sweep(m, 2, scaler$sd, FUN = "/")
-  m
-}
-
-nearest_distance <- function(query_mat, ref_mat) {
-  if (nrow(ref_mat) == 0L) return(rep(NA_real_, nrow(query_mat)))
-  nn <- RANN::nn2(data = ref_mat, query = query_mat, k = 1)
-  as.numeric(nn$nn.dists[, 1])
-}
-
-summarize_dist_vec <- function(x) {
-  x <- x[is.finite(x)]
-  tibble(
-    n = length(x),
-    mean = mean(x),
-    sd = stats::sd(x),
-    p05 = stats::quantile(x, 0.05, names = FALSE),
-    p25 = stats::quantile(x, 0.25, names = FALSE),
-    p50 = stats::quantile(x, 0.50, names = FALSE),
-    p75 = stats::quantile(x, 0.75, names = FALSE),
-    p95 = stats::quantile(x, 0.95, names = FALSE)
-  )
-}
-
-# ---------------------------
-# Sanity checks
-# ---------------------------
-
-stop_if_missing_cols(all_surveys, c(atlas_var, bcr_var, doy_var, hsr_var, aru_var), "all_surveys")
-stop_if_missing_cols(grid_OBBA2, c("pixel_id", bcr_var), "grid_OBBA2")
-stop_if_missing_cols(grid_OBBA3, c("pixel_id", bcr_var), "grid_OBBA3")
-stop_if_missing_cols(all_surveys, base_covars, "all_surveys (novelty covars)")
-stop_if_missing_cols(grid_OBBA2, base_covars, "grid_OBBA2 (novelty covars)")
-stop_if_missing_cols(grid_OBBA3, base_covars, "grid_OBBA3 (novelty covars)")
-
-bcrs <- sort(unique(all_surveys[[bcr_var]]))
-message("BCRs in all_surveys: ", paste(bcrs, collapse = ", "))
-
-# Ensure consistent Atlas factor
-all_surveys <- all_surveys %>%
-  mutate(Atlas = safe_factor_atlas(.data[[atlas_var]]))
-
-# Also create a "Method" variable that is robust to how Survey_Type is recorded
-# Priority: ARU flag; else use Survey_Type
-all_surveys <- all_surveys %>%
-  mutate(
-    Method = case_when(
-      .data[[aru_var]] == 1 ~ "ARU",
-      TRUE ~ "Human"
-    ),
-    Method = factor(Method, levels = c("Human", "ARU"))
-  )
-
 # ============================================================
 # Map of survey coverage
 # ============================================================
 
+svy_OBBA2 <- subset(all_surveys, Project_Name == "OBBA2")
+svy_OBBA3 <- subset(all_surveys, Project_Name == "OBBA3")
 
 atlas2_plot <- ggplot() +
   geom_sf(data = study_boundary, fill = "gray90")+
   theme_map() +
-  geom_sf(data = subset(all_surveys, Project_Name == "OBBA2"), size = 0.1)+
+  geom_sf(data = subset(all_surveys, Project_Name == "OBBA2"), size = 0.01, shape = 16)+
   ggspatial::annotation_scale(location = "br", width_hint = 0.3) +
   ggspatial::annotation_north_arrow(
     location = "tr",
@@ -249,8 +127,9 @@ atlas2_plot <- ggplot() +
 atlas3_plot <- ggplot() +
   geom_sf(data = study_boundary, fill = "gray90")+
   theme_map() +
-  geom_sf(data = subset(all_surveys, Project_Name == "OBBA3" & Survey_Type == "ARU"), size = 1, col = "red")+
-  geom_sf(data = subset(all_surveys, Project_Name == "OBBA3" & Survey_Type == "Point_Count"), size = 0.1)+ggspatial::annotation_scale(location = "br", width_hint = 0.3) +
+  geom_sf(data = subset(all_surveys, Project_Name == "OBBA3" & Survey_Type == "ARU"), size = 0.01, col = "red", shape = 16)+
+  geom_sf(data = subset(all_surveys, Project_Name == "OBBA3" & Survey_Type == "Point_Count"), size = 0.05, shape = 16)+
+  ggspatial::annotation_scale(location = "br", width_hint = 0.3) +
   ggspatial::annotation_north_arrow(
     location = "tr",
     which_north = "true",
@@ -258,15 +137,207 @@ atlas3_plot <- ggplot() +
     pad_y = unit(0.2, "in"),
     style = ggspatial::north_arrow_fancy_orienteering()
   )
-  
+
 # print(atlas2_plot)
 # print(atlas3_plot)
 
 ggsave(file.path(out_dir, "figures/map_atlas2_surveys.png"),
-       atlas2_plot, width = 6, height = 6, dpi = fig_dpi)
+       atlas2_plot, width = 10, height = 10, dpi = fig_dpi)
 
 ggsave(file.path(out_dir, "figures/map_atlas3_surveys.png"),
-       atlas3_plot, width = 6, height = 6, dpi = fig_dpi)
+       atlas3_plot, width = 10, height = 10, dpi = fig_dpi)
+
+
+# ============================================================
+# Summaries of covariate coverage within each BCR
+# Highlight landscape conditions that were poorly sampled during surveys — 
+# they fall outside the most extreme ~5% of the survey distribution.
+# ============================================================
+
+covar_names <- readxl::read_xlsx("data_clean/metadata/covariate_names.xlsx")
+
+# Prepare raster template for plotting maps
+r_template <- rast(vect(grid_OBBA2), res = 1001)
+
+# Covariates to *potentially* include; per-species covariate variance screening can happen later
+covars_to_evaluate <- c(
+  "insect_broadleaf",
+  "insect_needleleaf",
+   "on_river",
+   "on_road",
+  "urban_2",
+   "urban_3",
+   "lc_1","lc_4","lc_5",
+   "lc_8","lc_8",
+   "lc_9","lc_10",
+   "lc_11","lc_12",
+   "lc_14","lc_17",
+  "prec","tmax"
+)
+
+# Sample size to flag:
+# If density is 0.025 birds per ha, how many surveys would be required for 1 detection within a
+# 250m point count radius, assuming perfect detection: 
+# n = 1/(D*A*qp) where qp = 1
+# n_flag = 1/(0.025 * pi*0.25^2) # about 200
+n_flag <- 200
+
+# Loop through covariates
+for (lc_to_eval in covars_to_evaluate[12:21]){
+  print(lc_to_eval)
+  cname <- subset(covar_names,covariate_code==lc_to_eval)$covariate_name
+  
+  if (lc_to_eval %in% c("prec","tmax","insect_broadleaf","insect_needleleaf")){
+    grid_OBBA2$region <- "Province"
+    svy_OBBA2$region <- "Province"
+    
+    grid_OBBA3$region <- "Province"
+    svy_OBBA3$region <- "Province"
+    
+  } else{
+    # Support will be evaluated separately in north and southern regions of study area for land cover covariates
+    grid_OBBA2$region <- ifelse(grid_OBBA2$BCR %in% c(13,12),"South","North")
+    svy_OBBA2$region <- ifelse(svy_OBBA2$BCR %in% c(13,12),"South","North")
+    
+    grid_OBBA3$region <- ifelse(grid_OBBA3$BCR %in% c(13,12),"South","North")
+    svy_OBBA3$region <- ifelse(svy_OBBA3$BCR %in% c(13,12),"South","North")
+  }
+  
+  
+  hist_OBBA2 <- plot_covariate_hist_overlay(
+    grid_OBBA2, svy_OBBA2, lc_to_eval,
+    region_col = "region",
+    bins = 30,                 # or set binwidth = 0.5, etc.
+    survey_width_frac = 0.5,    # red bars half-width,
+    landscape_fill = "black",
+    survey_fill = "red",
+    title = paste0("Atlas 2 survey (red) vs landscape (black)")
+  )
+  
+  hist_OBBA3 <- plot_covariate_hist_overlay(
+    grid_OBBA3, svy_OBBA3, lc_to_eval,
+    region_col = "region",
+    bins = 30,                 # or set binwidth = 0.5, etc.
+    survey_width_frac = 0.5,    # red bars half-width,
+    landscape_fill = "black",
+    survey_fill = "red",
+    title = paste0("Atlas 3 survey (red) vs landscape (black)")
+  )
+  
+  # Prepare rasters of the raw covariate value in each atlas
+  rast_OBBA2 <- rasterize(vect(grid_OBBA2), r_template, field = lc_to_eval, fun = "mean")
+  rast_OBBA3 <- rasterize(vect(grid_OBBA3), r_template, field = lc_to_eval, fun = "mean")
+  range_OBBA2 <- global(rast_OBBA2, fun = "range", na.rm = TRUE)
+  range_OBBA3 <- global(rast_OBBA3, fun = "range", na.rm = TRUE)
+  common_min <- min(range_OBBA2[1], range_OBBA3[1])
+  common_max <- max(range_OBBA2[2], range_OBBA3[2])
+  common_range <- c(common_min, common_max)
+  
+  # --- Evaluate support in Atlas 2
+  support_vals <- covariate_support_by_bcr(
+    grid_sf   = grid_OBBA2,
+    survey_sf = svy_OBBA2,
+    covariate = lc_to_eval,
+    bcr_col   = "region"
+  )
+  
+  grid_OBBA2$support <- support_vals$support
+  grid_OBBA2$q <- support_vals$q
+  grid_OBBA2$n_surveys <- support_vals$n_surveys
+  grid_OBBA2$n_tail <- grid_OBBA2$n_surveys *grid_OBBA2$support / 2
+  grid_OBBA2$flag_fewK <- grid_OBBA2$n_tail < n_flag
+  
+  # --- Evaluate support in Atlas 3
+  
+  support_vals <- covariate_support_by_bcr(
+    grid_sf   = grid_OBBA3,
+    survey_sf = svy_OBBA3,
+    covariate = lc_to_eval,
+    bcr_col   = "region"
+  )
+  grid_OBBA3$support <- support_vals$support
+  grid_OBBA3$q <- support_vals$q
+  grid_OBBA3$n_surveys <- support_vals$n_surveys
+  grid_OBBA3$n_tail <- grid_OBBA3$n_surveys *grid_OBBA3$support / 2
+  grid_OBBA3$flag_fewK <- grid_OBBA3$n_tail < n_flag
+ 
+  # --- Rasterize support metrics
+  r_support_OBBA2 <- rasterize(vect(grid_OBBA2), r_template, field = "n_tail", fun = "mean")
+  r_support_OBBA3 <- rasterize(vect(grid_OBBA3), r_template, field = "n_tail", fun = "mean")
+  r_flag_OBBA2 <- rasterize(vect(grid_OBBA2), r_template, field = "flag_fewK", fun = "max")
+  r_flag_OBBA3 <- rasterize(vect(grid_OBBA3), r_template, field = "flag_fewK", fun = "max")
+  
+  # ---- Generate plots
+  pdf(
+    file = paste0(out_dir, "/maps/covariate_support_", lc_to_eval, ".pdf"),
+    width = 11,
+    height = 14
+  )
+  
+  layout(
+    matrix(c(
+      1, 1,   # title spans both columns
+      2, 3,   # raw maps
+      4, 5,   # histograms
+      6, 7    # support maps
+    ), nrow = 4, byrow = TRUE),
+    heights = c(0.3, 1.2, 0.8, 1.2)
+  )
+  
+  # Title row
+  par(mar = c(0,0,0,0))
+  plot.new()
+  text(
+    0.5, 0.5,
+    paste0(cname,"\n", 
+           "covariate code = ",lc_to_eval),
+    cex = 1.8,
+    font = 2
+  )
+  
+  # Raw covariate maps
+  par(mar = c(3,3,3,5))
+  plot(rast_OBBA2, col = viridis(10), range = common_range,
+       main = paste0("Atlas 2: ", lc_to_eval), legend = FALSE)
+  
+  par(mar = c(3,3,3,5))
+  plot(rast_OBBA3, col = viridis(10), range = common_range,
+       main = paste0("Atlas 3: ", lc_to_eval), legend = TRUE)
+  
+  # covariate histograms
+  par(mar = c(2,2,2,2))
+  draw_ggplot_in_base_panel(hist_OBBA2)
+  
+  par(mar = c(2,2,2,2))
+  draw_ggplot_in_base_panel(hist_OBBA3)
+  
+  # Support maps
+  max_scale <- max(c(values(r_support_OBBA2),values(r_support_OBBA3)),na.rm = TRUE)
+  par(mar = c(3,3,3,5))
+  plot(r_support_OBBA2, col = gray.colors(100), range = c(0,max_scale),
+       main = paste0("Atlas 2 support: ", lc_to_eval), legend = TRUE)
+  
+  # Must have at least one "flagged" cell to plot "flag" overlay
+  r_flag_OBBA2[r_flag_OBBA2 == 0] <- NA
+  n_notna2 <- terra::global(!is.na(r_flag_OBBA2), "sum", na.rm = TRUE)[1,1]
+  if (is.finite(n_notna2) && n_notna2 > 0) {
+    plot(r_flag_OBBA2, col = "blue", add = TRUE, legend = FALSE)
+  }
+  
+  par(mar = c(3,3,3,5))
+  plot(r_support_OBBA3, col = gray.colors(100),range=c(0,max_scale),
+       main = paste0("Atlas 3 support: ", lc_to_eval), legend = TRUE)
+  
+  # Must have at least one "flagged" cell to plot overlay
+  r_flag_OBBA3[r_flag_OBBA3 == 0] <- NA
+  n_notna3 <- terra::global(!is.na(r_flag_OBBA3), "sum", na.rm = TRUE)[1,1]
+  if (is.finite(n_notna3) && n_notna3 > 0) {
+    plot(r_flag_OBBA3, col = "blue", add = TRUE, legend = FALSE)
+  }
+  
+  dev.off()
+  
+}
 
 # ============================================================
 # A) Effort / coverage summaries (by BCR x Atlas)
@@ -522,7 +593,7 @@ lims <- quantile(novelty_by_pixel$delta_d,
                  na.rm = TRUE)
 
 p_dd <- ggplot(novelty_by_pixel %>% sf::st_drop_geometry(),
-       aes(x = delta_d)) +
+               aes(x = delta_d)) +
   geom_histogram(bins = 5000, color = "white") +
   coord_cartesian(xlim = lims) +
   geom_vline(xintercept = 0, linetype = "dashed") +

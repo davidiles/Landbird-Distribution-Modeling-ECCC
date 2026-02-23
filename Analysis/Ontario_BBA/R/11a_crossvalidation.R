@@ -67,12 +67,12 @@ retry_fit <- 1                # set to 1 to retry fitting if it fails; 0 to only
 # prior_sigma_change <- c(0.1, 0.05)
 
 # Priors controlling spatial autocorrelation fields
-prior_range_abund  <- c(100, 0.50) # 50% chance spatial autocorrelation is smaller than 100 km
-prior_sigma_abund  <- c(3,   0.05) # 5% chance SD is larger than 3
-prior_range_change <- c(250, 0.10) # 10 chance spatial autocorrelation is less than 250 km
-prior_sigma_change <- c(0.1, 0.05) # 5% chance SD is larger than 0.1
+prior_range_abund  <- c(100, 0.50)  # 50% chance spatial autocorrelation is smaller than 100 km
+prior_sigma_abund  <- c(0.1,   0.5) # 50% chance SD is larger than 0.1
+prior_range_change <- c(250, 0.10)  # 10% chance spatial autocorrelation is less than 250 km
+prior_sigma_change <- c(0.1, 0.05)  # 5% chance SD is larger than 0.1
 
-# Derived-covariate logic (match script 08)
+# Derived-covariate logic
 south_bcr <- c(12, 13)
 north_bcr <- c(7, 8)
 
@@ -88,85 +88,6 @@ base_covars <- c(
 )
 
 # ------------------------------------------------------------
-# Helper functions (script-local; move to utils if reused)
-# ------------------------------------------------------------
-
-sp_filename <- function(sp_english) {
-  sp_english %>%
-    str_to_lower() %>%
-    str_replace_all("[^a-z0-9]+", "_") %>%
-    str_replace_all("^_|_$", "")
-}
-
-# Create “derived” covariates consistently across surveys + (optionally) grids
-add_derived_covariates <- function(surveys,
-                                   south_bcr = c(12, 13), north_bcr = c(7, 8)) {
-  
-  make_bits <- function(df) {
-    if (!("water_river" %in% names(df))) df$water_river <- NA_real_
-    if (!("BCR" %in% names(df))) stop("BCR missing; required for lc_* split.")
-    
-    df %>%
-      mutate(
-        on_river = as.integer(!is.na(water_river) & water_river > 0.1),
-        on_road = as.integer(!is.na(road) & road > 0.1),
-        lc_8S  = ifelse(BCR %in% south_bcr, lc_8, 0),
-        lc_8N  = ifelse(BCR %in% north_bcr, lc_8, 0),
-        lc_9S  = ifelse(BCR %in% south_bcr, lc_9, 0),
-        lc_9N  = ifelse(BCR %in% north_bcr, lc_9, 0),
-        lc_10S = ifelse(BCR %in% south_bcr, lc_10, 0),
-        lc_10N = ifelse(BCR %in% north_bcr, lc_10, 0)
-      )
-  }
-  
-  make_bits(surveys)
-}
-
-make_cov_df <- function(covars) {
-  tibble(
-    covariate = covars,
-    beta = 1,
-    sd_linear = 1,
-    model = "linear",
-    mean = 0,
-    prec = 1 / (sd_linear^2)
-  )
-}
-
-# Prediction formula builder (reuse exact logic from script 08)
-make_pred_formula <- function(cov_df = NULL, include_kappa = FALSE, include_aru = FALSE) {
-  cov_terms <- character(0)
-  
-  if (!is.null(cov_df) && nrow(cov_df) > 0) {
-    cov_terms <- cov_df %>%
-      mutate(term = paste0("Beta", beta, "_", covariate, "*I(", covariate, "^", beta, ")")) %>%
-      pull(term)
-  }
-  
-  base_terms <- c(
-    "Intercept",
-    "spde_abund",
-    "Atlas3 * effect_Atlas3",
-    "Atlas3 * spde_change",
-    "DOY_global",
-    "HSS"
-  )
-  
-  if (include_aru) {
-    base_terms <- c(base_terms, "ARU * effect_ARU")
-  }
-  
-  eta_expr <- paste(c(base_terms, cov_terms), collapse = " + ")
-  
-  if (include_kappa) {
-    eta_expr <- paste0(eta_expr, " + kappa")
-  }
-  
-  as.formula(paste0("~ data.frame(eta = ", eta_expr, ")"))
-}
-
-# ------------------------------------------------------------
-
 # Load data
 # ------------------------------------------------------------
 
@@ -179,9 +100,6 @@ study_boundary <- dat$study_boundary %>% st_as_sf()
 species_to_model <- dat$species_to_model
 
 stopifnot(nrow(all_surveys) == nrow(counts))
-
-# Derived covariates (surveys only for CV)
-all_surveys <- add_derived_covariates(all_surveys, south_bcr, north_bcr)
 
 # Species list (match script 08 selection)
 species_run <- species_to_model %>%
@@ -248,6 +166,8 @@ species_to_check <- c("Bobolink",
                       "Solitary Sandpiper",
                       "White-throated Sparrow",
                       "Bay-breasted Warbler")
+
+species_to_check <- "Olive-sided Flycatcher"
 
 species_run <- species_run %>%
   subset(english_name %in% species_to_check)

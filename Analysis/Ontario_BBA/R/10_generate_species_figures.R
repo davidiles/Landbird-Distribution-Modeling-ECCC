@@ -29,7 +29,7 @@ source("R/functions/figure_utils.R")
 # Config
 # ------------------------------------------------------------
 
-model_type <- "separate" # or separate
+model_type <- "joint" # or separate
 
 in_data <- "data_clean/birds/data_ready_for_analysis.rds"
 pred_dir <- paste0("data_clean/model_output/predictions_",model_type)
@@ -281,118 +281,125 @@ for (pf in pred_files) {
 message("09_make_species_figures.R complete: ", fig_dir)
 
 
-# ---- Bonus figures
-
-# 1. Relationship between provincial-scale population change estimates from joint and separate models
-library(dplyr)
-library(stringr)
-library(purrr)
-library(tidyr)
-
-sp_filename <- function(sp_english) {
-  sp_english %>%
-    str_to_lower() %>%
-    str_replace_all("[^a-z0-9]+", "_") %>%
-    str_replace_all("^_|_$", "")
-}
-
-path_sep   <- "data_clean/model_output/predictions_separate"
-path_joint <- "data_clean/model_output/predictions_joint"
-
-files_sep   <- list.files(path_sep,   pattern = "\\.rds$", full.names = TRUE)
-files_joint <- list.files(path_joint, pattern = "\\.rds$", full.names = TRUE)
-
-# Build a lookup: name -> full path for joint files
-joint_lookup <- setNames(files_joint, tools::file_path_sans_ext(basename(files_joint)))
-
-summ_list <- vector("list", length(files_sep))
-k <- 0
-
-for (pf_sep in files_sep) {
-  preds_sep  <- readRDS(pf_sep)
-  sp_english <- preds_sep$sp_english
-  sp_fn      <- sp_filename(sp_english)
-  
-  pf_joint <- joint_lookup[[sp_fn]]
-  if (is.null(pf_joint)) next
-  
-  preds_joint <- readRDS(pf_joint)
-  
-  summary_sep <- preds_sep$overall_summary  %>% mutate(species = sp_english, model = "Separate")
-  summary_joint <- preds_joint$overall_summary %>% mutate(species = sp_english, model = "Joint")
-  
-  k <- k + 1
-  summ_list[[k]] <- bind_rows(summary_sep, summary_joint)
-}
-
-change_summaries <- bind_rows(summ_list[seq_len(k)]) %>%
-  # Optional sanity checks / cleanup
-  mutate(
-    model   = factor(model, levels = c("Separate", "Joint")),
-    species = as.character(species)
-  )
-
-change_wide <- change_summaries %>%
-  select(species, model,
-         mean_change, median_change,
-         lower_change, upper_change,
-         prob_decline, prob_decline_30) %>%
-  pivot_wider(
-    names_from = model,
-    values_from = c(mean_change, median_change, lower_change, upper_change,
-                    prob_decline, prob_decline_30),
-    names_sep = "__"
-  )
-
-# Quick check (optional): which species are missing one model
-missing_any <- change_wide %>%
-  filter(is.na(mean_change__Separate) | is.na(mean_change__Joint)) %>%
-  pull(species)
-missing_any
 
 
-lims <- range(
-  c(
-    change_wide$lower_change__Separate,
-    change_wide$upper_change__Separate,
-    change_wide$lower_change__Joint,
-    change_wide$upper_change__Joint
-  ),
-  na.rm = TRUE
-)
 
-p <- ggplot(
-  change_wide,
-  aes(x = median_change__Separate, y = median_change__Joint, label = species)
-) +
-  geom_abline(slope = 1, intercept = 0, linetype = "dashed") +
-  
-  geom_errorbar(
-    aes(ymin = lower_change__Joint, ymax = upper_change__Joint),
-    width = 0, alpha = 0.6
-  ) +
-  geom_errorbarh(
-    aes(xmin = lower_change__Separate, xmax = upper_change__Separate),
-    height = 0, alpha = 0.6
-  ) +
-  
-  geom_point(size = 2) +
-  geom_text(size = 5, alpha = 0.5) +
-  
-  labs(
-    x = "Separate model",
-    y = "Joint model",
-    title = "Provincial-scale population change: Joint vs Separate model fits"
-  ) +
-  coord_equal() +
-  scale_x_continuous(
-    limits = lims,
-    trans = scales::pseudo_log_trans(sigma = 10)
-  ) +
-  scale_y_continuous(
-    limits = lims,
-    trans = scales::pseudo_log_trans(sigma = 10)
-  ) +
-  theme_bw()
 
-p
+
+
+
+# # ---- Bonus figures
+# 
+# # 1. Relationship between provincial-scale population change estimates from joint and separate models
+# library(dplyr)
+# library(stringr)
+# library(purrr)
+# library(tidyr)
+# 
+# sp_filename <- function(sp_english) {
+#   sp_english %>%
+#     str_to_lower() %>%
+#     str_replace_all("[^a-z0-9]+", "_") %>%
+#     str_replace_all("^_|_$", "")
+# }
+# 
+# path_sep   <- "data_clean/model_output/predictions_separate"
+# path_joint <- "data_clean/model_output/predictions_joint"
+# 
+# files_sep   <- list.files(path_sep,   pattern = "\\.rds$", full.names = TRUE)
+# files_joint <- list.files(path_joint, pattern = "\\.rds$", full.names = TRUE)
+# 
+# # Build a lookup: name -> full path for joint files
+# joint_lookup <- setNames(files_joint, tools::file_path_sans_ext(basename(files_joint)))
+# 
+# summ_list <- vector("list", length(files_sep))
+# k <- 0
+# 
+# for (pf_sep in files_sep) {
+#   preds_sep  <- readRDS(pf_sep)
+#   sp_english <- preds_sep$sp_english
+#   sp_fn      <- sp_filename(sp_english)
+#   
+#   pf_joint <- joint_lookup[[sp_fn]]
+#   if (is.null(pf_joint)) next
+#   
+#   preds_joint <- readRDS(pf_joint)
+#   
+#   summary_sep <- preds_sep$overall_summary  %>% mutate(species = sp_english, model = "Separate")
+#   summary_joint <- preds_joint$overall_summary %>% mutate(species = sp_english, model = "Joint")
+#   
+#   k <- k + 1
+#   summ_list[[k]] <- bind_rows(summary_sep, summary_joint)
+# }
+# 
+# change_summaries <- bind_rows(summ_list[seq_len(k)]) %>%
+#   # Optional sanity checks / cleanup
+#   mutate(
+#     model   = factor(model, levels = c("Separate", "Joint")),
+#     species = as.character(species)
+#   )
+# 
+# change_wide <- change_summaries %>%
+#   select(species, model,
+#          mean_change, median_change,
+#          lower_change, upper_change,
+#          prob_decline, prob_decline_30) %>%
+#   pivot_wider(
+#     names_from = model,
+#     values_from = c(mean_change, median_change, lower_change, upper_change,
+#                     prob_decline, prob_decline_30),
+#     names_sep = "__"
+#   )
+# 
+# # Quick check (optional): which species are missing one model
+# missing_any <- change_wide %>%
+#   filter(is.na(mean_change__Separate) | is.na(mean_change__Joint)) %>%
+#   pull(species)
+# missing_any
+# 
+# 
+# lims <- range(
+#   c(
+#     change_wide$lower_change__Separate,
+#     change_wide$upper_change__Separate,
+#     change_wide$lower_change__Joint,
+#     change_wide$upper_change__Joint
+#   ),
+#   na.rm = TRUE
+# )
+# 
+# p <- ggplot(
+#   change_wide,
+#   aes(x = median_change__Separate, y = median_change__Joint, label = species)
+# ) +
+#   geom_abline(slope = 1, intercept = 0, linetype = "dashed") +
+#   
+#   geom_errorbar(
+#     aes(ymin = lower_change__Joint, ymax = upper_change__Joint),
+#     width = 0, alpha = 0.6
+#   ) +
+#   geom_errorbarh(
+#     aes(xmin = lower_change__Separate, xmax = upper_change__Separate),
+#     height = 0, alpha = 0.6
+#   ) +
+#   
+#   geom_point(size = 2) +
+#   geom_text(size = 5, alpha = 0.5) +
+#   
+#   labs(
+#     x = "Separate model",
+#     y = "Joint model",
+#     title = "Provincial-scale population change: Joint vs Separate model fits"
+#   ) +
+#   coord_equal() +
+#   scale_x_continuous(
+#     limits = lims,
+#     trans = scales::pseudo_log_trans(sigma = 10)
+#   ) +
+#   scale_y_continuous(
+#     limits = lims,
+#     trans = scales::pseudo_log_trans(sigma = 10)
+#   ) +
+#   theme_bw()
+# 
+# p

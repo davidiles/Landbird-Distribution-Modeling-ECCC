@@ -52,27 +52,6 @@ n_samples_predict <- 1000
 # If model takes more than 15 min to fit, assume it stalled and retry
 timeout_min <- 15
 
-# Derived-covariate logic
-south_bcr <- c(12, 13)
-north_bcr <- c(7, 8)
-
-# Covariates to *potentially* include; per-species covariate variance screening can happen later
-base_covars <- c(
-  "on_river",
-  "on_road",
-  "urban_3",
-  "lc_1","lc_4","lc_5",
-  "lc_8S","lc_8N",
-  "lc_9S","lc_9N",
-  "lc_10S","lc_10N",
-  "lc_11","lc_12","lc_14","lc_17"
-)
-
-# ------------------------------------------------------------
-# Helper functions (script-local; move to utils if reused)
-# ------------------------------------------------------------
-
-
 # ------------------------------------------------------------
 # Load data
 # ------------------------------------------------------------
@@ -117,40 +96,54 @@ message("Species queued: ", nrow(species_run))
 
 # species_run <- sample_n(species_run, nrow(species_run))
 
-species_to_check <- c(
-  #"Bobolink",
-  #"Blue Jay",
+
+species_to_check <- c(#"Bobolink",
+  "Blue Jay",
   "Canada Jay",
-  "Olive-sided Flycatcher",
-  "Winter Wren",
-  "Lesser Yellowlegs",
-  "Blackpoll Warbler",
-  #"Connecticut Warbler",
-  "Palm Warbler",
-  "Lincoln's Sparrow",
-  "Fox Sparrow",
-  "Common Nighthawk",
+  # "Olive-sided Flycatcher",
+  # "Winter Wren",
+  # "Lesser Yellowlegs",
+  # "Blackpoll Warbler",
+  # "Connecticut Warbler",
+  # "Palm Warbler",
+  # "Lincoln's Sparrow",
+  # "Fox Sparrow",
+  # "Common Nighthawk",
   # "Long-eared Owl",
-  "American Tree Sparrow",
+  # "American Tree Sparrow",
   # "LeConte's Sparrow",
   # "Nelson's Sparrow",
-  "Boreal Chickadee",
-  "Rusty Blackbird",
-  "Yellow-bellied Flycatcher",
+  # "Boreal Chickadee",
+  # "Rusty Blackbird",
+  # "Yellow-bellied Flycatcher",
   # "Greater Yellowlegs",
   # "Hudsonian Godwit",
   # "Canada Warbler",
-  "Eastern Wood-Peewee",
-  "Grasshopper Sparrow",
-  "Solitary Sandpiper"
-  #"White-throated Sparrow"
-  # "Bay-breasted Warbler"
-)
+  # "Eastern Wood-Peewee",
+  # "Grasshopper Sparrow",
+  # "Solitary Sandpiper",
+  "White-throated Sparrow",
+  "Bay-breasted Warbler")
 
-species_to_check <- "Bay-breasted Warbler"
 
 species_run <- species_run %>%
   subset(english_name %in% species_to_check)
+
+# Covariates to *potentially* include; per-species covariate variance screening can happen later
+base_covars <- c(
+  "on_river_N",
+  "on_river_S",
+  "on_road",
+  "urban_3",
+  "lc_1S","lc_1N",
+  "lc_4S","lc_4N",
+  "lc_5S","lc_5N",
+  "lc_8S","lc_8N",
+  "lc_9S","lc_9N",
+  "lc_10S","lc_10N",
+  "lc_11","lc_12","lc_14","lc_17",
+  "insect_broadleaf","insect_needleleaf"
+)
 
 message("Species queued: ", nrow(species_run))
 

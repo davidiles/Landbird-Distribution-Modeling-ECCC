@@ -1,5 +1,5 @@
 # ============================================================
-# 10_cross_validate_spatiotemporal_models.R
+# 11_cross_validate_spatiotemporal_models.R
 #
 # Purpose:
 #   Spatial block cross-validation for INLA/inlabru species models.
@@ -33,7 +33,7 @@ suppressPackageStartupMessages({
 
 in_file <- "data_clean/birds/data_ready_for_analysis.rds"
 
-out_dir <- "data_clean/model_output/cv"
+out_dir <- "data_clean/model_output/xval_INLA"
 dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
 dir.create(file.path(out_dir, "predictions"), recursive = TRUE, showWarnings = FALSE)
 dir.create(file.path(out_dir, "summaries"), recursive = TRUE, showWarnings = FALSE)
@@ -72,19 +72,19 @@ prior_sigma_abund  <- c(0.1,   0.5) # 50% chance SD is larger than 0.1
 prior_range_change <- c(250, 0.10)  # 10% chance spatial autocorrelation is less than 250 km
 prior_sigma_change <- c(0.1, 0.05)  # 5% chance SD is larger than 0.1
 
-# Derived-covariate logic
-south_bcr <- c(12, 13)
-north_bcr <- c(7, 8)
-
 base_covars <- c(
-  "on_river",
+  "on_river_N",
+  "on_river_S",
   "on_road",
   "urban_3",
-  "lc_1","lc_4","lc_5",
+  "lc_1S","lc_1N",
+  "lc_4S","lc_4N",
+  "lc_5S","lc_5N",
   "lc_8S","lc_8N",
   "lc_9S","lc_9N",
   "lc_10S","lc_10N",
-  "lc_11","lc_12","lc_14","lc_17"
+  "lc_11","lc_12","lc_14","lc_17",
+  "insect_broadleaf","insect_needleleaf"
 )
 
 # ------------------------------------------------------------
@@ -167,8 +167,6 @@ species_to_check <- c("Bobolink",
                       "White-throated Sparrow",
                       "Bay-breasted Warbler")
 
-species_to_check <- "Olive-sided Flycatcher"
-
 species_run <- species_run %>%
   subset(english_name %in% species_to_check)
 
@@ -247,25 +245,20 @@ for (i in seq_len(nrow(species_run))) {
       
       start <- Sys.time()
       # Attempt to fit the model
-      fit_res <- fit_with_fallback(
-        dat_train = dat_train,
+      mod <- fit_inla_multi_atlas(
+        sp_dat = dat_train,
         study_boundary = study_boundary,
-        cov_df_sp = cov_df_sp,
+        covariates = cov_df_sp,
         timeout_min = timeout_min,
         prior_range_abund = prior_range_abund,
         prior_sigma_abund = prior_sigma_abund,
         prior_range_change = prior_range_change,
         prior_sigma_change = prior_sigma_change,
-        retry_fit = retry_fit,
-        nb_pc_target_prob = 0.5,
-        nb_pc_threshold_theta = 5,
-        family_order = "poisson",
-        max_tries_per_family = 1,
-        verbose = TRUE
+        family = "poisson"
       )
+      
       end <- Sys.time()
-      mod <- fit_res$mod
-      family_used <- fit_res$family_used
+      family_used <- mod$family_used
       
       if (is.null(mod)) {
         message("Fit failed after NB(2) + Poisson(2) attempts (rep=", r, ", fold=", f, "). Recording NA summary + continuing.")

@@ -1,152 +1,238 @@
-# ============================================================
-# 10b_generate_crossvalidation_figures with cross-validation flags.R
-# ============================================================
-
 suppressPackageStartupMessages({
   library(sf)
   library(dplyr)
   library(stringr)
   library(purrr)
-  library(ggplot2)
-  library(cowplot)
   library(pROC)
+  library(ggplot2)
 })
 
-# ---- utils
-source("R/functions/figure_utils.R")
-
-# ------------------------------------------------------------
-# Cross-validation overlay settings
-# ------------------------------------------------------------
 cv_dir_INLA <- "data_clean/model_output/xval_INLA"
-cv_dir_BRT <- "data_clean/model_output/xval_BRT"
+cv_dir_BRT  <- "data_clean/model_output/xval_BRT"
 
-include_cv_flags_default <- TRUE
+# Choose one species or many:
+fitted_species <- c("Bobolink",
+                    "Blue Jay",
+                    "Canada Jay",
+                    "Olive-sided Flycatcher",
+                    "Winter Wren",
+                    "Lesser Yellowlegs",
+                    "Blackpoll Warbler",
+                    "Connecticut Warbler",
+                    "Palm Warbler",
+                    "Lincoln's Sparrow",
+                    "Fox Sparrow",
+                    "Common Nighthawk",
+                    "Long-eared Owl",
+                    "American Tree Sparrow",
+                    "LeConte's Sparrow",
+                    "Nelson's Sparrow",
+                    "Boreal Chickadee",
+                    "Rusty Blackbird",
+                    "Yellow-bellied Flycatcher",
+                    "Greater Yellowlegs",
+                    "Hudsonian Godwit",
+                    "Canada Warbler",
+                    "Eastern Wood-Peewee",
+                    "Grasshopper Sparrow",
+                    "Solitary Sandpiper",
+                    "White-throated Sparrow",
+                    "Bay-breasted Warbler")
 
-aggregate_cv_blocks <- function(block_summ) {
-  req <- c("sp_english","sp_code","block_size_km","block_id","Atlas",
-           "rep","fold","n","mean_obs","bias","rmse","mae","geometry",
-           "mean_pred_yrep_q50","mean_pred_yrep_q025","mean_pred_yrep_q975","covered_95",
-           "p_any_detect","obs_any_detect")
-  stopifnot(all(req %in% names(block_summ)))
-  
-  block_summ %>%
-    dplyr::group_by(sp_english, sp_code, block_size_km, block_id, Atlas) %>%
-    dplyr::summarize(
-      n_eval = dplyr::n_distinct(interaction(rep, fold, drop = TRUE)),
-      n_surveys_total = mean(n, na.rm = TRUE),
-      
-      mean_obs = mean(mean_obs, na.rm = TRUE),
-      
-      mean_pred_yrep_q025 = mean(mean_pred_yrep_q025, na.rm = TRUE),
-      mean_pred_yrep_q50  = mean(mean_pred_yrep_q50,  na.rm = TRUE),
-      mean_pred_yrep_q975 = mean(mean_pred_yrep_q975, na.rm = TRUE),
-      mean_pred_yrep_mean = mean(mean_pred_mean, na.rm = TRUE),
-      
-      covered_95 = mean(covered_95, na.rm = TRUE),
-      
-      rmse = mean(rmse, na.rm = TRUE),
-      mae  = mean(mae,  na.rm = TRUE),
-      bias = mean(bias, na.rm = TRUE),
-      
-      # presence/absence channel
-      p_any_detect   = mean(p_any_detect, na.rm = TRUE),         # model probability of ≥1 detection
-      obs_any_detect = as.integer(mean(obs_any_detect, na.rm = TRUE) >= 0.5),  # should be constant; this is defensive
-      
-      geometry = dplyr::first(geometry),
-      .groups = "drop"
-    ) %>%
-    sf::st_as_sf()
+# ---- storage objects
+cv_comp_summaries <- vector("list", length(fitted_species))  # each element = 1-row tibble
+names(cv_comp_summaries) <- fitted_species
+
+# Optional: store the joined block-level comparison table per species for debugging
+cv_comp_details <- vector("list", length(fitted_species))
+names(cv_comp_details) <- fitted_species
+
+auc_safe <- function(y, p) {
+  y <- as.integer(y)
+  ok <- is.finite(p) & !is.na(y)
+  y <- y[ok]; p <- p[ok]
+  if (length(unique(y)) < 2) return(NA_real_)
+  as.numeric(pROC::auc(pROC::roc(y, p, quiet = TRUE)))
 }
 
-# ------------------------------------------------------------
-# Config
-# ------------------------------------------------------------
-
-in_data <- "data_clean/birds/data_ready_for_analysis.rds"
-pred_dir <- "data_clean/model_output/predictions"
-fig_dir  <- "data_clean/model_output/cv/figures/"
-dir.create(fig_dir, recursive = TRUE, showWarnings = FALSE)
-
-in_bcr <- "../../Data/Spatial/BCR/BCR_Terrestrial_master.shp"
-in_water <- "data_clean/spatial/water_filtered.shp"
-in_atlas_squares <- "../../Data/Spatial/National/AtlasSquares/NationalSquares_FINAL.shp"
-
-# ------------------------------------------------------------
-# Load base data
-# ------------------------------------------------------------
-stopifnot(file.exists(in_data))
-dat <- readRDS(in_data)
-
-all_surveys <- dat$all_surveys
-counts      <- dat$counts
-
-grid2 <- dat$grid_OBBA2
-grid3 <- dat$grid_OBBA3
-study_boundary <- dat$study_boundary %>% sf::st_as_sf()
-
-stopifnot(inherits(grid2, "sf"), inherits(grid3, "sf"))
-
-crs_use <- st_crs(all_surveys)
-study_boundary <- st_transform(study_boundary, crs_use)
-grid3 <- st_transform(grid3, crs_use)
-grid2 <- st_transform(grid2, crs_use)
-
-bcr_sf <- st_read(in_bcr, quiet = TRUE) %>%
-  st_make_valid() %>%
-  st_transform(crs_use) %>%
-  dplyr::filter(PROVINCE_S %in% c("ONTARIO", "ON", "Ontario") | is.na(PROVINCE_S)) %>%
-  dplyr::select(BCR, BCRNAME, PROVINCE_S) %>%
-  group_by(BCR, BCRNAME) %>%
-  summarise(geometry = st_union(geometry), .groups = "drop")
-
-# ------------------------------------------------------------
-# Loop species
-# ------------------------------------------------------------
-
-fitted_species <- c("Olive-sided Flycatcher")
-
-for (sp_english in fitted_species) {
+for (i in seq_along(fitted_species)) {
   
+  sp_english <- fitted_species[i]
+  message("\n====================\n", i, "/", length(fitted_species), ": ", sp_english, "\n====================")
+  
+  # ------------------------------------------------------------
+  # Build filenames
+  # ------------------------------------------------------------
   sp_file <- sp_english %>%
     str_to_lower() %>%
     str_replace_all("[^a-z0-9]+", "_") %>%
     str_replace_all("^_|_$", "")
   
-  cv_path_survey_summary_INLA <- file.path(cv_dir_INLA, "predictions", paste0(sp_file, ".rds"))     # Predictions at individual survey level
-  cv_path_block_summary_INLA <- file.path(cv_dir_INLA, "block_summaries", paste0(sp_file, ".rds"))  # Predictions summarized at block level
-  if (!file.exists(cv_path_block_summary_INLA)) next
+  cv_path_block_INLA <- file.path(cv_dir_INLA, "block_summaries", paste0(sp_file, ".rds"))
+  cv_path_block_BRT  <- file.path(cv_dir_BRT,  "block_summaries", paste0(sp_file, ".rds"))
   
-  cv_path_survey_summary_BRT <- file.path(cv_dir_BRT, "predictions", paste0(sp_file, ".rds"))     # Predictions at individual survey level
-  cv_path_block_summary_BRT <- file.path(cv_dir_BRT, "block_summaries", paste0(sp_file, ".rds"))  # Predictions summarized at block level
-  if (!file.exists(cv_path_block_summary_BRT)) next
-  
-  # ------------------------------------------------------------
-  # Load block-level summaries and average across reps
-  # ------------------------------------------------------------
-  
-  cv_block_summ_INLA <- readRDS(cv_path_block_summary_INLA)
-  cv_block_avg_INLA  <- aggregate_cv_blocks(cv_block_summ_INLA)
-  
-  cv_block_summ_BRT <- readRDS(cv_path_block_summary_BRT)
-  cv_block_avg_BRT  <- aggregate_cv_blocks(cv_block_summ_BRT)
-  
-  shared_blocks <- intersect(cv_block_avg_INLA$block_id,cv_block_avg_BRT$block_id)
-  cv_block_avg_INLA <- cv_block_avg_INLA %>% subset(block_id %in% shared_blocks) %>% arrange(block_id)
-  cv_block_avg_BRT <- cv_block_avg_BRT %>% subset(block_id %in% shared_blocks) %>% arrange(block_id)
-  
-  mean(cv_block_avg_INLA$mae)
-  mean(cv_block_avg_BRT$mae)
+  if (!file.exists(cv_path_block_INLA)) {
+    message("Missing INLA block summary: ", cv_path_block_INLA)
+    next
+  }
+  if (!file.exists(cv_path_block_BRT)) {
+    message("Missing BRT block summary: ", cv_path_block_BRT)
+    next
+  }
   
   # ------------------------------------------------------------
-  # Compare measures of cross-validation accuracy
+  # Load block summaries
   # ------------------------------------------------------------
-  mean(cv_block_avg_INLA$mae)
-  mean(cv_block_avg_BRT$mae)
+  cv_block_summ_INLA <- readRDS(cv_path_block_INLA)
+  cv_block_summ_BRT  <- readRDS(cv_path_block_BRT)
   
-  cor(cv_block_avg_INLA$mean_obs,cv_block_avg_INLA$mean_pred_yrep_q50)
-  cor(cv_block_avg_INLA$mean_obs,cv_block_avg_BRT$mean_pred_yrep_q50)
+  # ------------------------------------------------------------
+  # Join (fold/block level paired comparisons)
+  # ------------------------------------------------------------
+  comp <- cv_block_summ_INLA %>%
+    st_drop_geometry() %>%
+    select(sp_english, sp_code, block_size_km, rep, fold, Atlas, block_id,
+           n = n,
+           mean_obs,
+           rmse_inla = rmse,
+           mae_inla  = mae,
+           bias_inla = bias,
+           pred_mu_inla = mean_pred_mean,
+           p_any_detect_inla = p_any_detect,
+           obs_any_detect_inla = obs_any_detect) %>%
+    inner_join(
+      cv_block_summ_BRT %>%
+        st_drop_geometry() %>%
+        select(sp_english, sp_code, block_size_km, rep, fold, Atlas, block_id,
+               rmse_brt = rmse,
+               mae_brt  = mae,
+               bias_brt = bias,
+               pred_mu_brt = mean_pred_mean,
+               p_any_detect_brt = p_any_detect),
+      by = c("sp_english","sp_code","block_size_km","rep","fold","Atlas","block_id")
+    ) %>%
+    mutate(
+      d_rmse = rmse_brt - rmse_inla,  # >0 => INLA better (lower rmse)
+      d_mae  = mae_brt  - mae_inla,   # >0 => INLA better (lower mae)
+      d_bias = bias_brt - bias_inla
+    )
   
+  if (nrow(comp) == 0) {
+    message("No overlapping rows between INLA and BRT for this species (check keys).")
+    next
+  }
+  
+  # ------------------------------------------------------------
+  # Summarize metrics (overall)
+  # ------------------------------------------------------------
+  summ_overall <- comp %>%
+    summarize(
+      sp_english = first(sp_english),
+      sp_code = first(sp_code),
+      block_size_km = first(block_size_km),
+      n_blocks_eval = n(),
+      
+      # Observed data
+      mean_count_per_block = mean(mean_obs,na.rm = TRUE),
+      prop_blocks_detetected = mean(mean_obs>0,na.rm = TRUE),
+      
+      # Crossvalidation metrics
+      mean_rmse_inla = mean(rmse_inla, na.rm = TRUE),
+      mean_rmse_brt  = mean(rmse_brt,  na.rm = TRUE),
+      mean_d_rmse    = mean(d_rmse,    na.rm = TRUE),
+      brt_win_rate_rmse = mean(d_rmse < 0, na.rm = TRUE),
+      
+      mean_mae_inla  = mean(mae_inla, na.rm = TRUE),
+      mean_mae_brt   = mean(mae_brt,  na.rm = TRUE),
+      mean_d_mae     = mean(d_mae,    na.rm = TRUE),
+      brt_win_rate_mae = mean(d_mae < 0, na.rm = TRUE),
+      
+      cor_inla = suppressWarnings(cor(mean_obs, pred_mu_inla, use = "complete.obs")),
+      cor_brt  = suppressWarnings(cor(mean_obs, pred_mu_brt,  use = "complete.obs")),
+      
+      slope_inla = coef(lm(mean_obs ~ pred_mu_inla, data = comp))[2],
+      slope_brt  = coef(lm(mean_obs ~ pred_mu_brt,  data = comp))[2],
+      
+      auc_inla = auc_safe(obs_any_detect_inla, p_any_detect_inla),
+      auc_brt  = auc_safe(obs_any_detect_inla, p_any_detect_brt)
+    )
+  
+  # Optional: also summarize separately by Atlas
+  summ_by_atlas <- comp %>%
+    group_by(Atlas) %>%
+    summarize(
+      sp_english = first(sp_english),
+      sp_code = first(sp_code),
+      block_size_km = first(block_size_km),
+      n_blocks_eval = n(),
+      
+      # Observed data
+      mean_count_per_block = mean(mean_obs,na.rm = TRUE),
+      prop_blocks_detetected = mean(mean_obs>0,na.rm = TRUE),
+      
+      # Crossvalidation metrics
+      mean_rmse_inla = mean(rmse_inla, na.rm = TRUE),
+      mean_rmse_brt  = mean(rmse_brt,  na.rm = TRUE),
+      mean_d_rmse    = mean(d_rmse,    na.rm = TRUE),
+      brt_win_rate_rmse = mean(d_rmse < 0, na.rm = TRUE),
+      
+      mean_mae_inla  = mean(mae_inla, na.rm = TRUE),
+      mean_mae_brt   = mean(mae_brt,  na.rm = TRUE),
+      mean_d_mae     = mean(d_mae,    na.rm = TRUE),
+      brt_win_rate_mae = mean(d_mae < 0, na.rm = TRUE),
+      
+      cor_inla = suppressWarnings(cor(mean_obs, pred_mu_inla, use = "complete.obs")),
+      cor_brt  = suppressWarnings(cor(mean_obs, pred_mu_brt,  use = "complete.obs")),
+      
+      slope_inla = coef(lm(mean_obs ~ pred_mu_inla, data = cur_data()))[2],
+      slope_brt  = coef(lm(mean_obs ~ pred_mu_brt,  data = cur_data()))[2],
+      
+      auc_inla = auc_safe(obs_any_detect_inla, p_any_detect_inla),
+      auc_brt  = auc_safe(obs_any_detect_inla, p_any_detect_brt),
+      .groups = "drop"
+    )
+  
+  # ------------------------------------------------------------
+  # Store results
+  # ------------------------------------------------------------
+  cv_comp_summaries[[sp_english]] <- list(
+    overall = summ_overall,
+    by_atlas = summ_by_atlas
+  )
+  cv_comp_details[[sp_english]] <- comp
+  
+  # For single species “walk-through”, print key summaries:
+  print(summ_overall)
+  print(summ_by_atlas)
 }
 
-message("09_make_species_figures.R complete: ", fig_dir)
+# Combine into data frames after loop:
+summary_overall_tbl <- bind_rows(lapply(cv_comp_summaries, `[[`, "overall"))
+summary_by_atlas_tbl <- bind_rows(lapply(cv_comp_summaries, `[[`, "by_atlas"))
+
+summary_overall_tbl
+summary_by_atlas_tbl %>% as.data.frame()
+
+
+# View xval results for a single species
+dat <- cv_comp_details$`Canada Warbler`
+
+ggplot(dat, aes(x = n, y = d_rmse)) +
+  geom_point(alpha = 0.4) +
+  geom_hline(yintercept = 0, linetype = 2) +
+  geom_smooth()+
+  scale_x_log10() +
+  labs(x = "Surveys per block (log scale)", y = "d_rmse = RMSE_BRT - RMSE_INLA")
+
+lim <- range(dat[,c("mean_obs","pred_mu_brt","pred_mu_inla")])
+ggplot(data =  dat)+
+  geom_point(aes(x = mean_obs, y = pred_mu_inla, size = n))+
+  geom_abline(intercept = 0, slope = 1)+
+  coord_cartesian(xlim = lim, ylim = lim)
+
+ggplot(data = dat)+
+  geom_point(aes(x = mean_obs, y = pred_mu_brt, size = n))+
+  geom_abline(intercept = 0, slope = 1)+
+  coord_cartesian(xlim = lim, ylim = lim)
+
+

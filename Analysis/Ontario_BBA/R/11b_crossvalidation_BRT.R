@@ -39,6 +39,7 @@ dir.create(file.path(out_dir, "block_summaries"), recursive = TRUE, showWarnings
 # Source helpers (reuse your existing ones)
 source("R/functions/cv_utils.R")       # score_cv_predictions(), read_cv_plan_or_create(), etc
 source("R/functions/spatial_utils.R")  # make_spatial_blocks_grid(), make_block_polygons_grid()
+source("R/functions/inla_model_utils.R")
 
 # Species selection (same as 11a)
 min_detections_obba3 <- 100
@@ -52,18 +53,23 @@ cv_seed <- 123
 
 # Covariates: same list used in 11a for INLA fixed effects
 base_covars <- c(
-  "on_river_N",
-  "on_river_S",
+  "prec",
+  "tmax",
+  "on_river",
   "on_road",
   "urban_3",
-  "lc_1S","lc_1N",
-  "lc_4S","lc_4N",
-  "lc_5S","lc_5N",
-  "lc_8S","lc_8N",
-  "lc_9S","lc_9N",
-  "lc_10S","lc_10N",
-  "lc_11","lc_12","lc_14","lc_17",
-  "insect_broadleaf","insect_needleleaf"
+  "lc_1",
+  "lc_4",
+  "lc_5",
+  "lc_8",
+  "lc_9",
+  "lc_10",
+  "lc_11",
+  "lc_12",
+  "lc_14",
+  "lc_17",
+  "insect_broadleaf",
+  "insect_needleleaf"
 )
 
 # BRT hyperparameters (start conservative; adjust later)
@@ -168,7 +174,9 @@ tune_brt_once <- function(dat_train, rec, seed = 123, v_inner = 5, grid_size = 2
 stopifnot(file.exists(in_file))
 dat <- readRDS(in_file)
 
-all_surveys <- dat$all_surveys
+all_surveys <- dat$all_surveys %>%
+  mutate(BCR_numeric = as.numeric(as.factor(BCR)))
+
 counts      <- dat$counts
 study_boundary <- dat$study_boundary %>% st_as_sf()
 species_to_model <- dat$species_to_model
@@ -216,7 +224,7 @@ make_brt_recipe <- function(df_train, base_covars) {
     base_covars,
     "days_since_june15",
     "Hours_Since_Sunrise",
-    "BCR_factor",
+    "BCR_numeric",
     "ARU",
     "Atlas3"
   )
@@ -249,39 +257,37 @@ make_brt_recipe <- function(df_train, base_covars) {
 # Main CV loop
 # ------------------------------------------------------------
 
-species_to_check <- c(#"Bobolink",
+species_to_check <- c("Bobolink",
                       "Blue Jay",
                       "Canada Jay",
-                      # "Olive-sided Flycatcher",
-                      # "Winter Wren",
-                      # "Lesser Yellowlegs",
-                      # "Blackpoll Warbler",
-                      # "Connecticut Warbler",
-                      # "Palm Warbler",
-                      # "Lincoln's Sparrow",
-                      # "Fox Sparrow",
-                      # "Common Nighthawk",
-                      # "Long-eared Owl",
-                      # "American Tree Sparrow",
-                      # "LeConte's Sparrow",
-                      # "Nelson's Sparrow",
-                      # "Boreal Chickadee",
-                      # "Rusty Blackbird",
-                      # "Yellow-bellied Flycatcher",
-                      # "Greater Yellowlegs",
-                      # "Hudsonian Godwit",
-                      # "Canada Warbler",
-                      # "Eastern Wood-Peewee",
-                      # "Grasshopper Sparrow",
-                      # "Solitary Sandpiper",
+                      "Olive-sided Flycatcher",
+                      "Winter Wren",
+                      "Lesser Yellowlegs",
+                      "Blackpoll Warbler",
+                      "Connecticut Warbler",
+                      "Palm Warbler",
+                      "Lincoln's Sparrow",
+                      "Fox Sparrow",
+                      "Common Nighthawk",
+                      "Long-eared Owl",
+                      "American Tree Sparrow",
+                      "LeConte's Sparrow",
+                      "Nelson's Sparrow",
+                      "Boreal Chickadee",
+                      "Rusty Blackbird",
+                      "Yellow-bellied Flycatcher",
+                      "Greater Yellowlegs",
+                      "Hudsonian Godwit",
+                      "Canada Warbler",
+                      "Eastern Wood-Peewee",
+                      "Grasshopper Sparrow",
+                      "Solitary Sandpiper",
                       "White-throated Sparrow",
                       "Bay-breasted Warbler")
 
-species_to_check <- "Olive-sided Flycatcher"
 
 species_run <- species_run %>%
   subset(english_name %in% species_to_check)
-
 
 for (i in seq_len(nrow(species_run))) {
   
@@ -302,7 +308,6 @@ for (i in seq_len(nrow(species_run))) {
   
   tune_dir <- file.path(out_dir, "meta", "tuned_params")
   dir.create(tune_dir, recursive = TRUE, showWarnings = FALSE)
-  tune_path <- file.path(tune_dir, paste0(sp_file, "_rep", r, "_tuned_params.rds"))
   
   # Build species modeling data (same as 11a)
   sp_dat <- all_surveys %>%
@@ -319,6 +324,7 @@ for (i in seq_len(nrow(species_run))) {
   for (r in seq_len(n_repeats)) {
     
     plan_r <- cv_plan %>% filter(rep == r)
+    tune_path <- file.path(tune_dir, paste0(sp_file, "_rep", r, "_tuned_params.rds"))
     
     for (f in seq_len(n_folds)) {
       
@@ -410,7 +416,6 @@ for (i in seq_len(nrow(species_run))) {
         fit_ok <- TRUE
       }
       
-      
       if (!fit_ok) {
         message("BRT fit failed (rep=", r, ", fold=", f, "). Recording NA summary + continuing.")
         
@@ -448,6 +453,32 @@ for (i in seq_len(nrow(species_run))) {
         )
         next
       }
+      
+      # # Optional: extract fitted model
+      # fit_parsnip <- workflows::extract_fit_parsnip(fit_wf)
+      # 
+      # # extract the raw xgboost engine (xgb.Booster)
+      # xgb_fit <- workflows::extract_fit_engine(fit_wf)
+      # xgb_fit
+      # 
+      # # Variable importance
+      # imp <- xgboost::xgb.importance(model = xgb_fit)
+      # head(imp, 20)
+      # 
+      # # Partial dependence plots
+      # pred_fun <- function(object, newdata) {
+      #   predict(object, new_data = newdata) %>%
+      #     dplyr::pull(.pred)
+      # }
+      # 
+      # pdp::partial(
+      #   object = fit_wf,
+      #   pred.var = "tmax",
+      #   train = dat_train,
+      #   pred.fun = pred_fun,
+      #   type = "regression",
+      #   plot = TRUE
+      # )
       
       # Predict mean (mu)
       mu_pred <- predict(fit_wf, new_data = dat_test) %>% pull(.pred)

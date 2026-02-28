@@ -29,7 +29,7 @@ source("R/functions/figure_utils.R")
 # Config
 # ------------------------------------------------------------
 
-model_type <- "joint" # or separate
+model_type <- "joint2" # or separate
 
 in_data <- "data_clean/birds/data_ready_for_analysis.rds"
 pred_dir <- paste0("data_clean/model_output/predictions_",model_type)

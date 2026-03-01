@@ -20,16 +20,18 @@ suppressPackageStartupMessages({
   library(stringr)
   library(purrr)
   library(ggplot2)
+  library(units)
+  library(igraph)
 })
 
 # ---- utils
-source("R/functions/figure_utils.R")
+source("R/functions/0_figure_utils.R")
 
 # ------------------------------------------------------------
 # Config
 # ------------------------------------------------------------
 
-model_type <- "joint2" # or separate
+model_type <- "joint" # or separate
 
 in_data <- "data_clean/birds/data_ready_for_analysis.rds"
 pred_dir <- paste0("data_clean/model_output/predictions_",model_type)
@@ -221,7 +223,132 @@ for (pf in pred_files) {
     bounds = rel_bounds
   )
   
-  # --- Change maps (absolute change + CI width)
+  # --- Change maps 
+  
+  # Significance boundaries (smoothed for plotting)
+  preds <- readRDS(pf)
+  
+  # --------------------------------------------------------------------
+  # Identify spatially coherent regions of meaningful population change
+  # --------------------------------------------------------------------
+  # Goal:
+  #   1) Flag hexagons showing strong statistical support for meaningful
+  #      change (increase or decrease).
+  #   2) Remove isolated or very small patches that may arise due to
+  #      multiple comparisons or local uncertainty.
+  #   3) Dissolve remaining coherent clusters and smooth boundaries
+  #      for clean map visualization.
+  #
+  # Rationale:
+  #   With ~550 hexagons across Ontario, even a stringent posterior
+  #   probability threshold (e.g., ≥0.975) can produce isolated flagged
+  #   cells. To emphasize interpretable, spatially coherent patterns,
+  #   we require flagged hexagons to form patches exceeding a minimum
+  #   spatial area before displaying them on maps.
+  # --------------------------------------------------------------------
+  
+  min_area_km2 <- 5000          # Minimum size (km^2) for a coherent patch to be displayed
+  smoothing_bandwith_m <- 75000 # Bandwidth (meters) for boundary smoothing in final map
+  
+  # --------------------------------------------------------------------
+  # Step 1: Flag hexagons with strong posterior support for increase or decrease
+  # --------------------------------------------------------------------
+  # A hexagon is classified as:
+  #   - "Increase" if Pr(change > threshold) ≥ 0.975
+  #   - "Decrease" if Pr(change < -threshold) ≥ 0.975
+  # All others are excluded from further consideration.
+  
+  flagged <- preds$polygon_change_sf %>%
+    mutate(
+      signif_change = case_when(
+        p_inc >= 0.975 ~ "Increase",
+        p_dec >= 0.975 ~ "Decrease",
+        TRUE ~ NA_character_
+      )
+    ) %>%
+    filter(!is.na(signif_change))
+  
+  
+  # --------------------------------------------------------------------
+  # Step 2: Identify contiguous clusters ("patches") of flagged hexagons
+  #         within each direction of change separately
+  # --------------------------------------------------------------------
+  # Logic:
+  #   - Build a spatial adjacency graph among touching hexagons
+  #   - Compute connected components (patches)
+  #   - Calculate the total area of each patch
+  #   - Retain only patches exceeding the minimum area threshold
+  #
+  # This removes isolated or very small clusters that may not represent
+  # spatially coherent population changes.
+  
+  flagged_patched <- flagged %>%
+    group_by(signif_change) %>%
+    group_modify(~{
+      x <- .x
+      
+      # Identify touching neighbors for each hexagon
+      nb <- st_touches(x)
+      
+      # Construct adjacency graph from neighbor list
+      # (mode = "all" builds edges; converted to undirected for patch detection)
+      g <- igraph::graph_from_adj_list(nb, mode = "all")
+      g <- igraph::as.undirected(g, mode = "collapse")
+      
+      # Assign each hexagon to a connected spatial component (patch)
+      x$patch_id <- igraph::components(g)$membership
+      
+      # Dissolve hexagons by patch to compute total patch area
+      patch_polys <- x %>%
+        group_by(patch_id) %>%
+        summarise(geometry = st_union(geometry), .groups = "drop") %>%
+        mutate(
+          patch_area_km2 =
+            units::set_units(st_area(geometry), "km^2") %>%
+            units::drop_units()
+        )
+      
+      # Retain only patches exceeding the minimum area threshold
+      keep_ids <- patch_polys$patch_id[
+        patch_polys$patch_area_km2 >= min_area_km2
+      ]
+      
+      x %>% filter(patch_id %in% keep_ids)
+    }) %>%
+    ungroup() %>%
+    st_as_sf()
+  
+  
+  # --------------------------------------------------------------------
+  # Step 3: Dissolve surviving hexagons into unified Increase/Decrease
+  #         polygons for visualization
+  # --------------------------------------------------------------------
+  # This produces a clean polygon per direction representing all
+  # spatially coherent regions meeting statistical and area criteria.
+  
+  signif_change_polys <- flagged_patched %>%
+    group_by(signif_change) %>%
+    summarise(geometry = st_union(geometry), .groups = "drop")
+  
+  
+  # --------------------------------------------------------------------
+  # Step 4: Smooth polygon boundaries for cartographic display
+  # --------------------------------------------------------------------
+  # Apply kernel smoothing to remove hexagonal edges for aesthetic clarity.
+  # This step is purely cartographic and does not affect statistical results.
+  
+  signif_change_polys_smoothed <- signif_change_polys %>%
+    smoothr::smooth(
+      method = "ksmooth",
+      bandwidth = smoothing_bandwith_m
+    ) %>%
+    st_make_valid() %>%              # Ensure valid geometry
+    st_intersection(study_boundary)  # Clip to study boundary
+  
+  # --------------------------------------------------------------------
+  # Step 5: Generate the change map, with "meaningful change" polygons overlaid
+  # --------------------------------------------------------------------
+  
   chg <- make_abs_change_maps(
     species_name = sp_english,
     grid_sf = grid3,
@@ -229,6 +356,7 @@ for (pf in pred_files) {
     study_boundary = study_boundary,
     bcr_sf = bcr_sf,
     water_sf = water_sf,
+    signif_poly = signif_change_polys_smoothed,
     res = plot_res,
     max_abs = zmax,
     title = "Absolute change",

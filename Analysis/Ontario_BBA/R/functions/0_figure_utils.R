@@ -264,6 +264,7 @@ make_abs_change_maps <- function(species_name,
                                  study_boundary,
                                  bcr_sf = NULL,
                                  water_sf = NULL,
+                                 signif_poly = NULL,
                                  res = 1000,
                                  # Optional: force symmetric bounds for change map.
                                  # If provided, colour limits will be -max_abs..+max_abs.
@@ -329,7 +330,7 @@ make_abs_change_maps <- function(species_name,
   breaks[4] <- 0
   
   chg_plot <- ggplot() +
-    {if (!is.null(bcr_sf)) geom_sf(data = bcr_sf, colour = "gray80", fill = NA, linewidth = 0.3)} +
+    (if (!is.null(bcr_sf)) geom_sf(data = bcr_sf, colour = "gray80", fill = NA, linewidth = 0.3) else NULL) +
     stars::geom_stars(data = chg_stars) +
     scale_fill_gradientn(
       name = legend_title_chg,
@@ -339,7 +340,13 @@ make_abs_change_maps <- function(species_name,
       labels = signif(breaks, 2),
       limits = c(-max_abs, max_abs)
     ) +
-    {if (!is.null(water_sf)) geom_sf(data = water_sf, fill = "#F5F5F5", col = "transparent")} +
+    (if (!is.null(water_sf)) geom_sf(data = water_sf, fill = "#F5F5F5", col = "transparent") else NULL) +
+    (if (!is.null(signif_poly)) list(
+      geom_sf(data = subset(signif_poly, signif_change == "Increase"),
+              fill = "transparent", col = "dodgerblue", linewidth = 1),
+      geom_sf(data = subset(signif_poly, signif_change == "Decrease"),
+              fill = "transparent", col = "orangered", linewidth = 1)
+    ) else NULL) +
     geom_sf(data = study_boundary, colour = "black", fill = NA, linewidth = 0.5, show.legend = FALSE) +
     theme_map() +
     ggspatial::annotation_scale(location = "br", width_hint = 0.3) +
@@ -349,7 +356,7 @@ make_abs_change_maps <- function(species_name,
       pad_x = unit(0.2, "in"),
       pad_y = unit(0.2, "in"),
       style = ggspatial::north_arrow_fancy_orienteering()
-    )+
+    ) +
     coord_sf(
       crs = sf::st_crs(study_boundary),
       xlim = c(bb["xmin"], bb["xmax"]),

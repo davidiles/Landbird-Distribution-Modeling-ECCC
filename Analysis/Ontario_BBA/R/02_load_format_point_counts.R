@@ -21,6 +21,8 @@
 #   - data_clean/metadata/species_list.rds
 # ============================================================
 
+rm(list=ls())
+
 suppressPackageStartupMessages({
   library(dplyr)
   library(sf)
@@ -29,16 +31,22 @@ suppressPackageStartupMessages({
   library(purrr)
   library(readr)
   library(tidyr)
+  library(here)
 })
+
+# Centralized paths
+source(here::here("R", "00_config_paths.R"))
 
 # ------------------------------------------------------------
 # Load utilities and study area
 # ------------------------------------------------------------
+spatial_utils_path <- file.path(paths$functions, "spatial_utils.R")
+survey_processing_utils_path <- file.path(paths$functions, "survey_processing_utils.R")
 
-source("R/functions/spatial_utils.R")
-source("R/functions/survey_processing_utils.R")
+source(spatial_utils_path)
+source(survey_processing_utils_path)
 
-study_area <- readRDS("data_clean/spatial/study_area.rds")
+study_area <- readRDS(file.path(paths$data_clean, "spatial","study_area.rds"))
 crs_aea_km <- study_area$crs
 
 # ------------------------------------------------------------
@@ -76,7 +84,7 @@ english_lookup <- all_species %>%
 # Load and process OBBA3 data
 # ------------------------------------------------------------
 
-obba3_path <- "../../Data/Bird_Data_Raw/OBBA3/Point_Count/onatlas3pc_naturecounts_data.txt"
+obba3_path <- file.path(paths$data, "Bird_Data_Raw","OBBA3","Point_Count","onatlas3pc_naturecounts_data.txt")
 NC_OBBA3_raw <- read.table(
   obba3_path,
   sep = "\t", header = TRUE, fill = TRUE, comment.char = "", quote = ""
@@ -109,7 +117,7 @@ NC_OBBA3 <- NC_OBBA3_raw %>%
 # Load and process OBBA2 data
 # ------------------------------------------------------------
 
-obba2_path <- "../../Data/Bird_Data_Raw/OBBA2/Point_Count/obba2pc_naturecounts_data.txt"
+obba2_path <- file.path(paths$data, "Bird_Data_Raw","OBBA2","Point_Count","obba2pc_naturecounts_data.txt")
 NC_OBBA2_raw <- read.table(
   obba2_path,
   sep = "\t", header = TRUE, fill = TRUE, comment.char = "", quote = ""
@@ -173,7 +181,7 @@ NC_long <- bind_rows(NC_OBBA3, NC_OBBA2) %>%
 # Fix several species_id discrepancies within/between atlases
 # ------------------------------------------------------------
 
-# Common (id = 40919), Hoary (id = 20400), and undistinguished (id = 45264) Redpoll should get lumped
+# Common (id = 40919), Hoary (id = 20400), and Redpolls (id = 45264) should get lumped
 NC_long$species_id[NC_long$species_id %in% c(40919,20400,45264)] <- 45264 
 
 # Northern flicker: Colaptes auratus auratus/luteus (id = 10470) should get grouped with Colaptes auratus (id = 48798)
@@ -185,8 +193,8 @@ NC_long$species_id[NC_long$species_id %in% c(4940,4950)] <- 4950
 # Yellow-rumped warbler: Setophaga coronata coronata (id = 16620) should get grouped with YRWA (id = 16610)
 NC_long$species_id[NC_long$species_id %in% c(16620,16610)] <- 16610
 
+# Red-winged Blackbird appears to be listed with two different ids (40876 does not appear in the NatureCounts species table)
 NC_long$species_id[NC_long$species_id %in% c(40876,19530)] <- 19530
-
 
 # ------------------------------------------------------------
 # Sort species by relative abundance;
@@ -298,11 +306,11 @@ stopifnot(
 # Save outputs
 # ------------------------------------------------------------
 
-dir.create("data_clean/surveys", recursive = TRUE, showWarnings = FALSE)
-dir.create("data_clean/metadata", recursive = TRUE, showWarnings = FALSE)
+dir.create(file.path(paths$data_clean, "surveys"), recursive = TRUE, showWarnings = FALSE)
+dir.create(file.path(paths$data_clean, "metadata"), recursive = TRUE, showWarnings = FALSE)
 
-saveRDS(survey_info, "data_clean/surveys/surveys_raw.rds")
-saveRDS(count_matrix, "data_clean/surveys/count_matrix_raw.rds")
-saveRDS(all_species, "data_clean/metadata/species_list.rds")
+saveRDS(survey_info, file.path(paths$data_clean, "surveys","surveys_raw.rds"))
+saveRDS(count_matrix, file.path(paths$data_clean, "surveys","count_matrix_raw.rds"))
+saveRDS(all_species, file.path(paths$data_clean, "metadata","species_list.rds"))
 
 message("02_load_format_point_counts.R complete.")

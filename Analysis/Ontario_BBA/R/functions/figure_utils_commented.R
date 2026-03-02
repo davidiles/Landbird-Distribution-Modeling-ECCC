@@ -410,9 +410,9 @@ make_abs_change_maps <- function(species_name,
     ) +
     (if (!is.null(water_sf)) geom_sf(data = water_sf, fill = "#F5F5F5", col = "transparent") else NULL) +
     (if (!is.null(signif_poly)) list(
-      geom_sf(data = subset(signif_poly, signif_change == "Increase"),
+      geom_sf(data = subset(signif_poly, classification == "Increase"),
               fill = "transparent", col = "dodgerblue", linewidth = 1),
-      geom_sf(data = subset(signif_poly, signif_change == "Decrease"),
+      geom_sf(data = subset(signif_poly, classification == "Decrease"),
               fill = "transparent", col = "orangered", linewidth = 1)
     ) else NULL) +
     geom_sf(data = study_boundary, colour = "black", fill = NA, linewidth = 0.5, show.legend = FALSE) +

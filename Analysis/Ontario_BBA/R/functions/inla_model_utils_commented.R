@@ -73,7 +73,7 @@ ensure_numeric <- function(x) as.numeric(x)
 #' @param nb_pc_target_prob,nb_pc_threshold_theta PC prior calibration settings for NB.
 #' @param inla_mode,int_strategy,strategy,bru_verbose,waic,cpo,retry INLA/inlabru controls.
 #' @return A list containing the fitted `bru` model and supporting objects (mesh, stacks, etc.).
-fit_inla_multi_atlas3 <- function(sp_dat,
+fit_inla_multi_atlas <- function(sp_dat,
                                   study_boundary,
                                   covariates,
                                   timeout_min = 15,
@@ -406,7 +406,7 @@ fit_inla_multi_atlas3 <- function(sp_dat,
 #' @param include_kappa Include atlas-square random effects in predictions.
 #' @param include_aru Include ARU effect terms (if present in the model).
 #' @return A formula/expression suitable for inlabru prediction.
-make_pred_formula_mutliatlas <- function(cov_df = NULL, include_kappa = FALSE, include_aru = FALSE) {
+make_pred_formula_multiatlas <- function(cov_df = NULL, include_kappa = FALSE, include_aru = FALSE) {
   cov_terms <- character(0)
   
   if (!is.null(cov_df) && nrow(cov_df) > 0) {
@@ -437,6 +437,277 @@ make_pred_formula_mutliatlas <- function(cov_df = NULL, include_kappa = FALSE, i
   
   as.formula(paste0("~ data.frame(eta = ", eta_expr, ")"))
 }
+
+# ============================================================
+# Polygon-level posterior aggregation utilities
+# ============================================================
+
+#' Build a pixel -> polygon mapping (run once per prediction grid + polygon layer)
+#'
+#' @param grid_sf sf object with one row per pixel and geometry column
+#' @param polygons_sf sf object with polygons; must have an ID column
+#' @param poly_id_col character, name of polygon ID column in polygons_sf
+#' @param join one of c("within","intersects"). "within" is strict; "intersects" is safer if edges don't align.
+#' @return list with:
+#'   - pix_poly_id: integer/factor vector length nrow(grid_sf) giving polygon id per pixel (NA if none)
+#'   - poly_ids: sorted unique polygon ids present in mapping
+#'   - polygons_sf: polygons filtered to those that overlap grid (keeps original attributes)
+#'   - crs: CRS used
+build_pixel_polygon_index <- function(grid_sf,
+                                      polygons_sf,
+                                      poly_id_col,
+                                      join = c("within", "intersects")) {
+  join <- match.arg(join)
+  
+  stopifnot(inherits(grid_sf, "sf"))
+  stopifnot(inherits(polygons_sf, "sf"))
+  stopifnot(poly_id_col %in% names(polygons_sf))
+  
+  # Ensure common CRS
+  if (sf::st_crs(grid_sf) != sf::st_crs(polygons_sf)) {
+    polygons_sf <- sf::st_transform(polygons_sf, sf::st_crs(grid_sf))
+  }
+  
+  # Keep only polygons that touch the grid extent (helps performance)
+  polygons_sf <- polygons_sf[sf::st_intersects(polygons_sf, sf::st_union(sf::st_geometry(grid_sf)),
+                                               sparse = FALSE), , drop = FALSE]
+  
+  # Prepare a minimal pixel sf for joining
+  pix_sf <- sf::st_sf(pixel_id = seq_len(nrow(grid_sf)),
+                      geometry = sf::st_geometry(grid_sf))
+  
+  # Choose spatial predicate
+  join_fun <- switch(
+    join,
+    within     = sf::st_within,
+    intersects = sf::st_intersects
+  )
+  
+  # Spatial join: pixel -> polygon id
+  pix_joined <- sf::st_join(
+    pix_sf,
+    polygons_sf[, poly_id_col, drop = FALSE],
+    join = join_fun,
+    left = TRUE
+  )
+  
+  pix_poly_id <- pix_joined[[poly_id_col]]
+  poly_ids <- sort(unique(pix_poly_id[!is.na(pix_poly_id)]))
+  
+  list(
+    pix_poly_id = pix_poly_id,
+    poly_ids = poly_ids,
+    polygons_sf = polygons_sf,
+    crs = sf::st_crs(grid_sf)
+  )
+}
+
+
+#' Aggregate posterior draws of pixel-level eta into polygon-level draws
+#'
+#' Purpose:
+#'   Convert pixel-level linear predictor draws (eta) into polygon-level
+#'   draws of total expected abundance for each atlas period (Mu2, Mu3),
+#'   plus derived draws (absolute and proportional change).
+#'
+#' Returns only the draw matrices (no summaries, no geometry), so this
+#' can be called inside a species loop and passed to downstream
+#' summarizers for different hypotheses.
+#'
+#' @param eta matrix [n_grid x n_draw] linear predictor draws for the full pred_grid
+#' @param pred_grid data.frame/tibble with n_grid rows and an atlas indicator column
+#' @param pix_poly_id vector length n_pixels assigning each pixel to a polygon ID (NA allowed)
+#' @param poly_ids vector of polygon IDs to include (typically unique(pix_poly_id[!is.na()]))
+#' @param poly_id_col name used for polygon IDs (only used for dimnames + metadata)
+#' @param atlas_col name of atlas indicator column in pred_grid
+#' @param atlas_levels length-2 vector, e.g. c("OBBA2","OBBA3") (order defines Mu2/Mu3)
+#' @param eps small numeric to prevent division by 0 when computing proportional change
+#' @return list with:
+#'   - Mu2, Mu3, abs_change, rel_change matrices [n_poly x n_draw]
+#'   - meta: list with poly_ids, n_pixels, atlas_levels, atlas_col, eps
+aggregate_polygon_draws_from_eta <- function(eta,
+                                             pred_grid,
+                                             pix_poly_id,
+                                             poly_ids,
+                                             poly_id_col = "poly_id",
+                                             atlas_col = "Atlas",
+                                             atlas_levels = c("OBBA2", "OBBA3"),
+                                             eps = 1e-9) {
+  stopifnot(is.matrix(eta))
+  stopifnot(nrow(eta) == nrow(pred_grid))
+  stopifnot(length(atlas_levels) == 2)
+  
+  # Indices for atlas periods in the combined prediction grid
+  idx2 <- which(pred_grid[[atlas_col]] == atlas_levels[1])
+  idx3 <- which(pred_grid[[atlas_col]] == atlas_levels[2])
+  
+  # Convert eta -> mu for each atlas period (pixel x draw)
+  mu2 <- exp(eta[idx2, , drop = FALSE])
+  mu3 <- exp(eta[idx3, , drop = FALSE])
+  
+  # Sanity: pix_poly_id should correspond to "one atlas worth" of pixels
+  n_pix <- nrow(mu2)
+  if (length(pix_poly_id) != n_pix) {
+    stop("pix_poly_id length (", length(pix_poly_id),
+         ") must equal number of pixel rows per atlas (", n_pix, ").")
+  }
+  
+  # Precompute pixel row indices per polygon
+  rows_by_poly <- lapply(poly_ids, function(pid) which(pix_poly_id == pid))
+  n_poly <- length(poly_ids)
+  n_draw <- ncol(mu2)
+  
+  # Allocate polygon-level draws
+  Mu2 <- matrix(NA_real_, nrow = n_poly, ncol = n_draw,
+                dimnames = list(as.character(poly_ids), NULL))
+  Mu3 <- matrix(NA_real_, nrow = n_poly, ncol = n_draw,
+                dimnames = list(as.character(poly_ids), NULL))
+  n_pixels <- integer(n_poly)
+  
+  # Aggregate: sum pixel-level mu within polygon for each draw
+  for (i in seq_len(n_poly)) {
+    rows <- rows_by_poly[[i]]
+    n_pixels[i] <- length(rows)
+    if (length(rows) == 0) next
+    Mu2[i, ] <- colMeans(mu2[rows, , drop = FALSE])
+    Mu3[i, ] <- colMeans(mu3[rows, , drop = FALSE])
+  }
+  
+  abs_change <- Mu3 - Mu2
+  rel_change <- abs_change / pmax(Mu2, eps)
+  
+  list(
+    Mu2 = Mu2,
+    Mu3 = Mu3,
+    abs_change = abs_change,
+    rel_change = rel_change,
+    meta = list(
+      poly_ids = poly_ids,
+      poly_id_col = poly_id_col,
+      n_pixels = n_pixels,
+      atlas_col = atlas_col,
+      atlas_levels = atlas_levels,
+      eps = eps
+    )
+  )
+}
+
+# ============================================================
+# 2) Summarize evidence for hypotheses using polygon-level draw matrices
+# ============================================================
+
+#' Summarize posterior evidence for threshold-based hypotheses from polygon-level draws
+#'
+#' Purpose:
+#'   Given polygon-level posterior draws (e.g., from aggregate_polygon_draws_from_eta()),
+#'   compute posterior probabilities and (optional) interval summaries for hypotheses
+#'   such as:
+#'     - abs_change > T
+#'     - abs_change < -T
+#'     - rel_change > t
+#'     - rel_change < -t
+#'     - Mu3 / Mu2 > r   (if you add ratio draws)
+#'
+#' @param draws list produced by aggregate_polygon_draws_from_eta()
+#' @param param which draw matrix to test: one of c("abs_change","rel_change","Mu2","Mu3")
+#' @param threshold numeric threshold T (same units as the chosen param)
+#' @param prob_level posterior probability cutoff for "support", e.g. 0.95 or 0.975
+#' @param direction one of c("increase","decrease","two_sided")
+#'   - "increase": tests Pr(param > +threshold)
+#'   - "decrease": tests Pr(param < -threshold)
+#'   - "two_sided": tests both sides and reports p_inc, p_dec and a classification
+#' @param ci_probs numeric length-2 vector for posterior interval summaries (optional)
+#' @param include_summary logical; if TRUE include mean/median/quantiles of the param draws
+#' @return tibble with one row per polygon id, including posterior probabilities and flags
+summarize_polygon_hypothesis <- function(draws,
+                                         param = c("abs_change", "rel_change", "Mu2", "Mu3"),
+                                         threshold,
+                                         prob_level = 0.95,
+                                         direction = c("two_sided", "increase", "decrease"),
+                                         ci_probs = c(0.05, 0.95),
+                                         include_summary = TRUE) {
+  param <- match.arg(param)
+  direction <- match.arg(direction)
+  
+  if (!is.list(draws) || is.null(draws[[param]])) {
+    stop("draws must be a list containing a matrix named '", param, "'.")
+  }
+  X <- draws[[param]]
+  stopifnot(is.matrix(X))
+  stopifnot(is.numeric(threshold) && length(threshold) == 1)
+  stopifnot(is.numeric(prob_level) && prob_level > 0 && prob_level < 1)
+  
+  poly_ids <- rownames(X)
+  if (is.null(poly_ids)) {
+    # fall back if dimnames weren't set
+    poly_ids <- draws$meta$poly_ids %||% seq_len(nrow(X))
+  }
+  
+  # Posterior probabilities for exceeding thresholds
+  p_inc <- apply(X, 1, function(v) mean(v >  threshold))
+  p_dec <- apply(X, 1, function(v) mean(v < -threshold))
+  
+  # Summaries of the draw distribution (optional)
+  out <- tibble::tibble(
+    poly_id = poly_ids
+  )
+  
+  if (include_summary) {
+    out <- out %>%
+      dplyr::mutate(
+        mean = apply(X, 1, mean),
+        q50  = apply(X, 1, stats::median),
+        q_lo = apply(X, 1, function(v) unname(stats::quantile(v, ci_probs[1]))),
+        q_hi = apply(X, 1, function(v) unname(stats::quantile(v, ci_probs[2])))
+      )
+  }
+  
+  if (direction == "increase") {
+    out <- out %>%
+      dplyr::mutate(
+        p = p_inc,
+        support = p >= prob_level
+      )
+  } else if (direction == "decrease") {
+    out <- out %>%
+      dplyr::mutate(
+        p = p_dec,
+        support = p >= prob_level
+      )
+  } else {
+    # two-sided: report both + classify
+    out <- out %>%
+      dplyr::mutate(
+        p_inc = p_inc,
+        p_dec = p_dec,
+        support_increase = p_inc >= prob_level,
+        support_decrease = p_dec >= prob_level,
+        classification = dplyr::case_when(
+          support_increase ~ "Increase",
+          support_decrease ~ "Decrease",
+          TRUE ~ "None"
+        )
+      )
+  }
+  
+  # If metadata includes n_pixels, attach it for downstream filtering
+  if (!is.null(draws$meta$n_pixels)) {
+    out$n_pixels <- draws$meta$n_pixels
+  }
+  
+  # Make param/threshold explicit (useful if you bind results for multiple tests)
+  out$param <- param
+  out$threshold <- threshold
+  out$prob_level <- prob_level
+  
+  out
+}
+
+# helper: provide %||% without importing rlang
+`%||%` <- function(x, y) if (!is.null(x)) x else y
+
+
+
 
 #' Fit a single-atlas INLA/inlabru model (used for stress tests / comparisons)
 #'

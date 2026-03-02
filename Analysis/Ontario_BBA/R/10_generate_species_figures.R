@@ -1,5 +1,5 @@
 # ============================================================
-# 09_make_species_figures.R
+# 10_make_species_figures.R
 #
 # Purpose:
 #   Generate PNG figures per species using the per-species
@@ -22,10 +22,12 @@ suppressPackageStartupMessages({
   library(ggplot2)
   library(units)
   library(igraph)
+  library(here)
 })
 
 # ---- utils
-source("R/functions/0_figure_utils.R")
+source("R/functions/figure_utils_commented.R")
+source("R/functions/inla_model_utils_commented.R")
 
 # ------------------------------------------------------------
 # Config
@@ -121,7 +123,7 @@ message("Prediction files found: ", length(pred_files))
 # Loop species
 # ------------------------------------------------------------
 
-for (pf in pred_files) {
+for (pf in pred_files[2:length(pred_files)]) {
   
   preds <- readRDS(pf)
   sp_english <- preds$sp_english
@@ -240,7 +242,7 @@ for (pf in pred_files) {
   #      for clean map visualization.
   #
   # Rationale:
-  #   With ~550 hexagons across Ontario, even a stringent posterior
+  #   With many hundreds or thousands of hexagons across Ontario, even a stringent posterior
   #   probability threshold (e.g., ≥0.975) can produce isolated flagged
   #   cells. To emphasize interpretable, spatially coherent patterns,
   #   we require flagged hexagons to form patches exceeding a minimum
@@ -258,96 +260,174 @@ for (pf in pred_files) {
   #   - "Decrease" if Pr(change < -threshold) ≥ 0.975
   # All others are excluded from further consideration.
   
-  flagged <- preds$polygon_change_sf %>%
-    mutate(
-      signif_change = case_when(
-        p_inc >= 0.975 ~ "Increase",
-        p_dec >= 0.975 ~ "Decrease",
-        TRUE ~ NA_character_
-      )
-    ) %>%
-    filter(!is.na(signif_change))
+  preds$hexagon_sf <- preds$hexagon_sf %>% mutate(hex_id = as.character(hex_id))
+  flagged = summarize_polygon_hypothesis(preds$eta_draws_per_hex,
+                                   param = "abs_change",
+                                   threshold = 0,
+                                   prob_level = 0.975,
+                                   direction = c("two_sided", "increase", "decrease"),
+                                   ci_probs = c(0.05, 0.95),
+                                   include_summary = TRUE) %>%
+    dplyr::left_join(preds$hexagon_sf, ., by = c("hex_id" = "poly_id")) %>%
+    filter(classification != "None")
   
   
-  # --------------------------------------------------------------------
-  # Step 2: Identify contiguous clusters ("patches") of flagged hexagons
-  #         within each direction of change separately
-  # --------------------------------------------------------------------
-  # Logic:
-  #   - Build a spatial adjacency graph among touching hexagons
-  #   - Compute connected components (patches)
-  #   - Calculate the total area of each patch
-  #   - Retain only patches exceeding the minimum area threshold
-  #
-  # This removes isolated or very small clusters that may not represent
-  # spatially coherent population changes.
-  
-  flagged_patched <- flagged %>%
-    group_by(signif_change) %>%
-    group_modify(~{
-      x <- .x
+  if (nrow(flagged)>0){
+    # --------------------------------------------------------------------
+    # Step 2: Identify contiguous clusters ("patches") of flagged hexagons
+    #         within each direction of change separately
+    # --------------------------------------------------------------------
+    # Logic:
+    #   - Build a spatial adjacency graph among touching hexagons
+    #   - Compute connected components (patches)
+    #   - Calculate the total area of each patch
+    #   - Retain only patches exceeding the minimum area threshold
+    #
+    # This removes isolated or very small clusters that may not represent
+    # spatially coherent population changes.
+    
+    flagged_patched <- flagged %>%
+      group_by(classification) %>%
+      group_modify(~{
+        x <- .x
+        
+        # Identify touching neighbors for each hexagon
+        nb <- st_touches(x)
+        
+        # Construct adjacency graph from neighbor list
+        # (mode = "all" builds edges; converted to undirected for patch detection)
+        g <- igraph::graph_from_adj_list(nb, mode = "all")
+        g <- igraph::as.undirected(g, mode = "collapse")
+        
+        # Assign each hexagon to a connected spatial component (patch)
+        x$patch_id <- igraph::components(g)$membership
+        
+        # Dissolve hexagons by patch to compute total patch area
+        patch_polys <- x %>%
+          group_by(patch_id) %>%
+          
+          # Intended to remove small holes in the centre of polygons
+          st_buffer(sqrt(min_area_km2)) %>%
+          summarise(geometry = st_union(geometry), .groups = "drop") %>%
+          st_buffer(-sqrt(min_area_km2)) %>%
+          
+          mutate(
+            patch_area_km2 =
+              units::set_units(st_area(geometry), "km^2") %>%
+              units::drop_units()
+          )
+        
+        # Retain only patches exceeding the minimum area threshold
+        keep_ids <- patch_polys$patch_id[
+          patch_polys$patch_area_km2 >= min_area_km2
+        ]
+        
+        x %>% filter(patch_id %in% keep_ids)
+      }) %>%
+      ungroup() %>%
+      st_as_sf()
+    
+    
+    # --------------------------------------------------------------------
+    # Step 3: Dissolve surviving hexagons into unified Increase/Decrease
+    #         polygons for visualization
+    # --------------------------------------------------------------------
+    # This produces a clean polygon per direction representing all
+    # spatially coherent regions meeting statistical and area criteria.
+    
+    signif_change_polys <- flagged_patched %>%
+      group_by(classification) %>%
+      summarise(geometry = st_union(geometry), .groups = "drop")
+    
+    
+    # --------------------------------------------------------------------
+    # Step 4: Smooth polygon boundaries for cartographic display
+    # --------------------------------------------------------------------
+    # Apply kernel smoothing to remove hexagonal edges for aesthetic clarity.
+    # This step is purely cartographic and does not affect statistical results.
+    
+    signif_change_polys_smoothed <- signif_change_polys %>%
+      st_transform(st_crs(study_boundary)) %>%
+      smoothr::smooth(
+        method = "ksmooth",
+        bandwidth = smoothing_bandwith_m
+      ) %>%
+      st_make_valid() %>%              # Ensure valid geometry
+      st_intersection(study_boundary)  # Clip to study boundary
+    
+    # Drop small holes (falling below min_area_km2)
+    drop_small_holes <- function(x, min_hole_area_km2) {
       
-      # Identify touching neighbors for each hexagon
-      nb <- st_touches(x)
+      stopifnot(inherits(x, c("sf", "sfc")))
       
-      # Construct adjacency graph from neighbor list
-      # (mode = "all" builds edges; converted to undirected for patch detection)
-      g <- igraph::graph_from_adj_list(nb, mode = "all")
-      g <- igraph::as.undirected(g, mode = "collapse")
+      geom <- st_geometry(x)
+      crs  <- st_crs(geom)
       
-      # Assign each hexagon to a connected spatial component (patch)
-      x$patch_id <- igraph::components(g)$membership
+      if (st_is_longlat(geom)) {
+        warning("Geometry is lon/lat. Areas will be computed using s2 (geodesic).")
+      }
       
-      # Dissolve hexagons by patch to compute total patch area
-      patch_polys <- x %>%
-        group_by(patch_id) %>%
-        summarise(geometry = st_union(geometry), .groups = "drop") %>%
-        mutate(
-          patch_area_km2 =
-            units::set_units(st_area(geometry), "km^2") %>%
-            units::drop_units()
+      drop_in_poly <- function(poly) {
+        
+        rings <- unclass(poly)
+        outer <- rings[[1]]
+        holes <- rings[-1]
+        
+        if (length(holes) == 0) return(poly)
+        
+        hole_areas_km2 <- vapply(
+          holes,
+          function(h) {
+            a <- st_area(st_sfc(st_polygon(list(h)), crs = crs))
+            as.numeric(set_units(a, km^2))
+          },
+          numeric(1)
         )
+        
+        keep <- hole_areas_km2 >= min_hole_area_km2
+        
+        st_polygon(c(list(outer), holes[keep]))
+      }
       
-      # Retain only patches exceeding the minimum area threshold
-      keep_ids <- patch_polys$patch_id[
-        patch_polys$patch_area_km2 >= min_area_km2
-      ]
+      drop_in_mpoly <- function(mpoly) {
+        
+        polys <- unclass(mpoly)
+        
+        new_polys <- lapply(polys, function(rings) {
+          drop_in_poly(st_polygon(rings))
+        })
+        
+        st_multipolygon(lapply(new_polys, unclass))
+      }
       
-      x %>% filter(patch_id %in% keep_ids)
-    }) %>%
-    ungroup() %>%
-    st_as_sf()
-  
-  
-  # --------------------------------------------------------------------
-  # Step 3: Dissolve surviving hexagons into unified Increase/Decrease
-  #         polygons for visualization
-  # --------------------------------------------------------------------
-  # This produces a clean polygon per direction representing all
-  # spatially coherent regions meeting statistical and area criteria.
-  
-  signif_change_polys <- flagged_patched %>%
-    group_by(signif_change) %>%
-    summarise(geometry = st_union(geometry), .groups = "drop")
-  
-  
-  # --------------------------------------------------------------------
-  # Step 4: Smooth polygon boundaries for cartographic display
-  # --------------------------------------------------------------------
-  # Apply kernel smoothing to remove hexagonal edges for aesthetic clarity.
-  # This step is purely cartographic and does not affect statistical results.
-  
-  signif_change_polys_smoothed <- signif_change_polys %>%
-    smoothr::smooth(
-      method = "ksmooth",
-      bandwidth = smoothing_bandwith_m
-    ) %>%
-    st_make_valid() %>%              # Ensure valid geometry
-    st_intersection(study_boundary)  # Clip to study boundary
+      new_geom <- lapply(geom, function(g) {
+        if (inherits(g, "POLYGON")) {
+          drop_in_poly(g)
+        } else if (inherits(g, "MULTIPOLYGON")) {
+          drop_in_mpoly(g)
+        } else {
+          g
+        }
+      })
+      
+      st_geometry(x) <- st_sfc(new_geom, crs = crs)
+      x
+    }
+    
+    signif_change_polys_smoothed <- drop_small_holes(signif_change_polys_smoothed,min_area_km2)
+  } else{
+    signif_change_polys_smoothed <- NULL
+  }
   
   # --------------------------------------------------------------------
   # Step 5: Generate the change map, with "meaningful change" polygons overlaid
   # --------------------------------------------------------------------
+  
+  # The color scale shows the posterior median of absolute change in expected abundance (difference in predicted mean counts). 
+  # Polygons outline regions where there is at least 95% posterior probability that the proportional (percentage) change 
+  # exceeded ±30% over 20 years. Because these criteria reflect relative change, some outlined regions may display modest 
+  # absolute differences in low-density areas. Conversely, areas with large absolute changes may not be outlined if the 
+  # proportional change was smaller or more uncertain.
   
   chg <- make_abs_change_maps(
     species_name = sp_english,
@@ -371,11 +451,11 @@ for (pf in pred_files) {
     dpi = dpi, type = ggsave_type, limitsize = FALSE
   )
   
-  ggsave(
-    filename = file.path(fig_dir, paste0(sp_file, "_relabund_CV_OBBA2.png")),
-    plot = maps2$cv_plot, width = width_in, height = height_in, units = "in",
-    dpi = dpi, type = ggsave_type, limitsize = FALSE
-  )
+  # ggsave(
+  #   filename = file.path(fig_dir, paste0(sp_file, "_relabund_CV_OBBA2.png")),
+  #   plot = maps2$cv_plot, width = width_in, height = height_in, units = "in",
+  #   dpi = dpi, type = ggsave_type, limitsize = FALSE
+  # )
   
   ggsave(
     filename = file.path(fig_dir, paste0(sp_file, "_relabund_q50_OBBA3.png")),
@@ -383,11 +463,11 @@ for (pf in pred_files) {
     dpi = dpi, type = ggsave_type, limitsize = FALSE
   )
   
-  ggsave(
-    filename = file.path(fig_dir, paste0(sp_file, "_relabund_CV_OBBA3.png")),
-    plot = maps3$cv_plot, width = width_in, height = height_in, units = "in",
-    dpi = dpi, type = ggsave_type, limitsize = FALSE
-  )
+  # ggsave(
+  #   filename = file.path(fig_dir, paste0(sp_file, "_relabund_CV_OBBA3.png")),
+  #   plot = maps3$cv_plot, width = width_in, height = height_in, units = "in",
+  #   dpi = dpi, type = ggsave_type, limitsize = FALSE
+  # )
   
   ggsave(
     filename = file.path(fig_dir, paste0(sp_file, "_abs_change_q50.png")),
@@ -395,14 +475,11 @@ for (pf in pred_files) {
     dpi = dpi, type = ggsave_type, limitsize = FALSE
   )
   
-  ggsave(
-    filename = file.path(fig_dir, paste0(sp_file, "_abs_change_ciw.png")),
-    plot = chg$ciw_plot, width = width_in, height = height_in, units = "in",
-    dpi = dpi, type = ggsave_type, limitsize = FALSE
-  )
-  
-  # --- HSS / DOY summary plots
-  
+  # ggsave(
+  #   filename = file.path(fig_dir, paste0(sp_file, "_abs_change_ciw.png")),
+  #   plot = chg$ciw_plot, width = width_in, height = height_in, units = "in",
+  #   dpi = dpi, type = ggsave_type, limitsize = FALSE
+  # )
   
 }
 

@@ -14,6 +14,8 @@
 #   data_clean/model_output/figures/<sp>_*.png
 # ============================================================
 
+rm(list = ls())
+
 suppressPackageStartupMessages({
   library(sf)
   library(dplyr)
@@ -25,9 +27,14 @@ suppressPackageStartupMessages({
   library(here)
 })
 
-# ---- utils
-source("R/functions/figure_utils_commented.R")
-source("R/functions/inla_model_utils_commented.R")
+source(here::here("R", "00_config_paths.R"))
+
+# helper-functions
+inla_utils_path <- file.path(paths$functions, "inla_model_utils.R")
+figure_utils_path <- file.path(paths$functions, "figure_utils.R")
+
+source(inla_utils_path)
+source(figure_utils_path)
 
 # ------------------------------------------------------------
 # Config
@@ -35,15 +42,14 @@ source("R/functions/inla_model_utils_commented.R")
 
 model_type <- "joint" # or separate
 
-in_data <- "data_clean/birds/data_ready_for_analysis.rds"
-pred_dir <- paste0("data_clean/model_output/predictions_",model_type)
-fig_dir  <- paste0("data_clean/model_output/figures_",model_type)
+# File paths
+in_data  <- file.path(paths$data_clean, "birds", "data_ready_for_analysis.rds")
+pred_dir <- file.path(paths$model_output, paste0("predictions_", model_type))
+fig_dir  <- file.path(paths$model_output, paste0("figures_", model_type))
 dir.create(fig_dir, recursive = TRUE, showWarnings = FALSE)
 
-# Shapefile inputs
-in_bcr <- "../../Data/Spatial/BCR/BCR_Terrestrial_master.shp"
-in_water <- "data_clean/spatial/water_filtered.shp"
-in_atlas_squares <- "../../Data/Spatial/National/AtlasSquares/NationalSquares_FINAL.shp"  # optional
+in_water <- file.path(paths$data_clean, "spatial", "water_filtered.shp")
+in_atlas_squares <- file.path(paths$data, "Spatial", "National", "AtlasSquares", "NationalSquares_FINAL.shp")
 
 # Plot export settings
 dpi <- 1000
@@ -82,13 +88,7 @@ grid3 <- st_transform(grid3, crs_use)
 grid2 <- st_transform(grid2, crs_use)
 
 # BCR outlines
-bcr_sf <- st_read(in_bcr, quiet = TRUE) %>%
-  st_make_valid() %>%
-  st_transform(crs_use) %>%
-  dplyr::filter(PROVINCE_S %in% c("ONTARIO", "ON", "Ontario") | is.na(PROVINCE_S)) %>%  # defensive
-  dplyr::select(BCR, BCRNAME, PROVINCE_S) %>%
-  group_by(BCR, BCRNAME) %>%
-  summarise(geometry = st_union(geometry), .groups = "drop")
+bcr_sf <- dat$bcr_sf
 
 # Water
 water_sf <- NULL
@@ -123,7 +123,7 @@ message("Prediction files found: ", length(pred_files))
 # Loop species
 # ------------------------------------------------------------
 
-for (pf in pred_files[2:length(pred_files)]) {
+for (pf in pred_files) {
   
   preds <- readRDS(pf)
   sp_english <- preds$sp_english
@@ -134,13 +134,7 @@ for (pf in pred_files[2:length(pred_files)]) {
   
   sp_code <- subset(dat$species_to_model, english_name == sp_english)$species_id
   
-  sp_dat <- all_surveys %>%
-    mutate(
-      count = counts[[sp_code]],
-      days_since_june15 = DayOfYear - 166,
-      BCR_factor = as.numeric(factor(BCR)),
-      Atlas3 = ifelse(Atlas == "OBBA2", 0, 1)
-    )
+  sp_dat <- all_surveys %>% mutate(count = counts[[sp_code]])
   
   message("Mapping: ", sp_english)
   

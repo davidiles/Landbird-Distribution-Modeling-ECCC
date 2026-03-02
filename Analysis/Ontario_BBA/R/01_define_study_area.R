@@ -18,20 +18,22 @@
 #       $boundary_buffer_25km
 # ============================================================
 
+rm(list=ls())
+
 suppressPackageStartupMessages({
   library(sf)
   library(dplyr)
+  library(here)
 })
+
+# Centralized paths; loads an object called "paths" that has paths to each subfolder
+source(here::here("R", "00_config_paths.R"))
 
 # ------------------------------------------------------------
 # Load spatial utility functions
 # ------------------------------------------------------------
 
-spatial_utils_path <- "R/functions/spatial_utils.R"
-if (!file.exists(spatial_utils_path)) {
-  stop("Cannot find spatial utils at: ", spatial_utils_path,
-       "\nUpdate 'spatial_utils_path' to the correct location.")
-}
+spatial_utils_path <- file.path(paths$functions, "spatial_utils.R")
 source(spatial_utils_path)
 
 crs_aea_km <- get_aea_km_crs()
@@ -40,11 +42,7 @@ crs_aea_km <- get_aea_km_crs()
 # Load raw boundary data
 # ------------------------------------------------------------
 
-bcr_path <- "../../Data/Spatial/BCR/BCR_Terrestrial_master.shp"
-if (!file.exists(bcr_path)) {
-  stop("Cannot find boundary shapefile at: ", bcr_path)
-}
-
+bcr_path <- file.path(paths$data, "Spatial", "BCR", "BCR_Terrestrial_master.shp")
 bcr <- st_read(bcr_path, quiet = TRUE)
 
 required_cols <- c("PROVINCE_S", "BCR")
@@ -98,7 +96,7 @@ study_area <- list(
   boundary_buffer_25km = ontario_buffer_25km
 )
 
-out_dir <- "data_clean/spatial"
+out_dir <- file.path(paths$data_clean, "spatial")
 dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
 
 saveRDS(study_area, file = file.path(out_dir, "study_area.rds"))

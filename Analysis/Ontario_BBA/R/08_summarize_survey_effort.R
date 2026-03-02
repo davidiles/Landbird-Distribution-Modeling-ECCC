@@ -20,6 +20,8 @@
 #   - out_dir/maps/*.rds  (covariate novelty by pixel; optional gpkg)
 # ============================================================
 
+rm(list = ls())
+
 suppressPackageStartupMessages({
   library(sf)
   library(dplyr)
@@ -32,10 +34,25 @@ suppressPackageStartupMessages({
   library(viridis)
   library(grid)
   library(gridBase)
+  library(here)
 })
 
-source("R/functions/figure_utils.R")
-source("R/functions/spatial_utils.R")
+# ------------------------------------------------------------
+# Centralized paths
+# ------------------------------------------------------------
+source(here::here("R", "00_config_paths.R"))
+
+# ------------------------------------------------------------
+# Source utilities (using paths$functions)
+# ------------------------------------------------------------
+figure_utils_path  <- file.path(paths$functions, "figure_utils.R")
+spatial_utils_path <- file.path(paths$functions, "spatial_utils.R")
+
+if (!file.exists(figure_utils_path))  stop("Cannot find: ", figure_utils_path)
+if (!file.exists(spatial_utils_path)) stop("Cannot find: ", spatial_utils_path)
+
+source(figure_utils_path)
+source(spatial_utils_path)
 
 # ---------------------------
 # Helpers
@@ -55,10 +72,14 @@ draw_ggplot_in_base_panel <- function(p) {
 }
 
 # ---------------------------
-# User settings
+# Inputs (analysis-ready)
 # ---------------------------
 
-in_data <- "data_clean/birds/data_ready_for_analysis.rds"
+in_data <- file.path(paths$data_clean, "birds", "data_ready_for_analysis.rds")
+if (!file.exists(in_data)) {
+  stop("Cannot find input at: ", in_data,
+       "\nHave you run 07_filter_and_finalize_surveys.R?")
+}
 dat <- readRDS(in_data)
 
 all_surveys <- dat$all_surveys
@@ -68,29 +89,25 @@ grid_OBBA3  <- dat$grid_OBBA3
 study_boundary <- dat$study_boundary %>% st_as_sf()
 species_to_model <- dat$species_to_model
 
+all_surveys     <- dat$all_surveys
+counts          <- dat$counts
+grid_OBBA2      <- dat$grid_OBBA2
+grid_OBBA3      <- dat$grid_OBBA3
+study_boundary  <- dat$study_boundary %>% st_as_sf()
+species_to_model <- dat$species_to_model
+
 # Temporal variables (names in all_surveys)
 doy_var  <- "DayOfYear"
 hsr_var  <- "Hours_Since_Sunrise"  # already in your data
 
-# # Create a "Method" variable that is robust to how Survey_Type is recorded
-# # Priority: ARU flag; else use Survey_Type
-# all_surveys <- all_surveys %>%
-#   mutate(
-#     Method = case_when(
-#       .data[[aru_var]] == 1 ~ "ARU",
-#       TRUE ~ "Human"
-#     ),
-#     Method = factor(Method, levels = c("Human", "ARU"))
-#   )
-
 # Method variables
-aru_var  <- "ARU"          # 1/0
-stype_var <- "Survey_Type" 
-atlas_var <- "Project_Name"       # "OBBA2", "OBBA3"
+aru_var   <- "ARU"                 # 1/0
+stype_var <- "Survey_Type"
+atlas_var <- "Project_Name"        # "OBBA2", "OBBA3"
 bcr_var   <- "BCR"
 
-# Output dirs
-out_dir <- "data_clean/sampling_diagnostics"
+# Output dirs (within Ontario_BBA project)
+out_dir <- file.path(paths$data_clean, "sampling_diagnostics")
 dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
 dir.create(file.path(out_dir, "tables"), recursive = TRUE, showWarnings = FALSE)
 dir.create(file.path(out_dir, "figures"), recursive = TRUE, showWarnings = FALSE)
@@ -138,9 +155,6 @@ atlas3_plot <- ggplot() +
     style = ggspatial::north_arrow_fancy_orienteering()
   )
 
-# print(atlas2_plot)
-# print(atlas3_plot)
-
 ggsave(file.path(out_dir, "figures/map_atlas2_surveys.png"),
        atlas2_plot, width = 10, height = 10, dpi = fig_dpi)
 
@@ -154,7 +168,11 @@ ggsave(file.path(out_dir, "figures/map_atlas3_surveys.png"),
 # they fall outside the most extreme ~5% of the survey distribution.
 # ============================================================
 
-covar_names <- readxl::read_xlsx("data_clean/metadata/covariate_names.xlsx")
+covar_names_path <- file.path(paths$data_clean, "metadata", "covariate_names.xlsx")
+if (!file.exists(covar_names_path)) {
+  stop("Cannot find covariate names file at: ", covar_names_path)
+}
+covar_names <- readxl::read_xlsx(covar_names_path)
 
 # Prepare raster template for plotting maps
 r_template <- rast(vect(grid_OBBA2), res = 1001)
@@ -180,55 +198,50 @@ covars_to_evaluate <- c(
 # 250m point count radius, assuming perfect detection: 
 # n = 1/(D*A*qp) where qp = 1
 # n_flag = 1/(0.025 * pi*0.25^2) # about 200
+
 n_flag <- 200
 
-# Loop through covariates
-for (lc_to_eval in covars_to_evaluate[12:21]){
+for (lc_to_eval in covars_to_evaluate) {
   print(lc_to_eval)
-  cname <- subset(covar_names,covariate_code==lc_to_eval)$covariate_name
+  cname <- subset(covar_names, covariate_code == lc_to_eval)$covariate_name
   
-  if (lc_to_eval %in% c("prec","tmax","insect_broadleaf","insect_needleleaf")){
+  if (lc_to_eval %in% c("prec", "tmax", "insect_broadleaf", "insect_needleleaf")) {
     grid_OBBA2$region <- "Province"
-    svy_OBBA2$region <- "Province"
-    
+    svy_OBBA2$region  <- "Province"
     grid_OBBA3$region <- "Province"
-    svy_OBBA3$region <- "Province"
-    
-  } else{
-    # Support will be evaluated separately in north and southern regions of study area for land cover covariates
-    grid_OBBA2$region <- ifelse(grid_OBBA2$BCR %in% c(13,12),"South","North")
-    svy_OBBA2$region <- ifelse(svy_OBBA2$BCR %in% c(13,12),"South","North")
-    
-    grid_OBBA3$region <- ifelse(grid_OBBA3$BCR %in% c(13,12),"South","North")
-    svy_OBBA3$region <- ifelse(svy_OBBA3$BCR %in% c(13,12),"South","North")
+    svy_OBBA3$region  <- "Province"
+  } else {
+    grid_OBBA2$region <- ifelse(grid_OBBA2$BCR %in% c(13, 12), "South", "North")
+    svy_OBBA2$region  <- ifelse(svy_OBBA2$BCR %in% c(13, 12), "South", "North")
+    grid_OBBA3$region <- ifelse(grid_OBBA3$BCR %in% c(13, 12), "South", "North")
+    svy_OBBA3$region  <- ifelse(svy_OBBA3$BCR %in% c(13, 12), "South", "North")
   }
-  
   
   hist_OBBA2 <- plot_covariate_hist_overlay(
     grid_OBBA2, svy_OBBA2, lc_to_eval,
     region_col = "region",
-    bins = 30,                 # or set binwidth = 0.5, etc.
-    survey_width_frac = 0.5,    # red bars half-width,
+    bins = 30,
+    survey_width_frac = 0.5,
     landscape_fill = "black",
     survey_fill = "red",
-    title = paste0("Atlas 2 survey (red) vs landscape (black)")
+    title = "Atlas 2 survey (red) vs landscape (black)"
   )
   
   hist_OBBA3 <- plot_covariate_hist_overlay(
     grid_OBBA3, svy_OBBA3, lc_to_eval,
     region_col = "region",
-    bins = 30,                 # or set binwidth = 0.5, etc.
-    survey_width_frac = 0.5,    # red bars half-width,
+    bins = 30,
+    survey_width_frac = 0.5,
     landscape_fill = "black",
     survey_fill = "red",
-    title = paste0("Atlas 3 survey (red) vs landscape (black)")
+    title = "Atlas 3 survey (red) vs landscape (black)"
   )
   
   # Prepare rasters of the raw covariate value in each atlas
-  rast_OBBA2 <- rasterize(vect(grid_OBBA2), r_template, field = lc_to_eval, fun = "mean")
-  rast_OBBA3 <- rasterize(vect(grid_OBBA3), r_template, field = lc_to_eval, fun = "mean")
-  range_OBBA2 <- global(rast_OBBA2, fun = "range", na.rm = TRUE)
-  range_OBBA3 <- global(rast_OBBA3, fun = "range", na.rm = TRUE)
+  rast_OBBA2 <- terra::rasterize(terra::vect(grid_OBBA2), r_template, field = lc_to_eval, fun = "mean")
+  rast_OBBA3 <- terra::rasterize(terra::vect(grid_OBBA3), r_template, field = lc_to_eval, fun = "mean")
+  range_OBBA2 <- terra::global(rast_OBBA2, fun = "range", na.rm = TRUE)
+  range_OBBA3 <- terra::global(rast_OBBA3, fun = "range", na.rm = TRUE)
   common_min <- min(range_OBBA2[1], range_OBBA3[1])
   common_max <- max(range_OBBA2[2], range_OBBA3[2])
   common_range <- c(common_min, common_max)
@@ -241,102 +254,94 @@ for (lc_to_eval in covars_to_evaluate[12:21]){
     bcr_col   = "region"
   )
   
-  grid_OBBA2$support <- support_vals$support
-  grid_OBBA2$q <- support_vals$q
+  grid_OBBA2$support   <- support_vals$support
+  grid_OBBA2$q         <- support_vals$q
   grid_OBBA2$n_surveys <- support_vals$n_surveys
-  grid_OBBA2$n_tail <- grid_OBBA2$n_surveys *grid_OBBA2$support / 2
+  grid_OBBA2$n_tail    <- grid_OBBA2$n_surveys * grid_OBBA2$support / 2
   grid_OBBA2$flag_fewK <- grid_OBBA2$n_tail < n_flag
   
   # --- Evaluate support in Atlas 3
-  
   support_vals <- covariate_support_by_bcr(
     grid_sf   = grid_OBBA3,
     survey_sf = svy_OBBA3,
     covariate = lc_to_eval,
     bcr_col   = "region"
   )
-  grid_OBBA3$support <- support_vals$support
-  grid_OBBA3$q <- support_vals$q
+  grid_OBBA3$support   <- support_vals$support
+  grid_OBBA3$q         <- support_vals$q
   grid_OBBA3$n_surveys <- support_vals$n_surveys
-  grid_OBBA3$n_tail <- grid_OBBA3$n_surveys *grid_OBBA3$support / 2
+  grid_OBBA3$n_tail    <- grid_OBBA3$n_surveys * grid_OBBA3$support / 2
   grid_OBBA3$flag_fewK <- grid_OBBA3$n_tail < n_flag
- 
+  
   # --- Rasterize support metrics
-  r_support_OBBA2 <- rasterize(vect(grid_OBBA2), r_template, field = "n_tail", fun = "mean")
-  r_support_OBBA3 <- rasterize(vect(grid_OBBA3), r_template, field = "n_tail", fun = "mean")
-  r_flag_OBBA2 <- rasterize(vect(grid_OBBA2), r_template, field = "flag_fewK", fun = "max")
-  r_flag_OBBA3 <- rasterize(vect(grid_OBBA3), r_template, field = "flag_fewK", fun = "max")
+  r_support_OBBA2 <- terra::rasterize(terra::vect(grid_OBBA2), r_template, field = "n_tail", fun = "mean")
+  r_support_OBBA3 <- terra::rasterize(terra::vect(grid_OBBA3), r_template, field = "n_tail", fun = "mean")
+  r_flag_OBBA2    <- terra::rasterize(terra::vect(grid_OBBA2), r_template, field = "flag_fewK", fun = "max")
+  r_flag_OBBA3    <- terra::rasterize(terra::vect(grid_OBBA3), r_template, field = "flag_fewK", fun = "max")
   
   # ---- Generate plots
   pdf(
-    file = paste0(out_dir, "/maps/covariate_support_", lc_to_eval, ".pdf"),
+    file = file.path(out_dir, "maps", paste0("covariate_support_", lc_to_eval, ".pdf")),
     width = 11,
     height = 14
   )
   
   layout(
     matrix(c(
-      1, 1,   # title spans both columns
-      2, 3,   # raw maps
-      4, 5,   # histograms
-      6, 7    # support maps
+      1, 1,
+      2, 3,
+      4, 5,
+      6, 7
     ), nrow = 4, byrow = TRUE),
     heights = c(0.3, 1.2, 0.8, 1.2)
   )
   
-  # Title row
-  par(mar = c(0,0,0,0))
+  par(mar = c(0, 0, 0, 0))
   plot.new()
   text(
     0.5, 0.5,
-    paste0(cname,"\n", 
-           "covariate code = ",lc_to_eval),
+    paste0(cname, "\n", "covariate code = ", lc_to_eval),
     cex = 1.8,
     font = 2
   )
   
-  # Raw covariate maps
-  par(mar = c(3,3,3,5))
-  plot(rast_OBBA2, col = viridis(10), range = common_range,
+  par(mar = c(3, 3, 3, 5))
+  plot(rast_OBBA2, col = viridis::viridis(10), range = common_range,
        main = paste0("Atlas 2: ", lc_to_eval), legend = FALSE)
   
-  par(mar = c(3,3,3,5))
-  plot(rast_OBBA3, col = viridis(10), range = common_range,
+  par(mar = c(3, 3, 3, 5))
+  plot(rast_OBBA3, col = viridis::viridis(10), range = common_range,
        main = paste0("Atlas 3: ", lc_to_eval), legend = TRUE)
   
-  # covariate histograms
-  par(mar = c(2,2,2,2))
+  par(mar = c(2, 2, 2, 2))
   draw_ggplot_in_base_panel(hist_OBBA2)
   
-  par(mar = c(2,2,2,2))
+  par(mar = c(2, 2, 2, 2))
   draw_ggplot_in_base_panel(hist_OBBA3)
   
-  # Support maps
-  max_scale <- max(c(values(r_support_OBBA2),values(r_support_OBBA3)),na.rm = TRUE)
-  par(mar = c(3,3,3,5))
-  plot(r_support_OBBA2, col = gray.colors(100), range = c(0,max_scale),
+  max_scale <- max(c(terra::values(r_support_OBBA2), terra::values(r_support_OBBA3)), na.rm = TRUE)
+  
+  par(mar = c(3, 3, 3, 5))
+  plot(r_support_OBBA2, col = gray.colors(100), range = c(0, max_scale),
        main = paste0("Atlas 2 support: ", lc_to_eval), legend = TRUE)
   
-  # Must have at least one "flagged" cell to plot "flag" overlay
   r_flag_OBBA2[r_flag_OBBA2 == 0] <- NA
-  n_notna2 <- terra::global(!is.na(r_flag_OBBA2), "sum", na.rm = TRUE)[1,1]
+  n_notna2 <- terra::global(!is.na(r_flag_OBBA2), "sum", na.rm = TRUE)[1, 1]
   if (is.finite(n_notna2) && n_notna2 > 0) {
     plot(r_flag_OBBA2, col = "blue", add = TRUE, legend = FALSE)
   }
   
-  par(mar = c(3,3,3,5))
-  plot(r_support_OBBA3, col = gray.colors(100),range=c(0,max_scale),
+  par(mar = c(3, 3, 3, 5))
+  plot(r_support_OBBA3, col = gray.colors(100), range = c(0, max_scale),
        main = paste0("Atlas 3 support: ", lc_to_eval), legend = TRUE)
   
-  # Must have at least one "flagged" cell to plot overlay
   r_flag_OBBA3[r_flag_OBBA3 == 0] <- NA
-  n_notna3 <- terra::global(!is.na(r_flag_OBBA3), "sum", na.rm = TRUE)[1,1]
+  n_notna3 <- terra::global(!is.na(r_flag_OBBA3), "sum", na.rm = TRUE)[1, 1]
   if (is.finite(n_notna3) && n_notna3 > 0) {
     plot(r_flag_OBBA3, col = "blue", add = TRUE, legend = FALSE)
   }
   
   dev.off()
-  
 }
 
 # ============================================================

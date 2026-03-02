@@ -15,12 +15,20 @@
 #   data_clean/spatial/prediction_grid.rds
 # ============================================================
 
+rm(list = ls())
+
 suppressPackageStartupMessages({
   library(sf)
   library(dplyr)
+  library(here)
 })
 
-dir.create("data_clean/spatial", recursive = TRUE, showWarnings = FALSE)
+# Centralized paths
+source(here::here("R", "00_config_paths.R"))
+
+# Ensure output directory exists
+out_dir <- file.path(paths$data_clean, "spatial")
+dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
 
 # ------------------------------------------------------------
 # Config
@@ -33,7 +41,12 @@ grid_crs <- sf::st_crs(3978)  # EPSG:3978 (Canada Albers, metres)
 # Inputs
 # ------------------------------------------------------------
 
-study_area <- readRDS("data_clean/spatial/study_area.rds")
+study_area_path <- file.path(paths$data_clean, "spatial", "study_area.rds")
+if (!file.exists(study_area_path)) {
+  stop("Cannot find study area at: ", study_area_path,
+       "\nHave you run 01_define_study_area.R?")
+}
+study_area <- readRDS(study_area_path)
 
 # Use the unbuffered boundary for prediction domain
 boundary <- study_area$boundary %>%
@@ -75,15 +88,20 @@ grid_pts   <- grid_pts   %>% mutate(pixel_id = row_number()) %>% select(pixel_id
 # Save
 # ------------------------------------------------------------
 
+out_path <- file.path(out_dir, "prediction_grid.rds")
+
 saveRDS(
   list(
-    grid_cells = grid_polys,
+    grid_cells     = grid_polys,
     grid_centroids = grid_pts,
-    cellsize_m = grid_cellsize_m,
-    crs = grid_crs,
-    bbox = st_bbox(boundary_geom),
-    n_cells = nrow(grid_polys),
-    date_created = Sys.time()
+    cellsize_m     = grid_cellsize_m,
+    crs            = grid_crs,
+    bbox           = st_bbox(boundary_geom),
+    n_cells        = nrow(grid_polys),
+    date_created   = Sys.time()
   ),
-  file = "data_clean/spatial/prediction_grid.rds"
+  file = out_path
 )
+
+message("05_define_prediction_grid.R complete.")
+message("Saved to: ", out_path)

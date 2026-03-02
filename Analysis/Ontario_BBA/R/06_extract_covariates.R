@@ -20,118 +20,51 @@
 #   - data_clean/birds/analysis_data_covariates.rds
 # ============================================================
 
+rm(list = ls())
+
 suppressPackageStartupMessages({
   library(sf)
   library(dplyr)
   library(terra)
   library(exactextractr)
+  library(here)
 })
 
-source("R/functions/spatial_utils.R")
-source("R/functions/covariate_processing_utils.R")
+# Centralized paths
+source(here::here("R", "00_config_paths.R"))
 
-dir.create("data_clean/birds",   recursive = TRUE, showWarnings = FALSE)
+# ------------------------------------------------------------
+# Load utilities
+# ------------------------------------------------------------
+
+spatial_utils_path <- file.path(paths$functions, "spatial_utils.R")
+covariate_processing_utils_path <- file.path(paths$functions, "covariate_processing_utils.R")
+
+source(spatial_utils_path)
+source(covariate_processing_utils_path)
+
+# Ensure output directory exists
+birds_dir <- file.path(paths$data_clean, "birds")
+dir.create(birds_dir, recursive = TRUE, showWarnings = FALSE)
 
 # ------------------------------------------------------------
 # Config
 # ------------------------------------------------------------
 
 crs_rast <- sf::st_crs(3978)   # EPSG:3978
-cov_dir  <- "data_clean/spatial"
-out_file <- "data_clean/birds/analysis_data_covariates.rds"
 
-in_surveys       <- "data_clean/surveys/surveys_raw.rds"
-in_count_matrix  <- "data_clean/surveys/count_matrix_raw.rds"
-in_species       <- "data_clean/metadata/species_list.rds"
-in_grid          <- "data_clean/spatial/prediction_grid.rds"
-in_study_area    <- "data_clean/spatial/study_area.rds"
-in_atlas_squares <- "../../Data/Spatial/National/AtlasSquares/NationalSquares_FINAL.shp"
-in_bcr           <- "../../Data/Spatial/National/BCR/BCR_Terrestrial_master.shp"
+cov_dir  <- file.path(paths$data_clean, "spatial")
+out_file <- file.path(paths$data_clean, "birds", "analysis_data_covariates.rds")
 
-# ------------------------------------------------------------
-# Helpers
-# ------------------------------------------------------------
+in_surveys      <- file.path(paths$data_clean, "surveys",  "surveys_raw.rds")
+in_count_matrix <- file.path(paths$data_clean, "surveys",  "count_matrix_raw.rds")
+in_species      <- file.path(paths$data_clean, "metadata", "species_list.rds")
+in_grid         <- file.path(paths$data_clean, "spatial",  "prediction_grid.rds")
+in_study_area   <- file.path(paths$data_clean, "spatial",  "study_area.rds")
 
-need_files <- function(paths, label) {
-  missing <- paths[!file.exists(paths)]
-  if (length(missing) > 0) {
-    stop(
-      "Missing required input(s) for ", label, ":\n  - ",
-      paste(missing, collapse = "\n  - ")
-    )
-  }
-}
-
-r_path <- function(x) file.path(cov_dir, x)
-
-# Crop/mask raster to boundary for speed; returns NULL safely
-crop_if <- function(r, boundary_sf) {
-  if (is.null(r)) return(NULL)
-  v <- terra::vect(boundary_sf)
-  r <- terra::crop(r, v)
-  terra::mask(r, v)
-}
-
-# exactextractr expects CRS agreement; transform polygons to raster CRS if needed
-match_grid_to_raster_crs <- function(grid_cells, r) {
-  st_transform(grid_cells, st_crs(terra::crs(r)))
-}
-
-# Robust polygon-id assignment (within first, optional nearest fallback)
-assign_poly_id <- function(pts, polys, id_col, nearest_fallback = TRUE) {
-  stopifnot(inherits(pts, "sf"), inherits(polys, "sf"))
-  stopifnot(id_col %in% names(polys))
-  
-  polys <- st_transform(polys, st_crs(pts))
-  
-  hit <- st_within(pts, polys)               # list column of indices
-  idx <- rep(NA_integer_, nrow(pts))
-  
-  has_hit <- lengths(hit) > 0L
-  if (any(has_hit)) {
-    idx[has_hit] <- vapply(hit[has_hit], function(x) x[1], integer(1))
-  }
-  
-  if (nearest_fallback) {
-    missing <- is.na(idx)
-    if (any(missing)) {
-      idx[missing] <- st_nearest_feature(pts[missing, , drop = FALSE], polys)
-    }
-  }
-  
-  polys[[id_col]][idx]
-}
-
-# Extract mean over grid polygons
-extract_mean <- function(r, grid_cells, boundary_sf) {
-  if (is.null(r)) return(rep(NA_real_, nrow(grid_cells)))
-  r <- crop_if(r, boundary_sf)
-  exact_extract(r, grid_cells, "mean")
-}
-
-# Extract fractions for categorical rasters and clean column names consistently
-extract_frac_clean <- function(r, grid_cells, boundary_sf, prefix = NULL, drop0 = TRUE, clean_names = FALSE) {
-  if (is.null(r)) return(NULL)
-  r <- crop_if(r, boundary_sf)
-  gc <- match_grid_to_raster_crs(grid_cells, r)
-  
-  df <- suppressWarnings(exact_extract(r, gc, "frac"))
-  if (is.null(df) || nrow(df) == 0) return(NULL)
-  
-  if (drop0) df <- drop_frac0_cols(df)
-  
-  if (!is.null(prefix)) {
-    # frac_1, frac_2 -> <prefix>_1, <prefix>_2 (works for both frac_# and frac# variants)
-    names(df) <- gsub("^frac_?", paste0(prefix, "_"), names(df))
-  }
-  
-  if (clean_names) {
-    # For named layers (e.g., insect_broadleaf), exactextractr may return frac_1.<layername>
-    df <- clean_frac_names(df)
-  }
-  
-  df
-}
+# Optional national layers (shared Data/)
+in_atlas_squares <- file.path(paths$data, "Spatial", "National", "AtlasSquares", "NationalSquares_FINAL.shp")
+in_bcr           <- file.path(paths$data, "Spatial", "National", "BCR", "BCR_Terrestrial_master.shp")
 
 # ------------------------------------------------------------
 # Load inputs
@@ -168,27 +101,39 @@ all_surveys_m <- st_transform(all_surveys, crs_rast)
 # Load rasters
 # ------------------------------------------------------------
 
-# Static (optional)
+# Optional static layers
 water_open  <- try_rast(r_path("water_open.tif"))
 water_river <- try_rast(r_path("water_river.tif"))
 
-# Required OBBA2/OBBA3 rasters
-need_files(c(r_path("prec_OBBA2.tif"), r_path("tmax_OBBA2.tif"), r_path("Urban_2000.tif"), r_path("MCD12Q1_OBBA2_mode.tif")),
-           "required OBBA2 rasters")
-need_files(c(r_path("prec_OBBA3.tif"), r_path("tmax_OBBA3.tif"), r_path("Urban_2020.tif"), r_path("MCD12Q1_OBBA3_mode.tif")),
-           "required OBBA3 rasters")
+# Required processed rasters (from 04_process_covariates.R)
+req_obba2 <- c(
+  r_path("prec_OBBA2.tif"),
+  r_path("tmax_OBBA2.tif"),
+  r_path("Urban_2000.tif"),
+  r_path("MODIS_LC_OBBA2_mode.tif")
+)
+
+req_obba3 <- c(
+  r_path("prec_OBBA3.tif"),
+  r_path("tmax_OBBA3.tif"),
+  r_path("Urban_2020.tif"),
+  r_path("MODIS_LC_OBBA3_mode.tif")
+)
+
+need_files(req_obba2, "required OBBA2 rasters (run 04_process_covariates.R)")
+need_files(req_obba3, "required OBBA3 rasters (run 04_process_covariates.R)")
 
 prec2  <- rast(r_path("prec_OBBA2.tif"))
 tmax2  <- rast(r_path("tmax_OBBA2.tif"))
 urban2 <- rast(r_path("Urban_2000.tif"))
-lc2    <- rast(r_path("MCD12Q1_OBBA2_mode.tif"))
+lc2    <- rast(r_path("MODIS_LC_OBBA2_mode.tif"))
 road2  <- try_rast(r_path("roadside_2005_100m.tif"))
 insect2 <- try_rast(r_path("insect_OBBA2.tif"))
 
 prec3  <- rast(r_path("prec_OBBA3.tif"))
 tmax3  <- rast(r_path("tmax_OBBA3.tif"))
 urban3 <- rast(r_path("Urban_2020.tif"))
-lc3    <- rast(r_path("MCD12Q1_OBBA3_mode.tif"))
+lc3    <- rast(r_path("MODIS_LC_OBBA3_mode.tif"))
 road3  <- try_rast(r_path("roadside_2025_100m.tif"))
 insect3 <- try_rast(r_path("insect_OBBA3.tif"))
 
@@ -205,7 +150,7 @@ grid_OBBA2$tmax <- extract_mean(tmax2, grid_cells, boundary_buf_m)
 grid_OBBA3$prec <- extract_mean(prec3, grid_cells, boundary_buf_m)
 grid_OBBA3$tmax <- extract_mean(tmax3, grid_cells, boundary_buf_m)
 
-# Roads (0/1) as mean = fraction of footprint within 100 m of a road
+# Roads (0/1) as mean = fraction of pixel within 100 m of a road
 if (!is.null(road2)) grid_OBBA2$road <- extract_mean(road2, grid_cells, boundary_buf_m)
 if (!is.null(road3)) grid_OBBA3$road <- extract_mean(road3, grid_cells, boundary_buf_m)
 
@@ -240,6 +185,7 @@ if (!is.null(insect3)) {
 }
 
 # Water (static) – compute once and reuse
+# Water (0/1) as mean = fraction of pixel within 100 m of a river
 if (!is.null(water_open)) {
   w_open <- extract_mean(water_open, grid_cells, boundary_buf_m)
   grid_OBBA2$water_open <- w_open
@@ -256,7 +202,7 @@ grid_OBBA2 <- grid_OBBA2 %>% relocate(geometry, .after = last_col())
 grid_OBBA3 <- grid_OBBA3 %>% relocate(geometry, .after = last_col())
 
 # ------------------------------------------------------------
-# Assign grid covariates to surveys (nearest grid centroid)
+# Assign surveys covariates based on their pixel membership (i.e., nearest grid centroid)
 # ------------------------------------------------------------
 
 if (!("Atlas" %in% names(all_surveys_m))) {
@@ -280,7 +226,7 @@ all_surveys_with_covs_m <- bind_rows(surveys2_covs, surveys3_covs) %>%
   arrange(obs_idx)
 
 # ------------------------------------------------------------
-# Assign each survey to an atlas square (optional)
+# Assign each survey to an atlas square
 # ------------------------------------------------------------
 
 if (file.exists(in_atlas_squares)) {
@@ -304,7 +250,7 @@ if (file.exists(in_atlas_squares)) {
 }
 
 # ------------------------------------------------------------
-# Assign each survey and grid cell to a BCR within Ontario (optional)
+# Assign each survey and grid cell to a BCR within Ontario
 # ------------------------------------------------------------
 
 if (file.exists(in_bcr)) {
@@ -348,6 +294,7 @@ saveRDS(
     all_species = all_species,
     boundary = study_area$boundary,
     boundary_buffer_25km = study_area$boundary_buffer_25km,
+    bcr_sf = bcr_on,
     date_created = Sys.time()
   ),
   file = out_file

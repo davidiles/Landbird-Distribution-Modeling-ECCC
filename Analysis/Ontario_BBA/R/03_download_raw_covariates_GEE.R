@@ -10,15 +10,25 @@
 #   ../../Data/Spatial/metadata/ee_download_receipt_03.rds
 # ============================================================
 
+rm(list=ls())
+
 suppressPackageStartupMessages({
   library(sf)
   library(dplyr)
   library(terra)
   library(rgee)
+  library(here)
 })
 
-source("R/functions/spatial_utils.R")
-source("R/functions/covariate_processing_utils.R") # contains ee_download_tif()
+# Centralized paths
+source(here::here("R", "00_config_paths.R"))
+
+# Processing utils
+spatial_utils_path <- file.path(paths$functions, "spatial_utils.R")
+covariate_processing_utils_path <- file.path(paths$functions, "covariate_processing_utils.R")
+
+source(spatial_utils_path)
+source(covariate_processing_utils_path)
 
 # ------------------------------------------------------------
 # Config (user-editable)
@@ -30,9 +40,10 @@ years_ghsl <- c(2000, 2020)
 
 years_modis <- sort(unique(c(years_modis_obba2, years_modis_obba3)))
 
-out_dir_modis <- "../../Data/Spatial/MODIS"
-out_dir_ghsl  <- "../../Data/Spatial/GHSL"
-out_dir_meta  <- "../../Data/Spatial/metadata"
+# Shared Data cache directories (NOT inside Ontario_BBA outputs)
+out_dir_modis <- file.path(paths$data, "Spatial", "MODIS")
+out_dir_ghsl  <- file.path(paths$data, "Spatial", "GHSL")
+out_dir_meta  <- file.path(paths$data, "Spatial", "metadata")
 
 dir.create(out_dir_modis, recursive = TRUE, showWarnings = FALSE)
 dir.create(out_dir_ghsl,  recursive = TRUE, showWarnings = FALSE)
@@ -50,7 +61,8 @@ scale_ghsl_m  <- 1000  # GHSL SMOD nominal 1 km
 # Load study area (use buffered boundary for downloads)
 # ------------------------------------------------------------
 
-study_area <- readRDS("data_clean/spatial/study_area.rds")
+study_area_path <- file.path(paths$data_clean, "spatial", "study_area.rds")
+study_area <- readRDS(study_area_path)
 
 # rgee needs lon/lat geometry for sf_as_ee()
 download_boundary_ll <- study_area$boundary_buffer_25km %>%

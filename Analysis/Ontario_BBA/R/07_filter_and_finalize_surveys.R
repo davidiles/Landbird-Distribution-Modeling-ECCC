@@ -9,11 +9,15 @@
 # What this script does
 #   1) Loads the covariate-augmented surveys and grids from:
 #        data_clean/birds/analysis_data_covariates.rds   (script 06)
-#   2) Filters surveys to a consistent “analysis window”:
+#
+#   2) Filters surveys to a consistent “analysis window”, e.g.,:
 #        - duration == 5 minutes
 #        - Hours_Since_Sunrise in [-1, 6]
 #        - DayOfYear in [135, 196]
 #        - within the Ontario study boundary
+#        - NOTE: THIS STEP MIGHT NEED TO BE REMOVED SO THAT ANALYSIS WINDOWS
+#                ARE DIFFERENT FOR EACH SPECIES
+#
 #   3) Removes duplicate sampling locations (keeps one survey per rounded x/y).
 #      NOTE: dedupe_by_location() uses random sampling; we set a seed here so
 #      results are reproducible.
@@ -82,21 +86,32 @@
 #
 # ============================================================
 
+rm(list = ls())
+
 suppressPackageStartupMessages({
   library(sf)
   library(dplyr)
   library(tidyr)
   library(lubridate)
+  library(here)
 })
 
-source("R/functions/survey_processing_utils.R")
+# Centralized paths
+source(here::here("R", "00_config_paths.R"))
+
+# Utilities
+survey_processing_utils_path <- file.path(paths$functions, "survey_processing_utils.R")
+source(survey_processing_utils_path)
+
+# Ensure output dir exists
+dir.create(file.path(paths$data_clean, "birds"), recursive = TRUE, showWarnings = FALSE)
 
 # ------------------------------------------------------------
 # Config
 # ------------------------------------------------------------
 
-in_file  <- "data_clean/birds/analysis_data_covariates.rds"
-out_file <- "data_clean/birds/data_ready_for_analysis.rds"
+in_file  <- file.path(paths$data_clean, "birds", "analysis_data_covariates.rds")
+out_file <- file.path(paths$data_clean, "birds", "data_ready_for_analysis.rds")
 
 # Filtering windows
 keep_duration_min <- 5
@@ -120,13 +135,16 @@ covars_for_stats <- c(
 covars_to_standardize <- c("prec","tmax")
 
 # Optional water polygon layer path
-water_filtered_path <- "data_clean/spatial/water_filtered.shp"
+water_filtered_path <- file.path(paths$data_clean, "spatial", "water_filtered.shp")
 
 # ------------------------------------------------------------
 # Load input object
 # ------------------------------------------------------------
 
-stopifnot(file.exists(in_file))
+if (!file.exists(in_file)) {
+  stop("Cannot find input at: ", in_file,
+       "\nHave you run 06_extract_covariates.R?")
+}
 dat <- readRDS(in_file)
 
 all_surveys    <- dat$all_surveys_with_covs
@@ -365,12 +383,26 @@ species_to_model <- species_total_squares %>%
   relocate(species_id, english_name)
 
 # ------------------------------------------------------------
+# Add additional survey-level covariates needed for INLA modeling
+# ------------------------------------------------------------
+
+surveys_f <- surveys_f %>%
+  mutate(
+    days_rescaled = DayOfYear - 166,             # Days since june 15
+    BCR_idx = as.integer(as.factor(BCR)),        # Integer
+    Atlas3 = ifelse(Atlas == "OBBA2", 0, 1),
+    Atlas3_c = Atlas3 - 0.5
+  )
+
+
+# ------------------------------------------------------------
 # Save
 # ------------------------------------------------------------
 
 saveRDS(
   list(
     study_boundary = study_boundary,
+    bcr_sf = dat$bcr_sf,
     all_surveys = surveys_f,
     counts = counts_f,
     grid_OBBA2 = grid_OBBA2,
@@ -384,4 +416,4 @@ saveRDS(
   file = out_file
 )
 
-message("07_filter_and_finalize_surveys.R complete: ", out_file)
+message("07_filter_and_finalize_surveys.R complete")

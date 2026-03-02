@@ -16,16 +16,25 @@
 #   - The km-units CRS is used later for INLA/SPDE mesh coordinates and sf objects.
 # ============================================================
 
+rm(list=ls())
+
 suppressPackageStartupMessages({
   library(sf)
   library(dplyr)
   library(terra)
+  library(here)
 })
 
-source("R/functions/spatial_utils.R")
-source("R/functions/covariate_processing_utils.R")
+# Centralized paths
+source(here::here("R", "00_config_paths.R"))
 
-dir.create("data_clean/spatial", recursive = TRUE, showWarnings = FALSE)
+spatial_utils_path <- file.path(paths$functions, "spatial_utils.R")
+covariate_processing_utils_path <- file.path(paths$functions, "covariate_processing_utils.R")
+
+source(spatial_utils_path)
+source(covariate_processing_utils_path)
+
+dir.create(file.path(paths$data_clean, "spatial"), recursive = TRUE, showWarnings = FALSE)
 
 # ------------------------------------------------------------
 # Config (user-editable)
@@ -44,16 +53,17 @@ years_tmax_obba2 <- 2000:2004
 years_tmax_obba3 <- 2020:2024
 months_tmax <- 3:7
 
-# Input dirs
-raw_modis_dir <- "../../Data/Spatial/MODIS"
-raw_ghsl_dir  <- "../../Data/Spatial/GHSL"
-worldclim_dir <- "../../Data/Spatial/WorldClim"  # expects /prec and /tmax subfolders
+# Input dirs (shared Data cache)
+raw_modis_dir <- file.path(paths$data, "Spatial", "MODIS")
+raw_ghsl_dir  <- file.path(paths$data, "Spatial", "GHSL")
+worldclim_dir <- file.path(paths$data, "Spatial", "WorldClim")  # expects /prec and /tmax subfolders
 
-# Extra layers
-roads_2005_src <- "../../Data/Spatial/RoadNetwork/2005/grnf035r05a_e.shp"
-roads_2025_src <- "../../Data/Spatial/RoadNetwork/2025/lrnf000r25a_e.shp"
-insect_src     <- "../../Data/Spatial/Insect_Damage/FOREST_INSECT_DAMAGE_EVENT.shp"
-water_src      <- "../../Data/Spatial/Ontario_Hydro_Network_(OHN)_-_Waterbody/Ontario_Hydro_Network_(OHN)_-_Waterbody.shp"
+# Extra layers (shared Data)
+roads_2005_src <- file.path(paths$data, "Spatial", "RoadNetwork", "2005", "grnf035r05a_e.shp")
+roads_2025_src <- file.path(paths$data, "Spatial", "RoadNetwork", "2025", "lrnf000r25a_e.shp")
+insect_src     <- file.path(paths$data, "Spatial", "Insect_Damage", "FOREST_INSECT_DAMAGE_EVENT.shp")
+water_src      <- file.path(paths$data, "Spatial", "Ontario_Hydro_Network_(OHN)_-_Waterbody",
+                            "Ontario_Hydro_Network_(OHN)_-_Waterbody.shp")
 
 # Canonical raster CRS (metres)
 crs_raster_m <- sf::st_crs(3978)$wkt
@@ -61,8 +71,8 @@ crs_raster_m <- sf::st_crs(3978)$wkt
 # ------------------------------------------------------------
 # Study area (buffered boundary)
 # ------------------------------------------------------------
-
-study_area   <- readRDS("data_clean/spatial/study_area.rds")
+study_area_path <- file.path(paths$data_clean, "spatial", "study_area.rds")
+study_area   <- readRDS(study_area_path)
 boundary_buf <- study_area$boundary_buffer_25km
 
 # Work in EPSG:3978 inside this script
@@ -110,8 +120,8 @@ rasters_obba3 <- crop_mask_to_boundary(rasters_obba3, boundary_buf_m)
 mode_obba2 <- terra::modal(rasters_obba2, ties = "first", na.rm = TRUE)
 mode_obba3 <- terra::modal(rasters_obba3, ties = "first", na.rm = TRUE)
 
-writeRaster(mode_obba2, "data_clean/spatial/MODIS_LC_OBBA2_mode.tif", overwrite = TRUE)
-writeRaster(mode_obba3, "data_clean/spatial/MODIS_LC_OBBA3_mode.tif", overwrite = TRUE)
+writeRaster(mode_obba2, file.path(out_spatial_dir, "MODIS_LC_OBBA2_mode.tif"), overwrite = TRUE)
+writeRaster(mode_obba3, file.path(out_spatial_dir, "MODIS_LC_OBBA3_mode.tif"), overwrite = TRUE)
 
 # ------------------------------------------------------------
 # 2) GHSL reclass (Urban_2000 / Urban_2020)
@@ -131,8 +141,8 @@ ghsl_2020 <- crop_mask_to_boundary(project(ghsl_2020, crs_raster_m, method = "ne
 ghsl_2000_reclass <- reclass_ghsl(ghsl_2000)
 ghsl_2020_reclass <- reclass_ghsl(ghsl_2020)
 
-writeRaster(ghsl_2000_reclass, "data_clean/spatial/Urban_2000.tif", overwrite = TRUE)
-writeRaster(ghsl_2020_reclass, "data_clean/spatial/Urban_2020.tif", overwrite = TRUE)
+writeRaster(ghsl_2000_reclass, file.path(out_spatial_dir, "Urban_2000.tif"), overwrite = TRUE)
+writeRaster(ghsl_2020_reclass, file.path(out_spatial_dir, "Urban_2020.tif"), overwrite = TRUE)
 
 # ------------------------------------------------------------
 # 3) Climate means (WorldClim 2.1)
@@ -144,10 +154,10 @@ mean_prec_obba3 <- mean_climate("prec", years_prec_obba3, months_prec, worldclim
 mean_tmax_obba2 <- mean_climate("tmax", years_tmax_obba2, months_tmax, worldclim_dir, boundary_buf_m, crs_raster_m)
 mean_tmax_obba3 <- mean_climate("tmax", years_tmax_obba3, months_tmax, worldclim_dir, boundary_buf_m, crs_raster_m)
 
-writeRaster(mean_prec_obba2, "data_clean/spatial/prec_OBBA2.tif", overwrite = TRUE)
-writeRaster(mean_prec_obba3, "data_clean/spatial/prec_OBBA3.tif", overwrite = TRUE)
-writeRaster(mean_tmax_obba2, "data_clean/spatial/tmax_OBBA2.tif", overwrite = TRUE)
-writeRaster(mean_tmax_obba3, "data_clean/spatial/tmax_OBBA3.tif", overwrite = TRUE)
+writeRaster(mean_prec_obba2, file.path(out_spatial_dir, "prec_OBBA2.tif"), overwrite = TRUE)
+writeRaster(mean_prec_obba3, file.path(out_spatial_dir, "prec_OBBA3.tif"), overwrite = TRUE)
+writeRaster(mean_tmax_obba2, file.path(out_spatial_dir, "tmax_OBBA2.tif"), overwrite = TRUE)
+writeRaster(mean_tmax_obba3, file.path(out_spatial_dir, "tmax_OBBA3.tif"), overwrite = TRUE)
 
 # ------------------------------------------------------------
 # 4) Additional layers (roads, insects, water) in EPSG:3978
@@ -158,8 +168,8 @@ if (file.exists(roads_2005_src) && file.exists(roads_2025_src)) {
   roadside_2005 <- rasterize_roads_buffer_presence(roads_2005_src, boundary_buf_m, template_100m, buffer_m = 100)
   roadside_2025 <- rasterize_roads_buffer_presence(roads_2025_src, boundary_buf_m, template_100m, buffer_m = 100)
   
-  writeRaster(roadside_2005, "data_clean/spatial/roadside_2005_100m.tif", overwrite = TRUE)
-  writeRaster(roadside_2025, "data_clean/spatial/roadside_2025_100m.tif", overwrite = TRUE)
+  writeRaster(roadside_2005, file.path(out_spatial_dir, "roadside_2005_100m.tif"), overwrite = TRUE)
+  writeRaster(roadside_2025, file.path(out_spatial_dir, "roadside_2025_100m.tif"), overwrite = TRUE)
 } else {
   message("Road layers not found; skipping roads covariates.")
 }
@@ -186,8 +196,8 @@ if (file.exists(insect_src)) {
     simplify_tolerance_m = 100
   )
   
-  writeRaster(insect_OBBA2, "data_clean/spatial/insect_OBBA2.tif", overwrite = TRUE)
-  writeRaster(insect_OBBA3, "data_clean/spatial/insect_OBBA3.tif", overwrite = TRUE)
+  writeRaster(insect_OBBA2, file.path(out_spatial_dir, "insect_OBBA2.tif"), overwrite = TRUE)
+  writeRaster(insect_OBBA3, file.path(out_spatial_dir, "insect_OBBA3.tif"), overwrite = TRUE)
 } else {
   message("Insect damage layer not found; skipping insect covariates.")
 }
@@ -204,12 +214,12 @@ if (file.exists(water_src)) {
     min_area_m2_for_filtered = 1e6
   )
   
-  writeRaster(water_layers$water_open,  "data_clean/spatial/water_open.tif",  overwrite = TRUE)
-  writeRaster(water_layers$water_river, "data_clean/spatial/water_river.tif", overwrite = TRUE)
+  writeRaster(water_layers$water_open,  file.path(out_spatial_dir, "water_open.tif"),  overwrite = TRUE)
+  writeRaster(water_layers$water_river, file.path(out_spatial_dir, "water_river.tif"), overwrite = TRUE)
   
   st_write(
     water_layers$water_filtered,
-    "data_clean/spatial/water_filtered.shp",
+    file.path(out_spatial_dir, "water_filtered.shp"),
     delete_layer = TRUE,
     quiet = TRUE
   )

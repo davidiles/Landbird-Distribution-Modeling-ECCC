@@ -467,3 +467,263 @@ make_abs_change_maps <- function(species_name,
   
   list(chg_plot = chg_plot, ciw_plot = ciw_plot, max_abs = max_abs)
 }
+
+
+#' Flag hexagons with strong posterior support for change
+#'
+#' @param eta_draws_per_hex Posterior draws per polygon (hex), in the format
+#'   expected by `summarize_polygon_hypothesis()`.
+#' @param hexagon_sf `sf` object of hex polygons. Must include `hex_id`.
+#' @param param Parameter name to test inside `summarize_polygon_hypothesis()`
+#'   (e.g., "abs_change").
+#' @param threshold Numeric threshold for change hypothesis.
+#' @param prob_level Posterior probability threshold (e.g., 0.975).
+#' @param direction Directions to compute in `summarize_polygon_hypothesis()`.
+#' @param ci_probs Credible interval probs passed through.
+#' @param include_summary Passed through to `summarize_polygon_hypothesis()`.
+#'
+#' @return An `sf` object of flagged hexagons joined to summaries, filtered to
+#'   `classification != "None"`. If none flagged, returns 0-row `sf`.
+#' @export
+flag_hexagons_for_change <- function(eta_draws_per_hex,
+                                     hexagon_sf,
+                                     param = "abs_change",
+                                     threshold = 0,
+                                     prob_level = 0.975,
+                                     direction = c("two_sided", "increase", "decrease"),
+                                     ci_probs = c(0.05, 0.95),
+                                     include_summary = TRUE) {
+  hexagon_sf <- hexagon_sf %>% dplyr::mutate(hex_id = as.character(hex_id))
+  
+  flagged <- summarize_polygon_hypothesis(
+    eta_draws_per_hex,
+    param = param,
+    threshold = threshold,
+    prob_level = prob_level,
+    direction = direction,
+    ci_probs = ci_probs,
+    include_summary = include_summary
+  ) %>%
+    dplyr::left_join(hexagon_sf, ., by = c("hex_id" = "poly_id")) %>%
+    dplyr::filter(classification != "None") %>%
+    sf::st_as_sf()
+  
+  flagged
+}
+
+
+#' Keep only spatially coherent patches above a minimum area threshold
+#'
+#' For each change class (e.g., Increase/Decrease), this:
+#'   - builds a touches-based adjacency graph of hexagons,
+#'   - finds connected components (patches),
+#'   - computes patch areas after dissolving,
+#'   - retains hexagons belonging to patches with area >= min_area_km2.
+#'
+#' @param flagged_hex_sf `sf` of flagged hexagons. Must include `classification`
+#'   and geometry.
+#' @param min_area_km2 Minimum patch area (km^2) to retain.
+#'
+#' @return `sf` of hexagons with an added `patch_id`, filtered to retained patches.
+#'   If input has 0 rows, returns input unchanged.
+#' @export
+filter_flagged_to_large_patches <- function(flagged_hex_sf, min_area_km2) {
+  if (nrow(flagged_hex_sf) == 0) return(flagged_hex_sf)
+  
+  flagged_patched <- flagged_hex_sf %>%
+    dplyr::group_by(classification) %>%
+    dplyr::group_modify(~{
+      x <- .x
+      
+      # Neighbor list of touching polygons
+      nb <- sf::st_touches(x)
+      
+      # Graph + connected components
+      g <- igraph::graph_from_adj_list(nb, mode = "all")
+      g <- igraph::as.undirected(g, mode = "collapse")
+      x$patch_id <- igraph::components(g)$membership
+      
+      # Dissolve by patch and compute patch areas (km^2)
+      patch_polys <- x %>%
+        dplyr::group_by(patch_id) %>%
+        # small "buffer in/out" trick to help remove tiny holes / slivers
+        sf::st_buffer(sqrt(min_area_km2)) %>%
+        dplyr::summarise(geometry = sf::st_union(geometry), .groups = "drop") %>%
+        sf::st_buffer(-sqrt(min_area_km2)) %>%
+        dplyr::mutate(
+          patch_area_km2 =
+            units::set_units(sf::st_area(geometry), "km^2") %>%
+            units::drop_units()
+        )
+      
+      keep_ids <- patch_polys$patch_id[patch_polys$patch_area_km2 >= min_area_km2]
+      x %>% dplyr::filter(patch_id %in% keep_ids)
+    }) %>%
+    dplyr::ungroup() %>%
+    sf::st_as_sf()
+  
+  flagged_patched
+}
+
+
+#' Dissolve hexagons into polygons by change classification
+#'
+#' @param flagged_hex_sf `sf` of flagged hexagons with a `classification` column.
+#'
+#' @return `sf` with one (multi)polygon per classification.
+#' @export
+dissolve_change_polygons <- function(flagged_hex_sf) {
+  flagged_hex_sf %>%
+    dplyr::group_by(classification) %>%
+    dplyr::summarise(geometry = sf::st_union(geometry), .groups = "drop") %>%
+    sf::st_as_sf()
+}
+
+
+#' Smooth change polygon boundaries and clip to the study boundary
+#'
+#' @param change_polys_sf `sf` polygons (usually output of `dissolve_change_polygons()`).
+#' @param study_boundary `sf` polygon used for CRS target and clipping.
+#' @param smoothing_bandwidth_m Numeric bandwidth (meters) for ksmooth.
+#'
+#' @return Smoothed, valid, boundary-clipped `sf` polygons.
+#' @export
+smooth_and_clip_change_polys <- function(change_polys_sf,
+                                         study_boundary,
+                                         smoothing_bandwidth_m) {
+  change_polys_sf %>%
+    sf::st_transform(sf::st_crs(study_boundary)) %>%
+    smoothr::smooth(method = "ksmooth", bandwidth = smoothing_bandwidth_m) %>%
+    sf::st_make_valid() %>%
+    sf::st_intersection(study_boundary) %>%
+    sf::st_as_sf()
+}
+
+
+#' Drop holes smaller than a threshold area (km^2) from polygons/multipolygons
+#'
+#' @param x An `sf` object or `sfc` geometry with POLYGON/MULTIPOLYGON features.
+#' @param min_hole_area_km2 Minimum hole area to keep (km^2). Holes smaller than
+#'   this are removed.
+#'
+#' @return Object of same class as input with holes removed where applicable.
+#' @export
+drop_small_holes <- function(x, min_hole_area_km2) {
+  
+  stopifnot(inherits(x, c("sf", "sfc")))
+  
+  geom <- sf::st_geometry(x)
+  crs  <- sf::st_crs(geom)
+  
+  if (sf::st_is_longlat(geom)) {
+    warning("Geometry is lon/lat. Areas will be computed using s2 (geodesic).")
+  }
+  
+  drop_in_poly <- function(poly) {
+    
+    rings <- unclass(poly)
+    outer <- rings[[1]]
+    holes <- rings[-1]
+    
+    if (length(holes) == 0) return(poly)
+    
+    hole_areas_km2 <- vapply(
+      holes,
+      function(h) {
+        a <- sf::st_area(sf::st_sfc(sf::st_polygon(list(h)), crs = crs))
+        as.numeric(units::set_units(a, km^2))
+      },
+      numeric(1)
+    )
+    
+    keep <- hole_areas_km2 >= min_hole_area_km2
+    sf::st_polygon(c(list(outer), holes[keep]))
+  }
+  
+  drop_in_mpoly <- function(mpoly) {
+    
+    polys <- unclass(mpoly)
+    
+    new_polys <- lapply(polys, function(rings) {
+      drop_in_poly(sf::st_polygon(rings))
+    })
+    
+    sf::st_multipolygon(lapply(new_polys, unclass))
+  }
+  
+  new_geom <- lapply(geom, function(g) {
+    if (inherits(g, "POLYGON")) {
+      drop_in_poly(g)
+    } else if (inherits(g, "MULTIPOLYGON")) {
+      drop_in_mpoly(g)
+    } else {
+      g
+    }
+  })
+  
+  if (inherits(x, "sf")) {
+    sf::st_geometry(x) <- sf::st_sfc(new_geom, crs = crs)
+    return(x)
+  } else {
+    return(sf::st_sfc(new_geom, crs = crs))
+  }
+}
+
+
+#' End-to-end builder for "meaningful change" polygons (flag → patch → dissolve → smooth)
+#'
+#' This is a convenience wrapper that matches your current inline workflow:
+#' - flag hexagons based on posterior support,
+#' - retain only patches exceeding `min_area_km2`,
+#' - dissolve by Increase/Decrease,
+#' - smooth and clip to study boundary,
+#' - optionally remove small holes.
+#'
+#' @param eta_draws_per_hex Posterior draws per hex (see `flag_hexagons_for_change()`).
+#' @param hexagon_sf `sf` hex grid with `hex_id`.
+#' @param study_boundary `sf` boundary for CRS + clipping.
+#' @param min_area_km2 Minimum patch size (km^2).
+#' @param smoothing_bandwidth_m Smoothing bandwidth (meters).
+#' @param ... Additional args forwarded to `flag_hexagons_for_change()`
+#'   (e.g., `param`, `threshold`, `prob_level`, etc.).
+#' @param drop_holes Logical; if TRUE, remove holes smaller than `min_area_km2`.
+#'
+#' @return Smoothed `sf` polygons by classification, or `NULL` if none flagged.
+#' @export
+build_meaningful_change_polys <- function(eta_draws_per_hex,
+                                          hexagon_sf,
+                                          study_boundary,
+                                          min_area_km2 = 5000,
+                                          smoothing_bandwidth_m = 75000,
+                                          ...,
+                                          drop_holes = TRUE) {
+  
+  flagged <- flag_hexagons_for_change(
+    eta_draws_per_hex = eta_draws_per_hex,
+    hexagon_sf = hexagon_sf,
+    ...
+  )
+  
+  if (nrow(flagged) == 0) return(NULL)
+  
+  flagged_patched <- filter_flagged_to_large_patches(
+    flagged_hex_sf = flagged,
+    min_area_km2 = min_area_km2
+  )
+  
+  if (nrow(flagged_patched) == 0) return(NULL)
+  
+  change_polys <- dissolve_change_polygons(flagged_patched)
+  
+  change_polys_smoothed <- smooth_and_clip_change_polys(
+    change_polys_sf = change_polys,
+    study_boundary = study_boundary,
+    smoothing_bandwidth_m = smoothing_bandwidth_m
+  )
+  
+  if (drop_holes) {
+    change_polys_smoothed <- drop_small_holes(change_polys_smoothed, min_area_km2)
+  }
+  
+  change_polys_smoothed
+}

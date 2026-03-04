@@ -43,7 +43,7 @@ source(inla_utils_path)
 # ------------------------------------------------------------
 # Config
 # ------------------------------------------------------------
-
+model_name <- "joint_newpriors"
 rerun_models <- FALSE
 rerun_predictions <- FALSE
 
@@ -55,14 +55,14 @@ if (!file.exists(in_file)) {
 
 out_dir <- paths$model_output
 dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
-dir.create(file.path(out_dir, "models_joint"), recursive = TRUE, showWarnings = FALSE)
-dir.create(file.path(out_dir, "predictions_joint"), recursive = TRUE, showWarnings = FALSE)
-dir.create(file.path(out_dir, "summaries_joint"), recursive = TRUE, showWarnings = FALSE)
+dir.create(file.path(out_dir, paste0("models_",model_name)), recursive = TRUE, showWarnings = FALSE)
+dir.create(file.path(out_dir, paste0("predictions_",model_name)), recursive = TRUE, showWarnings = FALSE)
+dir.create(file.path(out_dir, paste0("summaries_",model_name)), recursive = TRUE, showWarnings = FALSE)
 
 # Summary caches
-model_summaries_path  <- file.path(out_dir, "summaries_joint", "model_summaries.rds")
-change_summaries_path <- file.path(out_dir, "summaries_joint", "change_summaries.rds")
-hss_doy_path          <- file.path(out_dir, "summaries_joint", "HSS_DOY_summaries.rds")
+model_summaries_path  <- file.path(out_dir, paste0("summaries_",model_name), "model_summaries.rds")
+change_summaries_path <- file.path(out_dir, paste0("summaries_",model_name), "change_summaries.rds")
+hss_doy_path          <- file.path(out_dir, paste0("summaries_",model_name), "HSS_DOY_summaries.rds")
 
 model_summaries   <- load_or_empty_list(model_summaries_path)
 change_summaries  <- load_or_empty_list(change_summaries_path)
@@ -116,9 +116,6 @@ base_covars <- c(
   "insect_broadleaf","insect_needleleaf"
 )
 
-# If model fails to update after 15 min, assume it stalled and retry
-timeout_min <- 15
-
 # Select species to model
 min_detections <- 150     # at least 150 detections in one atlas
 min_squares <- 50         # at least 50 squares in one atlas
@@ -132,30 +129,30 @@ species_run <- species_to_model %>%
 
 species_to_check <- c(
   "Palm Warbler",
-  "Bobolink",
+  #"Bobolink",
   # "Blue Jay",
-  "Canada Jay",
+  #"Canada Jay",
   "Olive-sided Flycatcher",
   # "Winter Wren",
-  "Lesser Yellowlegs",
-  "Blackpoll Warbler",
+  #"Lesser Yellowlegs",
+  #"Blackpoll Warbler",
   "Connecticut Warbler",
   # "Lincoln's Sparrow",
   # "Fox Sparrow",
   "Common Nighthawk",
-  "Long-eared Owl",
-  "American Tree Sparrow",
-  "LeConte's Sparrow",
-  "Nelson's Sparrow",
-  "Boreal Chickadee",
-  "Rusty Blackbird",
+  # "Long-eared Owl",
+  # "American Tree Sparrow",
+  # "LeConte's Sparrow",
+  # "Nelson's Sparrow",
+  # "Boreal Chickadee",
+  # "Rusty Blackbird",
   "Yellow-bellied Flycatcher",
   "Greater Yellowlegs",
-  "Hudsonian Godwit",
+  # "Hudsonian Godwit",
   "Canada Warbler",
-  "Eastern Wood-Peewee",
-  "Grasshopper Sparrow",
-  "Solitary Sandpiper",
+  # "Eastern Wood-Peewee",
+  # "Grasshopper Sparrow",
+  # "Solitary Sandpiper",
   # "White-throated Sparrow",
   "Bay-breasted Warbler"
 )
@@ -176,8 +173,8 @@ for (i in seq_len(nrow(species_run))) {
   
   message("\n====================\n", i, "/", nrow(species_run), ": ", sp_english, " (species_id = ", sp_code, ")\n====================")
   
-  model_path <- file.path(out_dir, "models_joint", paste0(sp_file, ".rds"))
-  pred_path  <- file.path(out_dir, "predictions_joint", paste0(sp_file, ".rds"))
+  model_path <- file.path(out_dir,paste0("models_",model_name), paste0(sp_file, ".rds"))
+  pred_path  <- file.path(out_dir, paste0("predictions_",model_name), paste0(sp_file, ".rds"))
   
   # --- Build species data
   if (!(sp_code %in% names(counts))) {
@@ -195,7 +192,7 @@ for (i in seq_len(nrow(species_run))) {
   # Priors controlling spatial autocorrelation fields
   prior_range_abund  <- c(500, 0.90) # 90% chance spatial autocorrelation range of shared field is less than 500 km
   prior_sigma_abund  <- c(3, 0.1)    # 10% chance SD is larger than 3
-  prior_range_change <- c(500, 0.5)  # 50% chance spatial autocorrelation range of change field is less than 500 km
+  prior_range_change <- c(500, 0.1)  # 10% chance spatial autocorrelation range of change field is less than 500 km
   prior_sigma_change <- c(0.1, 0.1)  # 10% chance SD is larger than 0.1
   
   # square identifier (persistent across atlases)
@@ -213,7 +210,6 @@ for (i in seq_len(nrow(species_run))) {
         sp_dat = sp_dat,
         study_boundary = study_boundary,
         covariates = cov_df_sp,
-        timeout_min = timeout_min,
         prior_range_abund = prior_range_abund,
         prior_sigma_abund = prior_sigma_abund,
         prior_range_change = prior_range_change,

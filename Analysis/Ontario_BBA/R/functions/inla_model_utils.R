@@ -78,28 +78,28 @@ fit_inla_multi_atlas <- function(sp_dat,
                                   covariates,
                                   timeout_min = 15,
                                   
-                                  # SPDE priors
-                                  prior_range_abund  = c(150, 0.1),
-                                  prior_sigma_abund  = c(0.5, 0.1),
-                                  prior_range_change = c(500, 0.1),
-                                  prior_sigma_change = c(0.1, 0.1),
-                                  
                                   # Mesh controls
                                   mesh_max_edge = c(100, 200),
                                   mesh_cutoff = 50,
                                   mesh_convex = c(50, 150),
                                   mesh_concave = c(50, 150),
                                   
+                                 # SPDE priors
+                                 prior_range_abund  = c(500, 0.90), # 90% chance spatial autocorrelation range of shared field is less than 500 km
+                                 prior_sigma_abund  = c(3, 0.1),    # 10% chance SD is larger than 3
+                                 prior_range_change = c(500, 0.1),  # 10% chance spatial autocorrelation range of change field is less than 500 km
+                                 prior_sigma_change = c(0.1, 0.1),  # 10% chance SD is larger than 0.1
+                                 
                                   # 1D smoothers (global + deviations share these priors)
                                   HSS_prior_range  = c(2, 0.1),
-                                  HSS_prior_sigma  = c(1, 0.5),
+                                  HSS_prior_sigma  = c(3, 0.1),
                                   
-                                  DOY_prior_range  = c(30, 0.1),
-                                  DOY_prior_sigma  = c(1, 0.5),
+                                  DOY_prior_range  = c(3, 0.1),
+                                  DOY_prior_sigma  = c(3, 0.1),
                                   
                                   # atlas square iid effect
-                                  kappa_pcprec_shared = c(3, 0.1),
-                                  kappa_pcprec_diff   = c(0.1, 0.1),
+                                  kappa_pcprec_shared = c(1, 0.1),
+                                  kappa_pcprec_diff   = c(1, 0.1),
                                   
                                   # likelihood
                                   family = c("poisson", "nbinomial"),
@@ -209,7 +209,7 @@ fit_inla_multi_atlas <- function(sp_dat,
     constr = TRUE
   )
   
-  # DOY mesh (days since June 15)
+  # DOY mesh
   DOY_range <- range(sp_dat$days_rescaled, na.rm = TRUE)
   DOY_meshpoints <- seq(DOY_range[1] - 5, DOY_range[2] + 5, length.out = 41)
   DOY_mesh1D <- INLA::inla.mesh.1d(DOY_meshpoints, boundary = "free")
@@ -255,8 +255,8 @@ fit_inla_multi_atlas <- function(sp_dat,
     '~ Intercept(1) +
        
        # Atlas effects
-       effect_Atlas3(1, model="linear", mean.linear=0, prec.linear=1) +
-       effect_ARU(1, model="linear", mean.linear=0, prec.linear=100) +
+       effect_Atlas3(1, model="linear", mean.linear=0, prec.linear=25) +
+       effect_ARU(1, model="linear", mean.linear=0, prec.linear=25) +
        
        # Spatial fields
        spde_mean(main = geometry, model = matern_mean) +

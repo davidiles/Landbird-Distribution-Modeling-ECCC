@@ -123,7 +123,7 @@ message("Prediction files found: ", length(pred_files))
 # Loop species
 # ------------------------------------------------------------
 
-for (pf in pred_files[c(5,8)]) {
+for (pf in pred_files) {
   
   preds <- readRDS(pf)
   sp_english <- preds$sp_english

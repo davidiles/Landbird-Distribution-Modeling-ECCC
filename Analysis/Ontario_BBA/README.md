@@ -1,55 +1,27 @@
 # Analysis of 3rd Ontario Breeding Bird Atlas 
 
- This folder contains scripts that are in development, aimed at analysis of data from the [3rd Ontario Breeding Bird Analysis](https://www.birdsontario.org/), which began in 2021 and will conclude data collection in 2025.
- 
-# Methods
- 
- *Note: Methods have not been formally peer-reviewed*
- 
-## Overview
-  The analysis aims to describe spatial patterns of relative abundance and species occurrence across the province of Ontario over the time period from 2021-2025.
-  
-  The analysis will also evaluate change in abundance between the second Ontario Breeding Bird Atlas (2001-2005) and the third (2021-2025).
-  
-### Bird Data
-Data were downloaded from two sources: 1) [WildTrax](https://wildtrax.ca/), and 2) [NatureCounts](https://naturecounts.ca/).
+Spatio-temporal models of breeding bird atlas point-count data. Observations are counts of birds detected during 5-minute unlimited-distance point counts. Counts are small (typically 0–4) and are modeled with a Poisson GLM with log link.
 
-### Covariates
-Covariate layers were obtained from the following sources:
+The linear predictor includes:
 
-- [2020 Land Cover of Canada](https://open.canada.ca/data/en/dataset/ee1580ab-a23d-4f86-a09b-79763677eb47)
+- Intercept
+- Land-cover covariates with log-linear effects
+- Spatial random field (SPDE) representing baseline spatial variation in abundance
+- 1D SPDE smooth for time of day (hours since sunrise) to account for detectability variation
+- 1D SPDE smooth for day of year to capture seasonal detectability changes
+- Random effects for 10×10 km atlas squares
 
-### Model Structure
+To model change between two atlas periods (~20 years apart), the model includes:
+- A fixed atlas-period effect (overall mean shift)
+- A second spatial SPDE field interacted with atlas period to capture spatially structured change
+- A second atlas-square random effect indexed by square-within-atlas to capture atlas-specific local deviations
+    - The square-level random effects are identifiable because one indexes the same square ID across atlases, and the other indexes square ID within atlas.
+- Habitat covariates that are time-referenced, meaning their pixel values can differ between atlases. Covariate coefficients are shared across atlases, but habitat change can still alter expected counts through changes in covariate values.
 
-Models were fit using the integrated nested Laplace approximation (INLA), using R packages `INLA` and `inlabru`.  
+Thus atlas differences arise from:
+- habitat change (via covariate values),
+- a province-wide atlas effect,
+- spatially structured smooth change fields (SPDE),
+- atlas-specific square effects.
 
-
-
-
-### Issues
-
-
-Next steps
-- for NOBMWG model evaluation working group
-    -> extract variable importance scores from BAM, but need a way to decide an importance threshold
-    -> compare to a "standard suite" of covariates?
-
-- for Atlas
-    -> formal list of species for model evaluation
-    
-
-Feb 17, 2026
-
-To do:
-
-- Ensure project adheres to ODMAP guidelines (https://nsojournals.onlinelibrary.wiley.com/doi/full/10.1111/ecog.04960)
-- Store goodness-of-fit statistics produced by DHARMa package
-   - this will also help to evaluate which error distributions are best for each species
-   - use these to evaluate if there are spatial/temporal patterns in the residuals that indicate lack of model fit
-- incorporate checklists
-- ensure that ARU-based surveys are correctly labeled in NatureCounts dataframe
-
-### Refs
-
-(Cross-validation for model selection)[https://esajournals.onlinelibrary.wiley.com/doi/10.1002/ecm.1557]
-
+The estimand of interest is expected count during a standardized 5-minute survey. Predictions are generated for 1-km grid cells, fixing time-of-day and day-of-year values and omitting square-level random effects so predictions represent expected counts at an average square.

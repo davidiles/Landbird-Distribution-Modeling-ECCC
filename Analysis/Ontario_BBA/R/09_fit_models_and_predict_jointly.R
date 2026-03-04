@@ -43,7 +43,7 @@ source(inla_utils_path)
 # ------------------------------------------------------------
 # Config
 # ------------------------------------------------------------
-model_name <- "joint_newpriors"
+model_name <- "joint"
 rerun_models <- FALSE
 rerun_predictions <- FALSE
 

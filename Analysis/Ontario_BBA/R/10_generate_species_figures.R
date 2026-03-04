@@ -40,7 +40,7 @@ source(figure_utils_path)
 # Config
 # ------------------------------------------------------------
 
-model_type <- "joint" # or separate
+model_type <- "joint"
 
 # File paths
 in_data  <- file.path(paths$data_clean, "birds", "data_ready_for_analysis.rds")
@@ -123,7 +123,7 @@ message("Prediction files found: ", length(pred_files))
 # Loop species
 # ------------------------------------------------------------
 
-for (pf in pred_files) {
+for (pf in pred_files[c(5,8)]) {
   
   preds <- readRDS(pf)
   sp_english <- preds$sp_english
@@ -238,14 +238,20 @@ for (pf in pred_files) {
     min_area_km2 = min_area_km2,
     smoothing_bandwidth_m = smoothing_bandwith_m,
     param = "abs_change",
-    threshold = 0,
-    prob_level = 0.975,
+    threshold = zmax/20,
+    prob_level = 0.9,
     direction = c("two_sided", "increase", "decrease"),
     ci_probs = c(0.05, 0.95),
     include_summary = TRUE,
     drop_holes = TRUE
   )
   
+  # ggplot()+
+  #   geom_sf(data = study_boundary)+
+  #   geom_sf(data = signif_change_polys_smoothed, aes(fill = classification))
+  # 
+  # chg = preds$eta_draws_per_hex$abs_change %>% colSums()
+  # 
   # --------------------------------------------------------------------
   # Step 5: Generate the change map, with "meaningful change" polygons overlaid
   # --------------------------------------------------------------------

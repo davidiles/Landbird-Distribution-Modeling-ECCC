@@ -40,7 +40,7 @@ source(figure_utils_path)
 # Config
 # ------------------------------------------------------------
 
-model_type <- "joint"
+model_type <- "joint_diffpriors4"
 
 # File paths
 in_data  <- file.path(paths$data_clean, "birds", "data_ready_for_analysis.rds")
@@ -136,6 +136,15 @@ for (pf in pred_files) {
   
   sp_dat <- all_surveys %>% mutate(count = counts[[sp_code]])
   
+  fig_path_relabund_q50_OBBA2 <- file.path(fig_dir, paste0(sp_file, "_relabund_q50_OBBA2.png"))
+  fig_path_relabund_q50_OBBA3 <- file.path(fig_dir, paste0(sp_file, "_relabund_q50_OBBA3.png"))
+  fig_path_abs_change_q50 <- file.path(fig_dir, paste0(sp_file, "_abs_change_q50.png"))
+  
+  if (file.exists(fig_path_abs_change_q50)){
+    message("Skipping ",sp_english,": change map already exists for this species")
+    next
+  }
+  
   message("Mapping: ", sp_english)
   
   # ----------------------------------------------------------
@@ -188,7 +197,51 @@ for (pf in pred_files) {
     next
   }
   
-  # --- Relabund maps
+  # --------------------------------
+  # --- Construct relative abundance maps
+  # --------------------------------
+  
+  # -----------------------
+  # Identify regions that cross particular thresholds
+  # -----------------------
+
+  # # --- Abundance in Atlas 2 exceeds 0.01 with 90% probability
+  # in_range2 <- build_meaningful_change_polys(
+  #   eta_draws_per_hex = preds$eta_draws_per_hex,
+  #   hexagon_sf = preds$hexagon_sf,
+  #   study_boundary = study_boundary,
+  #   min_area_km2 = 50^2,
+  #   smoothing_bandwidth_m = 50000,
+  #   param = "Mu2",
+  #   threshold = zmax/100,
+  #   prob_level = 0.90,
+  #   direction = c("two_sided", "increase", "decrease"),
+  #   ci_probs = c(0.05, 0.95),
+  #   include_summary = TRUE,
+  #   drop_holes = FALSE
+  # )
+  # 
+  # ggplot()+geom_sf(data = study_boundary)+geom_sf(data = in_range2, fill = "gray50")
+  # 
+  # # --- Abundance exceeds 0.01 with 90% probability
+  # in_range3 <- build_meaningful_change_polys(
+  #   eta_draws_per_hex = preds$eta_draws_per_hex,
+  #   hexagon_sf = preds$hexagon_sf,
+  #   study_boundary = study_boundary,
+  #   min_area_km2 = 50^2,
+  #   smoothing_bandwidth_m = 50000,
+  #   param = "Mu3",
+  #   threshold = zmax/100,
+  #   prob_level = 0.975,
+  #   direction = c("two_sided", "increase", "decrease"),
+  #   ci_probs = c(0.05, 0.95),
+  #   include_summary = TRUE,
+  #   drop_holes = FALSE
+  # )
+  # ggplot()+geom_sf(data = study_boundary)+geom_sf(data = in_range3, fill = "gray50")
+  # 
+  
+  # --- Atlas 2
   maps2 <- make_relabund_maps(
     species_name = sp_english,
     grid_sf = grid2,
@@ -204,6 +257,7 @@ for (pf in pred_files) {
     bounds = rel_bounds
   )
   
+  # --- Atlas 3
   maps3 <- make_relabund_maps(
     species_name = sp_english,
     grid_sf = grid3,
@@ -219,15 +273,9 @@ for (pf in pred_files) {
     bounds = rel_bounds
   )
   
-  # --- Change maps 
   
-  # Significance boundaries (smoothed for plotting)
-  preds <- readRDS(pf)
-  
-  # --------------------------------------------------------------------
-  # Identify spatially coherent regions of "meaningful" population change
-  # --------------------------------------------------------------------
-  
+  # --- Change between atlases
+  # --- Identify spatially coherent regions of "meaningful" population change
   min_area_km2 <- 5000
   smoothing_bandwith_m <- 75000
   
@@ -239,26 +287,12 @@ for (pf in pred_files) {
     smoothing_bandwidth_m = smoothing_bandwith_m,
     param = "abs_change",
     threshold = zmax/20,
-    prob_level = 0.9,
+    prob_level = 0.95,
     direction = c("two_sided", "increase", "decrease"),
     ci_probs = c(0.05, 0.95),
     include_summary = TRUE,
     drop_holes = TRUE
   )
-  
-  # ggplot()+
-  #   geom_sf(data = study_boundary)+
-  #   geom_sf(data = signif_change_polys_smoothed, aes(fill = classification))
-  # 
-  # chg = preds$eta_draws_per_hex$abs_change %>% colSums()
-  # 
-  # --------------------------------------------------------------------
-  # Step 5: Generate the change map, with "meaningful change" polygons overlaid
-  # --------------------------------------------------------------------
-  
-  # The color scale shows the posterior median of absolute change in expected abundance (difference in predicted mean counts). 
-  # Polygons outline regions where there is at least 97.5% posterior probability that the expected count per pixel has increased (abs_change > 0) 
-  # or decreased (abs_change < 0) 20 years.
   
   chg <- make_abs_change_maps(
     species_name = sp_english,
@@ -274,10 +308,11 @@ for (pf in pred_files) {
     subtitle = "OBBA2 to OBBA3"
   )
   
+  
   # --- Save
   
   ggsave(
-    filename = file.path(fig_dir, paste0(sp_file, "_relabund_q50_OBBA2.png")),
+    filename = fig_path_relabund_q50_OBBA2,
     plot = maps2$q50_plot, width = width_in, height = height_in, units = "in",
     dpi = dpi, type = ggsave_type, limitsize = FALSE
   )
@@ -289,7 +324,7 @@ for (pf in pred_files) {
   # )
   
   ggsave(
-    filename = file.path(fig_dir, paste0(sp_file, "_relabund_q50_OBBA3.png")),
+    filename = fig_path_relabund_q50_OBBA3,
     plot = maps3$q50_plot, width = width_in, height = height_in, units = "in",
     dpi = dpi, type = ggsave_type, limitsize = FALSE
   )
@@ -301,7 +336,7 @@ for (pf in pred_files) {
   # )
   
   ggsave(
-    filename = file.path(fig_dir, paste0(sp_file, "_abs_change_q50.png")),
+    filename = fig_path_abs_change_q50,
     plot = chg$chg_plot, width = width_in, height = height_in, units = "in",
     dpi = dpi, type = ggsave_type, limitsize = FALSE
   )

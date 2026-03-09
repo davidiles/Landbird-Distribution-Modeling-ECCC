@@ -85,9 +85,9 @@ fit_inla_multi_atlas <- function(sp_dat,
                                   mesh_concave = c(50, 150),
                                   
                                  # SPDE priors
-                                 prior_range_abund  = c(500, 0.90), # 90% chance spatial autocorrelation range of shared field is less than 500 km
+                                 prior_range_abund  = c(500, 0.10), # 10% chance spatial autocorrelation range of shared field is less than 500 km
                                  prior_sigma_abund  = c(3, 0.1),    # 10% chance SD is larger than 3
-                                 prior_range_change = c(500, 0.1),  # 10% chance spatial autocorrelation range of change field is less than 500 km
+                                 prior_range_change = c(500, 0.5),  # 50% chance spatial autocorrelation range of change field is less than 500 km
                                  prior_sigma_change = c(0.1, 0.1),  # 10% chance SD is larger than 0.1
                                  
                                   # 1D smoothers (global + deviations share these priors)
@@ -98,7 +98,7 @@ fit_inla_multi_atlas <- function(sp_dat,
                                   DOY_prior_sigma  = c(3, 0.1),
                                   
                                   # atlas square iid effect
-                                  kappa_pcprec_shared = c(1, 0.1),
+                                  #kappa_pcprec_shared = c(1, 0.1),
                                   kappa_pcprec_diff   = c(1, 0.1),
                                   
                                   # likelihood
@@ -224,7 +224,7 @@ fit_inla_multi_atlas <- function(sp_dat,
   # IID effects for atlas squares
   # ------------------------------------------------------------
   
-  pc_prec_shared <- list(prior = "pcprec", param = kappa_pcprec_shared)
+  # pc_prec_shared <- list(prior = "pcprec", param = kappa_pcprec_shared)
   pc_prec_diff   <- list(prior = "pcprec", param = kappa_pcprec_diff)
   
   # ------------------------------------------------------------
@@ -251,6 +251,7 @@ fit_inla_multi_atlas <- function(sp_dat,
   #   Key change: HSS_global + HSS_dev(BCR) and DOY_global + DOY_dev(BCR)
   # ------------------------------------------------------------
   # HSS_dev(main = Hours_Since_Sunrise, model = HSS_spde,group = BCR_idx, control.group = list(model = "iid")) +
+  # + kappa_shared(square_idx, model="iid", constr=TRUE, hyper=list(prec=pc_prec_shared))
   components_str <- paste0(
     '~ Intercept(1) +
        
@@ -270,8 +271,7 @@ fit_inla_multi_atlas <- function(sp_dat,
                group = BCR_idx, control.group = list(model = "iid")) +
        
        # Atlas square iid effects
-       kappa_diff(square_atlas, model="iid", constr=TRUE, hyper=list(prec=pc_prec_diff)) +
-       kappa_shared(square_idx, model="iid", constr=TRUE, hyper=list(prec=pc_prec_shared))',
+       kappa_diff(square_atlas, model="iid", constr=TRUE, hyper=list(prec=pc_prec_diff))',
     if (nchar(covar_components_str) > 0) paste0(" + ", covar_components_str) else ""
   )
   
@@ -281,6 +281,8 @@ fit_inla_multi_atlas <- function(sp_dat,
   # Likelihood formula (shared by ARU / point counts)
   # ------------------------------------------------------------
   # + HSS_dev +
+  # 
+  # kappa_shared +
   base_formula_str <- paste0(
     "count ~
       Intercept +
@@ -291,7 +293,6 @@ fit_inla_multi_atlas <- function(sp_dat,
       DOY_global + DOY_dev +
       
       kappa_diff +
-      kappa_shared +
       spde_mean +
       Atlas3_c * spde_diff +
       Atlas3_c * effect_Atlas3",

@@ -1,19 +1,5 @@
 # ============================================================
-# 09_fit_models_and_predict_jointly.R
-#
-# Purpose:
-#   Fit INLA/inlabru models for selected species and generate
-#   predictions on the OBBA2/OBBA3 grids.
-#
-# Inputs:
-#   data_clean/birds/data_ready_for_analysis.rds  (from script 07)
-#
-# Outputs (written incrementally per species):
-#   data_clean/model_output/models/<sp>.rds
-#   data_clean/model_output/predictions/<sp>.rds
-#   data_clean/model_output/summaries/model_summaries.rds
-#   data_clean/model_output/summaries/change_summaries.rds
-#   data_clean/model_output/summaries/HSS_DOY_summaries.rds
+# 
 # ============================================================
 
 rm(list = ls())
@@ -43,9 +29,9 @@ source(inla_utils_path)
 # ------------------------------------------------------------
 # Config
 # ------------------------------------------------------------
-model_name <- "joint_diffpriors4"
-rerun_models <- FALSE
-rerun_predictions <- FALSE
+model_name <- "joint_paired"
+rerun_models <- TRUE
+rerun_predictions <- TRUE
 
 in_file <- file.path(paths$data_clean, "birds", "data_ready_for_analysis.rds")
 if (!file.exists(in_file)) {
@@ -97,8 +83,41 @@ grid_OBBA3 <- grid_OBBA3 %>% mutate(Atlas = "OBBA3")
 # Build hex grid
 hex_grid <- make_hex_grid(study_boundary, width_km = 25) # Each hex ~ 540 km^2
 
+
 # ------------------------------------------------------------
-# Main loop (~ 45 min per species)
+# RESTRICT COMPARISON TO SHARED FOOTPRINT
+# ------------------------------------------------------------
+
+all_surveys$row_id <- 1:nrow(all_surveys)
+
+buffer_km <- 0.5
+
+# Create buffer around atlas 2 points
+a2_pts <- all_surveys %>% filter(Atlas == "OBBA2")
+a3_pts <- all_surveys %>% filter(Atlas == "OBBA3")
+
+# For each A2 point: which A3 points are within buffer?
+a2_to_a3 <- st_is_within_distance(a2_pts, a3_pts, dist = buffer_km)
+
+# Keep only A2 points that have at least one nearby A3
+a2_keep <- lengths(a2_to_a3) > 0
+a2_matched <- a2_pts[a2_keep, ]
+
+# Now keep A3 points that are within buffer of at least one kept A2 point
+a3_to_a2keep <- st_is_within_distance(a3_pts, a2_matched, dist = buffer_km)
+a3_keep <- lengths(a3_to_a2keep) > 0
+
+a3_matched <- a3_pts[a3_keep, ]
+
+# Combined "shared footprint" dataset (matched A2 + nearby A3)
+paired_surveys <- bind_rows(a2_matched, a3_matched) %>%
+  mutate(shared_pairwise = TRUE) %>%
+  arrange(row_id)
+
+paired_counts <- counts[paired_surveys$row_id,] 
+
+# ------------------------------------------------------------
+# Main loop
 # ------------------------------------------------------------
 
 # Covariates to *potentially* include; per-species covariate variance screening can happen later
@@ -122,105 +141,43 @@ min_squares <- 50         # at least 50 squares in one atlas
 
 species_run <- species_to_model %>%
   filter((total_detections_OBBA3 >= min_detections |
-           total_detections_OBBA2 >= min_detections )&
+            total_detections_OBBA2 >= min_detections )&
            (total_squares_OBBA3 >= min_squares |
-           total_squares_OBBA2 >= min_squares))%>%
-  na.omit() %>%
-  sample_n(nrow(.))
+              total_squares_OBBA2 >= min_squares))%>%
+  na.omit()
 
-# species_to_check <- c(
-#   "Palm Warbler",
-#   "Bobolink",
-#    "Blue Jay",
-#   "Canada Jay",
-#   "Olive-sided Flycatcher",
-#    "Winter Wren",
-#   #"Lesser Yellowlegs",
-#   "Blackpoll Warbler",
-#   "Connecticut Warbler",
-#    "Lincoln's Sparrow",
-#    "Fox Sparrow",
-#   "Common Nighthawk",
-#   # "Long-eared Owl",
-#   # "American Tree Sparrow",
-#   # "LeConte's Sparrow",
-#   # "Nelson's Sparrow",
-#    "Boreal Chickadee",
-#   # "Rusty Blackbird",
-#    "Yellow-bellied Flycatcher",
-#   "Greater Yellowlegs",
-#   # "Hudsonian Godwit",
-#   "Canada Warbler",
-#   # "Eastern Wood-Peewee",
-#   "Grasshopper Sparrow",
-#    "Solitary Sandpiper",
-#  "White-throated Sparrow",
-#   "Bay-breasted Warbler"
-# )
+species_to_check <- c(
+  #"Palm Warbler",
+  #"Bobolink",
+  # "Blue Jay",
+  #"Canada Jay",
+  "Olive-sided Flycatcher"
+  # "Winter Wren",
+  #"Lesser Yellowlegs",
+  #"Blackpoll Warbler",
+  #"Connecticut Warbler",
+  # "Lincoln's Sparrow",
+  # "Fox Sparrow",
+  #"Common Nighthawk"
+  # "Long-eared Owl",
+  # "American Tree Sparrow",
+  # "LeConte's Sparrow",
+  # "Nelson's Sparrow",
+  # "Boreal Chickadee",
+  # "Rusty Blackbird",
+  # "Yellow-bellied Flycatcher",
+  # "Greater Yellowlegs",
+  # "Hudsonian Godwit",
+  # "Canada Warbler",
+  # "Eastern Wood-Peewee",
+  # "Grasshopper Sparrow",
+  # "Solitary Sandpiper",
+  # # "White-throated Sparrow",
+  # "Bay-breasted Warbler"
+)
 
-# 
-# species_to_check <- c(
-#   
-#   # "Marsh Wren",
-#   # "Canada Jay",
-#   # "Eastern Towhee",
-#   # "Northern Cardinal",
-#   # "White-throated Sparrow",
-#   # "Blue Jay",
-#   # "Bay-breasted Warbler",
-#   # "Carolina Wren",
-#   # "Grasshopper Sparrow",
-#   # "Yellow-bellied Flycatcher",
-#   # "Black-and-white Warbler",
-#   # "Boreal Chickadee",
-#   # "Common Yellowthroat",
-#   # "Gray Catbird",
-#   # "Lincoln's Sparrow",
-#   # "Mourning Warbler",
-#   # "Palm Warbler",
-#   # "Red-eyed Vireo",
-#   # "Veery",
-#   # "Winter Wren",
-#   # 
-#   # "Tennessee Warbler",
-#   # "Chestnut-sided Warbler",
-#   # "Brown Thrasher",
-#   # "American Redstart",
-#   # "Northern Cardinal",
-#   # "Hairy Woodpecker",
-#   # "Belted Kingfisher",
-#   # "Yellow-bellied Sapsucker",
-#   # "Ruffed Grouse",
-#   # "Red-winged Blackbird",
-#   # "White-breasted Nuthatch",
-#   # "Black-billed Cuckoo",
-#   # 
-#   
-#   "Brown Thrasher",
-#   "Northern Harrier",
-#   "European Starling",
-#   "House Finch",
-#   "Savannah Sparrow",
-#   "Alder Flycatcher",
-#   
-#   "Evening Grosbeak",
-#   "Northern Parula",
-#   "Pine Siskin",
-#   "Common Raven",
-#   
-#   "Sandhill Crane",
-#   "Wild Turkey",
-#   "Bald Eagle",
-#   "Carolina Wren",
-#   
-#   "Bobolink",
-#   "Blue-winged Teal",
-#   "Western Meadowlark",
-#   "Bank Swallow",
-#   "Tree Swallow"
-# ) %>% unique()
-# 
-# species_run <- species_run %>% subset(english_name %in% species_to_check)
+species_run <- species_run %>%
+  subset(english_name %in% species_to_check)
 
 message("Species queued: ", nrow(species_run))
 species_run
@@ -235,10 +192,8 @@ for (i in seq_len(nrow(species_run))) {
   
   message("\n====================\n", i, "/", nrow(species_run), ": ", sp_english, " (species_id = ", sp_code, ")\n====================")
   
-  model_path <- file.path(out_dir,paste0("models_",model_name), paste0(sp_file, ".rds"))
+  model_path <- file.path(out_dir, paste0("models_",model_name), paste0(sp_file, ".rds"))
   pred_path  <- file.path(out_dir, paste0("predictions_",model_name), paste0(sp_file, ".rds"))
-  
-  if (file.exists(pred_path) & rerun_predictions == FALSE) next
   
   # --- Build species data
   if (!(sp_code %in% names(counts))) {
@@ -247,28 +202,147 @@ for (i in seq_len(nrow(species_run))) {
   }
   
   # Append counts
-  sp_dat <- all_surveys %>%mutate(count = counts[[sp_code]])
+  sp_dat_paired <- paired_surveys %>% mutate(count = paired_counts[[sp_code]])
   
-  # # **** NOTE: MODEL SUPPORTS NBINOMIAL, BUT SKIP THESE SPECIES FOR NOW
-  # if (sum(sp_dat$count>20)>50){
-  #   message("Skipping ", sp_english," (species_id = ",sp_code,"): count distribution should be modeled with nbinomial")
-  #   next
-  # }
+  # ------------------------------------------------------
+  # Mapping
+  # ------------------------------------------------------
+  
+  ggplot() +
+    # Plot all survey locations
+    geom_sf(data = sp_dat_paired,
+            col = "gray50",
+            size = 2,
+            shape = 18,
+            stroke = 2.2) +
+    
+    # Overlay detection locations
+    geom_sf(
+      data = sp_dat_paired %>% filter(count > 0),
+      shape = 4,
+      stroke = 2.2,
+      size = 2,
+      aes(color = factor(ARU))
+    ) +
+    
+    # Overlay BCR boundaries
+    geom_sf(data = dat$bcr_sf, fill = NA, linewidth = 0.6) +
+    
+    scale_color_manual(values = c("black","blue"), name = "ARU")+
+    coord_sf(expand = FALSE) +
+    facet_grid(. ~ Atlas,
+               labeller = labeller(
+                 Atlas = c(
+                   OBBA2 = "Atlas 2",
+                   OBBA3 = "Atlas 3"
+                 )
+               )) +
+    theme_bw() +
+    theme(
+      panel.grid = element_blank(),
+      strip.text = element_text(size = 12, face = "bold")
+    )+
+    ggtitle(sp_english)
+  
+  # ------------------------------------------------------
+  # Consider evidence in "shared footprint" (near_A2) vs not,
+  # Separately for each BCR
+  # ------------------------------------------------------
+  
+  evidence_paired <- sp_dat_paired %>%
+    st_drop_geometry() %>%
+    group_by(Atlas, ARU, BCR) %>%
+    summarise(
+      n_surveys = n(),
+      n_squares = n_distinct(square_id),
+      frac_ARU  = mean(ARU == 1, na.rm = TRUE),
+      n_svy_detected = sum(count>0,na.rm = TRUE),
+      mean_svy_count = mean(count, na.rm = TRUE),
+      prop_svy_detected = mean(count > 0, na.rm = TRUE),
+      mean_duration_min = mean(Survey_Duration_Minutes, na.rm = TRUE),
+      median_DOY = median(DayOfYear, na.rm = TRUE),
+      q10_DOY = quantile(DayOfYear, 0.10, na.rm = TRUE),
+      q90_DOY = quantile(DayOfYear, 0.90, na.rm = TRUE),
+      median_HSS = median(Hours_Since_Sunrise, na.rm = TRUE),
+      q10_HSS = quantile(Hours_Since_Sunrise, 0.10, na.rm = TRUE),
+      q90_HSS = quantile(Hours_Since_Sunrise, 0.90, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    arrange(BCR,Atlas,ARU)
+  
+  evidence_paired %>% as.data.frame()
+  
+  ggplot(evidence_paired,aes(x = BCR,y = n_surveys,
+                             fill = Atlas, 
+                             linetype = factor(ARU),
+                             col = factor(ARU)))+
+    geom_bar(position = position_dodge(width = 1), stat = "identity", linewidth = 1)+
+    scale_color_manual(values=c("transparent","black"),name = "ARU")+
+    scale_linetype_manual(values=c(1,5),name = "ARU")+
+    scale_fill_manual(values=c("black","dodgerblue"),name = "ARU")+
+    theme_bw()+
+    facet_grid(.~BCR, scales = "free_x")+
+    scale_x_continuous(breaks = seq(1,100))+
+    ggtitle("Day of Year")
+  
+  ggplot(evidence_paired,aes(x = BCR,y = median_DOY, ymin = q10_DOY, ymax = q90_DOY,col = Atlas, 
+                                shape = factor(ARU),
+                                linetype = factor(ARU)))+
+    geom_point(position = position_dodge(width = 1), size = 3)+
+    geom_errorbar(position = position_dodge(width = 1), linewidth = 1, width = 2)+
+    scale_color_manual(values=c("black","dodgerblue"))+
+    scale_shape_manual(values = c(19,17),name = "ARU")+
+    scale_linetype_manual(values=c(1,5),name = "ARU")+
+    theme_bw()+
+    facet_grid(.~BCR, scales = "free_x")+
+    scale_x_continuous(breaks = seq(1,100))+
+    ggtitle("Day of Year")
+  
+  ggplot(evidence_paired,aes(x = BCR,y = median_HSS, ymin = q10_HSS, ymax = q90_HSS,col = Atlas, 
+                                shape = factor(ARU),
+         linetype = factor(ARU)))+
+    geom_point(position = position_dodge(width = 1), size = 3)+
+    geom_errorbar(position = position_dodge(width = 1), linewidth = 1, width = 2)+
+    scale_color_manual(values=c("black","dodgerblue"))+
+    scale_shape_manual(values = c(19,17),name = "ARU")+
+    scale_linetype_manual(values=c(1,5),name = "ARU")+
+    theme_bw()+
+    facet_grid(.~BCR, scales = "free_x")+
+    scale_x_continuous(breaks = seq(1,100))+
+    ggtitle("Hours Since Sunrise")
+  
+  ggplot(evidence_paired,aes(x = BCR,y = mean_svy_count,col = Atlas, 
+                                shape = factor(ARU),
+                                linetype = factor(ARU)))+
+    geom_point(position = position_dodge(width = 1), size = 3)+
+    scale_color_manual(values=c("black","dodgerblue"))+
+    scale_shape_manual(values = c(19,17),name = "ARU")+
+    scale_linetype_manual(values=c(1,5),name = "ARU")+
+    theme_bw()+
+    facet_grid(.~BCR, scales = "free_x")+
+    scale_x_continuous(breaks = seq(1,100))+
+    ggtitle(paste0(sp_english,"\n\nMean count per 5-min survey"))
+  
+  
+  
+  # ------------------------------------------------------
+  # Fit Bayesian model
+  # ------------------------------------------------------
   
   # --- Covariates spec
-  covars_present <- intersect(base_covars, names(sp_dat))
+  covars_present <- intersect(base_covars, names(sp_dat_paired))
   cov_df_sp <- make_cov_df(covars_present)
   
-  # square identifier (persistent across atlases)
-  sp_dat$square_idx <- as.numeric(as.factor(sp_dat$square_id))
-
-  # --- Load previous run for initial values
-  model_path_for_inits <- file.path(out_dir,paste0("models_","joint"), paste0(sp_file, ".rds"))
-  mod_for_inits <- NULL
+  # Priors controlling spatial autocorrelation fields
+  prior_range_abund  <- c(250, 0.90) # 90% chance spatial autocorrelation range of shared field is less than 500 km
+  prior_sigma_abund  <- c(3, 0.1)    # 10% chance SD is larger than 3
+  prior_range_change <- c(250, 0.1)  # 10% chance spatial autocorrelation range of change field is less than 500 km
+  prior_sigma_change <- c(0.1, 0.1)  # 10% chance SD is larger than 0.1
   
-  if (file.exists(model_path_for_inits)) {
-    mod_for_inits <- readRDS(model_path_for_inits)
-  }
+  # square identifier (persistent across atlases)
+  sp_dat_paired$square_idx <- as.numeric(as.factor(sp_dat_paired$square_id))
+  length(unique(sp_dat_paired$square_atlas))
+  length(unique(sp_dat_paired$square_idx))
   
   # --- Fit (or load existing)
   mod <- NULL
@@ -279,18 +353,14 @@ for (i in seq_len(nrow(species_run))) {
     mod <- try(
       
       fit_inla_multi_atlas(
-        sp_dat = sp_dat,
+        sp_dat = sp_dat_paired,
         study_boundary = study_boundary,
         covariates = cov_df_sp,
-        prior_range_abund = c(200, 0.1),           # 10% chance spatial autocorrelation range of shared field is less than 200 km
-        prior_sigma_abund = c(3, 0.1),             # 10% chance SD is larger than 3
-        prior_range_change = c(200, 0.1),          # 10% chance spatial autocorrelation range of change field is less than 200 km
-        prior_sigma_change = c(log(2)/2, 0.1),            # 10% chance SD is larger than 0.1
-        # kappa_pcprec_shared = c(1, 0.1),
-        kappa_pcprec_diff   = c(log(2)/2, 0.1),
-        family = "poisson"), #, 
-        # "auto" is less likely to fail, but "eb" is much faster
-        #inla_mode = "classic"), 
+        prior_range_abund = prior_range_abund,
+        prior_sigma_abund = prior_sigma_abund,
+        prior_range_change = prior_range_change,
+        prior_sigma_change = prior_sigma_change,
+        family = "poisson"),
       
       silent = TRUE
     )
@@ -303,8 +373,6 @@ for (i in seq_len(nrow(species_run))) {
     save_atomic(mod, model_path)
     message("Saved model: ", model_path)
   }
-  end1 <- Sys.time()
-  print(end1-start)
   
   # --- Save minimal model summary (fast)
   model_summaries[[sp_english]] <- list(
@@ -351,20 +419,14 @@ for (i in seq_len(nrow(species_run))) {
       seed = 123
     )
     
-    # Set "water" pixels to 0 expected abundance
-    preds$eta[which(pred_grid$on_water),] <- -Inf
+    # preds$eta is n_grid x n_draw
+    eta <- preds$eta
     
     idx2 <- which(pred_grid$Atlas == "OBBA2")
     idx3 <- which(pred_grid$Atlas == "OBBA3")
     
-    # preds$eta is n_grid x n_draw
-    eta <- preds$eta
     mu2 <- exp(eta[idx2, , drop = FALSE])
     mu3 <- exp(eta[idx3, , drop = FALSE])
-    
-    # Mask out pixels that are considered "open water"
-    
-    # Calculate change
     abs_change <- mu3 - mu2
     
     # --- Summarize predictions for each pixel
@@ -416,4 +478,4 @@ for (i in seq_len(nrow(species_run))) {
   message("Done: ", sp_english," - ",round(end-start,2)," min")
 }
 
-message("\n09_fit_models_and_predict_jointly.R complete.")
+message("\nfit_models_and_predict_jointly_paired.R complete.")

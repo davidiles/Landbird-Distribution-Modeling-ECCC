@@ -394,6 +394,105 @@ surveys_f <- surveys_f %>%
     Atlas3_c = Atlas3 - 0.5
   )
 
+# ------------------------------------------------------------
+# For each species, determine whether default model should be poisson or negative binomial
+# ------------------------------------------------------------
+species_to_model$error_family = "poisson"
+
+# Loop through species and create summaries of raw counts
+
+dispersion_screening <- vector("list", nrow(species_to_model))
+for (i in seq_len(nrow(species_to_model))) {
+  
+  
+  sp_english <- species_to_model$english_name[i]
+  sp_code <- as.character(species_to_model$species_id[i])
+  
+  message("\n====================\n", i, "/", nrow(species_to_model), ": ", sp_english, " (species_id = ", sp_code, ")\n====================")
+  
+  # Append counts
+  sp_dat <- surveys_f %>% mutate(count = counts_f[[sp_code]])
+  
+  # ----------------------------------------------------------------------------
+  # Triage species for modeling with Poisson or nbinomial
+  # ----------------------------------------------------------------------------
+  
+  # Pull count vector
+  y <- sp_dat$count
+  y <- y[!is.na(y)]
+  
+  # Basic safeguards
+  n_surveys <- length(y)
+  
+  if (n_surveys == 0) {
+    dispersion_screening[[i]] <- tibble(
+      species_id = sp_code,
+      english_name = sp_english,
+      n_surveys = 0
+    )
+    next
+  }
+  
+  positive_counts <- y[y > 0]
+  
+  dispersion_screening[[i]] <- tibble(
+    species_id    = sp_code,
+    english_name  = sp_english,
+    n_surveys     = n_surveys,
+    n_positive    = sum(y > 0),
+    prop_zero     = mean(y == 0),
+    mean_count    = mean(y),
+    max_count     = max(y),
+    n_gt_7       = sum(y > 7),
+    n_gt_10       = sum(y > 10),
+    n_gt_25       = sum(y > 25),
+    
+    # Proportion of population in top 1% of non-zero counts
+    prop_total_top1pct_nonzero = {
+      
+      y_pos <- y[y > 0]
+      n_pos <- length(y_pos)
+      
+      if (n_pos == 0) {
+        NA_real_
+      } else {
+        
+        n_top <- max(1, ceiling(0.01 * n_pos))
+        y_sorted <- sort(y_pos, decreasing = TRUE)
+        
+        sum(y_sorted[seq_len(n_top)]) / sum(y_pos)
+      }
+      
+    }
+  )
+  
+  
+}
+
+dispersion_screening <- bind_rows(dispersion_screening)
+
+# Identify species that should be modeled using negative binomial
+nb_candidates <- dispersion_screening %>%
+  filter(
+    
+    n_positive > 200 &
+    
+    (
+    # If more than 1% of non-zero counts are greater than 7
+    (n_gt_7/n_positive >= 0.01) |
+    
+    # If more than 15% of total count is in the top 1% of surveys (indicates flocking)
+    prop_total_top1pct_nonzero >=0.15)
+    
+  ) %>%
+  arrange(desc(max_count))
+
+nb_candidates %>% as.data.frame()
+
+species_to_model$error_family[which(species_to_model$english_name %in% nb_candidates$english_name)] <- "nbinomial"
+
+# Other flocking or colonial species
+subset(dispersion_screening, english_name == "Pine Siskin")
 
 # ------------------------------------------------------------
 # Save
@@ -410,6 +509,7 @@ saveRDS(
     species_square_summary = species_square_summary,
     species_total_squares = species_total_squares,
     species_to_model = species_to_model,
+    dispersion_screening = dispersion_screening,
     covar_stats = covar_stats,
     date_created = Sys.time()
   ),

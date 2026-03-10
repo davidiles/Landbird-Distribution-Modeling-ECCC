@@ -26,7 +26,7 @@ source(file.path(paths$functions, "figure_utils.R"))
 # Config
 # ------------------------------------------------------------
 
-model_type <- "joint_diffpriors4"
+model_type <- "joint_diffpriors5"
 atlas_year_gap <- 20
 plot_regions <- c("CA-ON-13", "CA-ON-12", "CA-ON-8", "CA-ON-7")
 eps <- 1e-9
@@ -282,7 +282,8 @@ comparison_plot <- comparison_log %>%
   filter(
     n_sq_OBBA2 >= min_sq_per_atlas,
     n_sq_OBBA3 >= min_sq_per_atlas
-  )
+  ) %>%
+  subset(BCR != 8)
 
 subset(comparison_log, english_name == "Northern Cardinal")
 # ------------------------------------------------------------
@@ -360,11 +361,11 @@ fig3 <- ggplot(comparison_plot) +
   ) +
   facet_grid(region ~ .) +
   scale_x_continuous(
-    name = "BBS overall percent change (2002–2022)",
+    name = "BBS overall percent change from 2002 to 2022",
     labels = function(x) sprintf("%+d%%", round(log_to_pct(x)))
   ) +
   scale_y_continuous(
-    name = "Atlas overall percent change (2002–2022)",
+    name = "Atlas overall percent change from Atlas 2 to 3",
     labels = function(x) sprintf("%+d%%", round(log_to_pct(x)))
   ) +
   scale_alpha_continuous(

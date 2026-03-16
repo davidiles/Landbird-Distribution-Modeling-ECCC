@@ -18,7 +18,6 @@ suppressPackageStartupMessages({
   library(sf)
   library(dplyr)
   library(stringr)
-  
   library(INLA)
   library(inlabru)
   library(fmesher)
@@ -73,52 +72,51 @@ ensure_numeric <- function(x) as.numeric(x)
 #' @param nb_pc_target_prob,nb_pc_threshold_theta PC prior calibration settings for NB.
 #' @param inla_mode,int_strategy,strategy,bru_verbose,waic,cpo,retry INLA/inlabru controls.
 #' @return A list containing the fitted `bru` model and supporting objects (mesh, stacks, etc.).
-fit_inla_multi_atlas <- function(sp_dat,
-                                 study_boundary,
-                                 covariates,
-                                 timeout_min = 15,
-                                 
-                                 # Mesh controls
-                                 mesh_max_edge = c(100, 200),
-                                 mesh_cutoff = 50,
-                                 mesh_convex = c(50, 150),
-                                 mesh_concave = c(50, 150),
-                                 
-                                 # SPDE priors
-                                 prior_range_abund = c(200, 0.1),           # 10% chance spatial autocorrelation range of shared field is less than 200 km
-                                 prior_sigma_abund = c(3, 0.1),             # 10% chance SD is larger than 3
-                                 prior_range_change = c(200, 0.1),          # 10% chance spatial autocorrelation range of change field is less than 200 km
-                                 prior_sigma_change = c(0.1, 0.1),          # 10% chance SD is larger than 0.1
-                                 
-                                 # Priors for HSS effect
-                                 prior_HSS_range = c(5, 0.9),
-                                 prior_HSS_sigma = c(3, 0.1),
-                                 
-                                 # Priors for DOY effects,
-                                 prior_DOY_range_global = c(7, 0.9),
-                                 prior_DOY_sigma_global = c(3, 0.1),    # global curve captures large deviations
-                               
-                                 prior_DOY_range_BCR = c(7, 0.9),
-                                 prior_DOY_sigma_BCR = c(0.5, 0.1),  # BCR-level deviations should be small
-
-                                 # atlas square iid effect
-                                 kappa_pcprec_diff   = c(1, 0.1),           # 10% chance SD of iid random effect is larger than 1
-                                 
-                                 # likelihood
-                                 family = c("poisson", "nbinomial"),
-                                 
-                                 # NB PC prior config (only used if family="nbinomial")
-                                 nb_pc_target_prob = 0.5,
-                                 nb_pc_threshold_theta = 5,
-                                 
-                                 # inlabru/INLA options
-                                 inla_mode = "experimental",
-                                 int_strategy = "eb",
-                                 strategy = "simplified.laplace",
-                                 bru_verbose = 4,
-                                 waic = FALSE,
-                                 cpo = FALSE,
-                                 retry = 0) {
+fit_inla_multi_atlas <- function(
+    sp_dat,
+    study_boundary,
+    covariates,
+    timeout_min = 15,
+    
+    # Mesh controls
+    mesh_max_edge = c(100, 200),
+    mesh_cutoff   = 50,
+    mesh_convex   = c(50, 150),
+    mesh_concave  = c(50, 150),
+    
+    # SPDE priors
+    prior_range_abund  = c(200, 0.1),   # 10% chance range < 200 km
+    prior_sigma_abund  = c(3,   0.1),   # 10% chance SD > 3
+    prior_range_change = c(200, 0.1),   # 10% chance range < 200 km
+    prior_sigma_change = c(0.1, 0.1),   # 10% chance SD > 0.1
+    
+    # Priors for HSS effect
+    prior_HSS_range = c(5, 0.9),
+    prior_HSS_sigma = c(3, 0.1),
+    
+    # Priors for DOY effect
+    prior_DOY_range_global = c(7, 0.9),
+    prior_DOY_sigma_global = c(3, 0.1),
+    
+    # atlas square iid effect
+    kappa_pcprec_diff = c(1, 0.1),      # 10% chance SD > 1
+    
+    # likelihood
+    family = c("poisson", "nbinomial"),
+    
+    # NB PC prior config (only used if family = "nbinomial")
+    nb_pc_target_prob      = 0.5,
+    nb_pc_threshold_theta  = 5,
+    
+    # inlabru / INLA options
+    inla_mode    = "experimental",
+    int_strategy = "eb",
+    strategy     = "simplified.laplace",
+    bru_verbose  = 4,
+    waic         = FALSE,
+    cpo          = FALSE,
+    retry        = 0
+) {
   
   family <- match.arg(family)
   
@@ -131,35 +129,42 @@ fit_inla_multi_atlas <- function(sp_dat,
     "Atlas3",
     "Atlas3_c",
     "Hours_Since_Sunrise",
-    "days_rescaled",
-    "BCR_idx",          # <-- NEW (integer 1..nBCR)
+    "days_midpoint",
+    "BCR_idx",
     "square_atlas",
-    "square_idx",
     "geometry"
   )
-  missing <- setdiff(required_cols, names(sp_dat))
-  if (length(missing) > 0) stop("sp_dat is missing required columns: ", paste(missing, collapse = ", "))
+  missing_cols <- setdiff(required_cols, names(sp_dat))
+  if (length(missing_cols) > 0) {
+    stop("sp_dat is missing required columns: ", paste(missing_cols, collapse = ", "))
+  }
   
-  # covariates is a data.frame with at least: covariate, beta, model, mean, prec
-  if (!is.data.frame(covariates)) stop("covariates must be a data.frame")
+  # covariates must include at least these columns
+  if (!is.data.frame(covariates)) {
+    stop("covariates must be a data.frame")
+  }
+  
   needed_cov_cols <- c("covariate", "beta", "model", "mean", "prec")
   cov_missing <- setdiff(needed_cov_cols, names(covariates))
-  if (length(cov_missing) > 0) stop("covariates is missing columns: ", paste(cov_missing, collapse = ", "))
+  if (length(cov_missing) > 0) {
+    stop("covariates is missing columns: ", paste(cov_missing, collapse = ", "))
+  }
   
   # ---- Timeout (seconds)
   INLA::inla.setOption(inla.timeout = 60 * timeout_min)
   
-  # ---- Make sure geometry exists and CRS alignments are consistent
+  # ---- Geometry / CRS checks
   if (!inherits(sp_dat, "sf")) {
     stop("sp_dat must be an sf object with a geometry column.")
   }
+  
   if (sf::st_crs(sp_dat) != sf::st_crs(study_boundary)) {
     study_boundary <- sf::st_transform(study_boundary, sf::st_crs(sp_dat))
   }
   
-  # Ensure these covariates are numeric
+  # ---- Ensure required variables are numeric
   sp_dat$Hours_Since_Sunrise <- ensure_numeric(sp_dat$Hours_Since_Sunrise)
-  sp_dat$days_rescaled       <- ensure_numeric(sp_dat$days_rescaled)
+  sp_dat$days_midpoint       <- ensure_numeric(sp_dat$days_midpoint)
   sp_dat$Atlas3_c            <- ensure_numeric(sp_dat$Atlas3_c)
   sp_dat$BCR_idx             <- ensure_numeric(sp_dat$BCR_idx)
   
@@ -174,73 +179,68 @@ fit_inla_multi_atlas <- function(sp_dat,
   )
   
   mesh_spatial <- fmesher::fm_mesh_2d_inla(
-    loc = sf::st_as_sfc(sp_dat),
+    loc      = sf::st_as_sfc(sp_dat),
     boundary = hull,
     max.edge = mesh_max_edge,
-    cutoff = mesh_cutoff,
-    crs = sf::st_crs(sp_dat)
+    cutoff   = mesh_cutoff,
+    crs      = sf::st_crs(sp_dat)
   )
   
-  # Mean/shared field (persistent abundance surface)
+  # Shared abundance field
   matern_mean <- INLA::inla.spde2.pcmatern(
-    mesh_spatial,
+    mesh = mesh_spatial,
     prior.range = prior_range_abund,
     prior.sigma = prior_sigma_abund,
     constr = TRUE
   )
   
-  # Diff field (Atlas3 - Atlas2 on log scale, under centered coding)
+  # Change field (Atlas 3 - Atlas 2 on log scale, centered coding)
   matern_diff <- INLA::inla.spde2.pcmatern(
-    mesh_spatial,
+    mesh = mesh_spatial,
     prior.range = prior_range_change,
     prior.sigma = prior_sigma_change,
     constr = TRUE
   )
   
   # ------------------------------------------------------------
-  # 1D effects: Hours since sunrise + Day-of-year
-  #   Now: GLOBAL smooth + BCR-SPECIFIC DEVIATIONS (replicates)
+  # 1D smooths
   # ------------------------------------------------------------
- 
-  # Hours-since-sunrise mesh
+  
+  # Hours since sunrise
   HSS_range <- range(sp_dat$Hours_Since_Sunrise, na.rm = TRUE)
   HSS_meshpoints <- seq(HSS_range[1] - 1, HSS_range[2] + 1, length.out = 41)
   HSS_mesh1D <- INLA::inla.mesh.1d(HSS_meshpoints, boundary = "free")
   
   HSS_spde <- INLA::inla.spde2.pcmatern(
-    HSS_mesh1D,
+    mesh = HSS_mesh1D,
     prior.range = prior_HSS_range,
     prior.sigma = prior_HSS_sigma,
     constr = TRUE
   )
   
-  # DOY mesh
-  DOY_range <- range(sp_dat$days_rescaled, na.rm = TRUE)
+  # Day of year
+  DOY_range <- range(sp_dat$days_midpoint, na.rm = TRUE)
   DOY_meshpoints <- seq(DOY_range[1] - 5, DOY_range[2] + 5, length.out = 41)
   DOY_mesh1D <- INLA::inla.mesh.1d(DOY_meshpoints, boundary = "free")
   
   DOY_spde_global <- INLA::inla.spde2.pcmatern(
-    DOY_mesh1D,
+    mesh = DOY_mesh1D,
     prior.range = prior_DOY_range_global,
-    prior.sigma = prior_DOY_sigma_global,   
-    constr = TRUE
-  )
-
-  DOY_spde_dev <- INLA::inla.spde2.pcmatern(
-    DOY_mesh1D,
-    prior.range = prior_DOY_range_BCR,
-    prior.sigma = prior_DOY_sigma_BCR,  
+    prior.sigma = prior_DOY_sigma_global,
     constr = TRUE
   )
   
   # ------------------------------------------------------------
-  # IID effects for atlas squares
+  # IID atlas-square effect prior
   # ------------------------------------------------------------
   
-  pc_prec_diff   <- list(prior = "pcprec", param = kappa_pcprec_diff)
+  pc_prec_diff <- list(
+    prior = "pcprec",
+    param = kappa_pcprec_diff
+  )
   
   # ------------------------------------------------------------
-  # Covariate components (linear by default)
+  # Covariate components
   # ------------------------------------------------------------
   
   covariates <- covariates %>%
@@ -252,78 +252,74 @@ fit_inla_multi_atlas <- function(sp_dat,
         ", prec.linear=", prec,
         ")"
       ),
-      formula = paste0("Beta", beta, "_", covariate, "*I(", covariate, "^", beta, ")")
+      formula = paste0(
+        "Beta", beta, "_", covariate,
+        "*I(", covariate, "^", beta, ")"
+      )
     )
   
-  covar_components_str <- if (nrow(covariates) > 0) paste(covariates$components, collapse = " + ") else ""
-  covar_terms_str      <- if (nrow(covariates) > 0) paste(covariates$formula, collapse = " + ") else ""
+  covar_components_str <- if (nrow(covariates) > 0) {
+    paste(covariates$components, collapse = " + ")
+  } else {
+    ""
+  }
+  
+  covar_terms_str <- if (nrow(covariates) > 0) {
+    paste(covariates$formula, collapse = " + ")
+  } else {
+    ""
+  }
   
   # ------------------------------------------------------------
-  # Model components (bru)
-  #   Key change: HSS_global and DOY_global + DOY_dev(BCR)
+  # Model components
   # ------------------------------------------------------------
   
   components_str <- paste0(
-    '~ Intercept(1) +
-       
+    "~ Intercept(1) +
+
        # Atlas effects
-       effect_Atlas3(1, model="linear", mean.linear=0, prec.linear=25) +
-       effect_ARU(1, model="linear", mean.linear=0, prec.linear=25) +
-       
+       effect_Atlas3(1, model='linear', mean.linear=0, prec.linear=1/((log(1.5)/2)^2)) +
+       effect_ARU(1, model='linear', mean.linear=0, prec.linear=1/((log(1.25)/2)^2)) +
+
        # Spatial fields
        spde_mean(main = geometry, model = matern_mean) +
        spde_diff(main = geometry, model = matern_diff) +
-       
-       # Detectability smoothers: global mean + BCR-specific deviations
+
+       # Detectability smoothers
        HSS_global(main = Hours_Since_Sunrise, model = HSS_spde) +
-       
-       DOY_global(main = days_rescaled, model = DOY_spde_global) +
-       DOY_dev(main = days_rescaled, model = DOY_spde_dev,
-        group = BCR_idx,
-        control.group = list(
-          model = "iid",
-          hyper = list(prec = list(prior = "pcprec", param = c(1, 0.1)))
-        ))+
-       
-       # Atlas square iid effects
-       kappa_diff(square_atlas, model="iid", constr=TRUE, hyper=list(prec=pc_prec_diff))',
+       DOY_global(main = days_midpoint, model = DOY_spde_global) +
+
+       # Atlas square iid effect
+       kappa_diff(square_atlas, model='iid', constr=TRUE,
+                  hyper=list(prec=pc_prec_diff))",
     if (nchar(covar_components_str) > 0) paste0(" + ", covar_components_str) else ""
   )
   
-  model_components <- as.formula(components_str)
+  model_components <- stats::as.formula(components_str)
   
   # ------------------------------------------------------------
-  # Likelihood formula (shared by ARU / point counts)
+  # Linear predictor / likelihood formula
   # ------------------------------------------------------------
-
+  
   base_formula_str <- paste0(
     "count ~
       Intercept +
       ARU * effect_ARU +
-      
-      # Global + deviation parameterization
       HSS_global +
-      DOY_global + DOY_dev +
-      
+      DOY_global +
       kappa_diff +
       spde_mean +
       Atlas3_c * spde_diff +
       Atlas3_c * effect_Atlas3",
     if (nchar(covar_terms_str) > 0) paste0(" + ", covar_terms_str) else ""
   )
-  model_formula <- as.formula(base_formula_str)
+  
+  model_formula <- stats::as.formula(base_formula_str)
   
   # ------------------------------------------------------------
-  # Likelihood setup (two likelihoods: ARU==0 and ARU==1)
+  # Likelihood builder
   # ------------------------------------------------------------
   
-  #' Build the inlabru likelihood object for a subset of data
-  #'
-  #' Helper that constructs the `like()` call used by `inlabru::bru()`,
-  #' including coordinate mapping and the chosen likelihood family.
-  #'
-  #' @param data_subset Data frame/sf containing response and coordinates.
-  #' @return An `inlabru` likelihood specification.
   make_like <- function(data_subset) {
     if (family == "poisson") {
       inlabru::like(
@@ -333,8 +329,8 @@ fit_inla_multi_atlas <- function(sp_dat,
       )
     } else {
       lambda <- calibrate_pc_lambda(
-        target_prob      = nb_pc_target_prob,
-        threshold_theta  = nb_pc_threshold_theta
+        target_prob     = nb_pc_target_prob,
+        threshold_theta = nb_pc_threshold_theta
       )
       
       inlabru::like(
@@ -342,40 +338,51 @@ fit_inla_multi_atlas <- function(sp_dat,
         formula = model_formula,
         data    = data_subset,
         control.family = list(
-          
-          # Penalized complexity priors for overdispersion
-          hyper = list(theta = list(
-            prior = "pc.gamma",
-            param = c(lambda)
-
-
-          ))
+          hyper = list(
+            theta = list(
+              prior = "pc.gamma",
+              param = c(lambda)
+            )
+          )
         )
       )
     }
   }
   
+  # ------------------------------------------------------------
+  # Split into point counts and ARU
+  # ------------------------------------------------------------
+  
   dat_pc  <- sp_dat %>% dplyr::filter(ARU == 0)
   dat_aru <- sp_dat %>% dplyr::filter(ARU == 1)
   
   likes <- list()
-  if (nrow(dat_pc)  > 0) likes <- c(likes, list(make_like(dat_pc)))
-  if (nrow(dat_aru) > 0) likes <- c(likes, list(make_like(dat_aru)))
-  if (length(likes) == 0) stop("No data rows for ARU==0 or ARU==1 after filtering; cannot fit model.")
+  if (nrow(dat_pc) > 0) {
+    likes <- c(likes, list(make_like(dat_pc)))
+  }
+  if (nrow(dat_aru) > 0) {
+    likes <- c(likes, list(make_like(dat_aru)))
+  }
+  
+  if (length(likes) == 0) {
+    stop("No data rows for ARU == 0 or ARU == 1 after filtering; cannot fit model.")
+  }
   
   # ------------------------------------------------------------
-  # Fit with optional retries
+  # bru / INLA options
   # ------------------------------------------------------------
   
   bru_opts <- list(
     inla.mode = inla_mode,
-    control.compute = list(waic = waic, cpo = cpo),
-    control.inla = list(
-      int.strategy = int_strategy,
-      strategy = strategy
-    ),
+    control.compute = list(
+      waic   = waic,
+      cpo    = cpo),
     bru_verbose = bru_verbose
   )
+  
+  # ------------------------------------------------------------
+  # Fit with optional retries
+  # ------------------------------------------------------------
   
   attempt <- 0
   last_err <- NULL
@@ -396,13 +403,19 @@ fit_inla_multi_atlas <- function(sp_dat,
       silent = TRUE
     )
     
-    if (!inherits(fit, "try-error")) break
+    if (!inherits(fit, "try-error")) {
+      break
+    }
+    
     last_err <- fit
     fit <- NULL
   }
   
   if (is.null(fit)) {
-    stop("bru() failed after ", attempt, " attempt(s).\nLast error:\n", as.character(last_err))
+    stop(
+      "bru() failed after ", attempt, " attempt(s).\nLast error:\n",
+      as.character(last_err)
+    )
   }
   
   fit
@@ -435,7 +448,7 @@ make_pred_formula_multiatlas <- function(cov_df = NULL, include_kappa = FALSE, i
     "Atlas3_c * spde_diff",
     "Atlas3_c * effect_Atlas3",
     "DOY_global",
-    "DOY_dev",
+    # "DOY_dev",
     "HSS_global"
   )
   

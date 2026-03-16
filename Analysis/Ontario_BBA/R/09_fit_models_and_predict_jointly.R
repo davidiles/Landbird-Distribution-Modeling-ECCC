@@ -37,14 +37,14 @@ suppressPackageStartupMessages({
 source(here::here("R", "00_config_paths.R"))
 
 # helper-functions
-inla_utils_path <- file.path(paths$functions, "inla_model_utils.R")
+inla_utils_path <- file.path(paths$functions, "inla_model_utils2.R")
 source(inla_utils_path)
 
 # ------------------------------------------------------------
 # Config
 # ------------------------------------------------------------
 
-model_name <- "joint_nbinomial"
+model_name <- "PC_ARU"
 rerun_models <- FALSE
 rerun_predictions <- FALSE
 
@@ -81,7 +81,7 @@ counts      <- dat$counts
 grid_OBBA2  <- dat$grid_OBBA2
 grid_OBBA3  <- dat$grid_OBBA3
 study_boundary <- dat$study_boundary %>% st_as_sf()
-
+safe_dates <- dat$safe_dates
 species_to_model <- dat$species_to_model
 
 stopifnot(nrow(all_surveys) == nrow(counts))
@@ -90,16 +90,38 @@ stopifnot(nrow(all_surveys) == nrow(counts))
 grid_OBBA2 <- grid_OBBA2 %>% mutate(Atlas = "OBBA2")
 grid_OBBA3 <- grid_OBBA3 %>% mutate(Atlas = "OBBA3")
 
+# Hexagon grid for summarizing statistical support for population change
+hex_grid <- dat$hex_grid
+
+# Associate each pixel with a particular hexagon
+idx <- build_pixel_polygon_index(
+  grid_sf      = grid_OBBA2,         # the full pixel grid
+  polygons_sf  = hex_grid,           # e.g., BCRs/ecoregions/hexes
+  poly_id_col  = "hex_id",
+  join         = "within"
+)
+
 # ------------------------------------------------------------
-# Create a hexagon grid across the study area, for assessing statistical significance
-# of trends within discrete regions
+# Assign safe dates to BCRs, rather than ecoregions
 # ------------------------------------------------------------
 
-# Build hex grid
-hex_grid <- make_hex_grid(study_boundary, width_km = 25) # Each hex ~ 540 km^2
+safe_dates_bcr <- safe_dates %>%
+  mutate(
+    BCR = case_when(
+      ecoregion == "Mixedwood Plains" ~ "13",
+      ecoregion == "Hudson Plains"    ~ "7",
+      ecoregion == "Boreal Shield"    ~ "8,12",
+      TRUE ~ NA_character_
+    )
+  ) %>%
+  separate_rows(BCR, sep = ",") %>%
+  mutate(BCR = as.integer(BCR)) %>%
+  select(sp_english, BCR, start_doy, end_doy) %>%
+  arrange(sp_english, BCR) %>%
+  mutate(midpoint = (start_doy + end_doy)/2)
 
 # ------------------------------------------------------------
-# Main loop (~ 45 min per species)
+# Main loop
 # ------------------------------------------------------------
 
 # Covariates to *potentially* include; per-species covariate variance screening can happen later
@@ -121,104 +143,147 @@ base_covars <- c(
 species_to_check <- c(
   "Palm Warbler",
   "Bobolink",
-  "Blue Jay",
-  "Canada Jay",
+  # "Blue Jay",
+  # "Canada Jay",
   "Olive-sided Flycatcher",
-  "Winter Wren",
-  "Lesser Yellowlegs",
-  "Blackpoll Warbler",
+  # "Winter Wren",
+  # "Lesser Yellowlegs",
+  # "Blackpoll Warbler",
   "Connecticut Warbler",
-  "Lincoln's Sparrow",
-  "Fox Sparrow",
+  # "Lincoln's Sparrow",
+  # "Fox Sparrow",
   "Common Nighthawk",
-  "Long-eared Owl",
-  "American Tree Sparrow",
-  "LeConte's Sparrow",
-  "Nelson's Sparrow",
-  "Boreal Chickadee",
-  "Rusty Blackbird",
-  "Yellow-bellied Flycatcher",
+  # "Long-eared Owl",
+  # "American Tree Sparrow",
+  # "LeConte's Sparrow",
+  # "Nelson's Sparrow",
+  # "Boreal Chickadee",
+  # "Rusty Blackbird",
+  # "Yellow-bellied Flycatcher",
   "Greater Yellowlegs",
-  "Hudsonian Godwit",
-  "Canada Warbler",
-  "Eastern Wood-Peewee",
-  "Grasshopper Sparrow",
-  "Solitary Sandpiper",
-  "White-throated Sparrow",
-  "Bay-breasted Warbler",
-  "Marsh Wren",
-  "Eastern Towhee",
-  "Northern Cardinal",
-  "Carolina Wren",
-  "Black-and-white Warbler",
-  "Common Yellowthroat",
-  "Gray Catbird",
-  "Mourning Warbler",
-  "Red-eyed Vireo",
-  "Veery",
-  "Tennessee Warbler",
-  "Chestnut-sided Warbler",
-  "Brown Thrasher",
-  "American Redstart",
-  "Hairy Woodpecker",
-  "Belted Kingfisher",
-  "Yellow-bellied Sapsucker",
-  "Ruffed Grouse",
-  "Red-winged Blackbird",
-  "White-breasted Nuthatch",
-  "Black-billed Cuckoo",
-  "Northern Harrier",
-  "European Starling",
-  "House Finch",
+  # "Hudsonian Godwit",
+  # "Canada Warbler",
+  # "Eastern Wood-Peewee",
+  # "Grasshopper Sparrow",
+  # "Solitary Sandpiper",
+  # "White-throated Sparrow",
+  # "Bay-breasted Warbler",
+  # "Marsh Wren",
+  # "Eastern Towhee",
+  # "Northern Cardinal",
+  # "Carolina Wren",
+  # "Black-and-white Warbler",
+  # "Common Yellowthroat",
+  # "Gray Catbird",
+  # "Mourning Warbler",
+  # "Red-eyed Vireo",
+  # "Veery",
+  # "Tennessee Warbler",
+  # "Chestnut-sided Warbler",
+  # "Brown Thrasher",
+  # "American Redstart",
+  # "Hairy Woodpecker",
+  # "Belted Kingfisher",
+  # "Yellow-bellied Sapsucker",
+  # "Ruffed Grouse",
+  # "Red-winged Blackbird",
+  # "White-breasted Nuthatch",
+  # "Black-billed Cuckoo",
+  # "Northern Harrier",
+  # "European Starling",
+  # "House Finch",
   "Savannah Sparrow",
-  "Alder Flycatcher",
-  "Evening Grosbeak",
-  "Northern Parula",
-  "Pine Siskin",
-  "Common Raven",
+  # "Alder Flycatcher",
+  # "Evening Grosbeak",
+  # "Northern Parula",
+  # "Pine Siskin",
+  # "Common Raven",
   "Sandhill Crane",
   "Wild Turkey",
-  "Bald Eagle",
-  "Blue-winged Teal",
-  "Western Meadowlark",
+  # "Bald Eagle",
+  # "Blue-winged Teal",
+  # "Western Meadowlark",
   "Bank Swallow",
-  "Tree Swallow"
+  "Tree Swallow",
+  # "Black-backed Woodpecker",
+  # "Black-capped Chickadee",
+  # "Black-throated Blue Warbler",
+  # "Black-throated Green Warbler",
+  # "Blackburnian Warbler",
+  # "Blue-headed Vireo",
+  # "Brown Creeper",
+  # "Chipping Sparrow",
+  # "Field Sparrow",
+  # "Golden-crowned Kinglet",
+  # "Golden-winged Warbler",
+  # "Least Flycatcher",
+  # "Nashville Warbler",
+  # "Northern Waterthrush",
+  # "Ovenbird",
+  # "Purple Finch",
+  # "Ruby-crowned Kinglet",
+  # "Swainson's Thrush",
+  # "Vesper Sparrow",
+  # "Warbling Vireo",
+  # "White-winged Crossbill",
+  # "Wilson's Warbler",
+  # "Orchard Oriole",
+  # "Turkey Vulture",
+  # "Sedge Wren",
+  # "Herring Gull",
+  # "Black Tern",
+  # "Wood Thrush",
+  "Purple Martin",
+  # "Brown-headed Cowbird",
+  "Cliff Swallow"
+  # "Northern Rough-winged Swallow",
+  # "Ring-billed Gull",
+  # "Chimney Swift",
+  # "Killdeer",
+  # "Great Blue Heron",
+  # "American Black Duck",
+  # "Yellow-throated Vireo",
+  # "House Wren"
 )
-
 
 # Data requirements
 min_detections <- 150     # at least 150 detections in one atlas
 min_squares <- 50         # at least 50 squares in one atlas
 
+set.seed(123)
 species_run <- species_to_model %>%
-  filter((total_detections_OBBA3 >= min_detections |
-            total_detections_OBBA2 >= min_detections )&
-           (total_squares_OBBA3 >= min_squares |
-              total_squares_OBBA2 >= min_squares))%>%
+  filter((detections_safe_OBBA2 >= min_detections |
+            detections_safe_OBBA3 >= min_detections )&
+           (n_squares_safe_OBBA2 >= min_squares |
+              n_squares_safe_OBBA3 >= min_squares))%>%
   na.omit() %>%
-  filter(error_family == "nbinomial") %>%
   sample_n(nrow(.))
 
-#if (!is.null(species_to_check)) species_run <- species_run %>% subset(english_name %in% species_to_check)
+species_run <- species_run %>% subset(english_name %in% species_to_check)
 
 message("Species queued: ", nrow(species_run))
 species_run
 
 for (i in seq_len(nrow(species_run))) {
   
+  # To choose a particular species:
+  # i = which(species_run$english_name == "Purple Martin")
   
-  sp_english <- species_run$english_name[i]
+  sp_name <- species_run$english_name[i]
   sp_code <- as.character(species_run$species_id[i])
-  sp_file <- sp_filename(sp_english)
-  error_family = "nbinomial"
+  sp_file <- sp_filename(sp_name)
+  error_family = species_run$error_family[i]
   
-  message("\n====================\n", i, "/", nrow(species_run), ": ", sp_english, " (species_id = ", sp_code, ")\n====================")
+  int_strategy = "auto" # can be faster with "eb", but more likley to fail
+  strategy = "laplace"  # can be faster with "simplified.laplace" but more approximate
+  
+  message("\n====================\n", i, "/", nrow(species_run), ": ", sp_name, " (species_id = ", sp_code, "): ",error_family," error model\n====================")
   
   model_path <- file.path(out_dir,paste0("models_",model_name), paste0(sp_file, ".rds"))
   pred_path  <- file.path(out_dir, paste0("predictions_",model_name), paste0(sp_file, ".rds"))
   
   if (file.exists(pred_path) & rerun_predictions == FALSE){
-    message("Predictions already exist for ", sp_english, "; skipping")
+    message("Predictions already exist for ", sp_name, "; skipping")
     next
   }
   
@@ -229,28 +294,124 @@ for (i in seq_len(nrow(species_run))) {
   }
   
   # Append counts
-  sp_dat <- all_surveys %>%mutate(count = counts[[sp_code]])
+  sp_dat <- all_surveys %>%
+    dplyr::mutate(count = counts[[sp_code]])
   
-  # # **** NOTE: MODEL SUPPORTS NBINOMIAL, BUT SKIP THESE SPECIES FOR NOW
-  # if (sum(sp_dat$count>10)>10){
-  #   message("Skipping ", sp_english," (species_id = ",sp_code,"): count distribution should be modeled with nbinomial")
-  #   next
-  # }
+  # Safe dates for this species
+  sp_safe_dates <- safe_dates_bcr %>%
+    dplyr::filter(sp_english == sp_name)
+  
+  # ---- Remove extreme counts
+  large_counts <- sp_dat %>% filter(count > 50)
+  
+  sp_dat <- sp_dat %>% filter(count <= 50)
+  
+  # ------------------------------------------------------------
+  # 1) Warn if there are detections in BCRs with no safe dates
+  # ------------------------------------------------------------
+  
+  det_bcr_counts <- sp_dat %>%
+    dplyr::filter(count > 0) %>%
+    dplyr::group_by(BCR) %>%
+    dplyr::summarise(n_detections = n(), .groups = "drop")
+  
+  safe_bcrs <- sp_safe_dates %>%
+    dplyr::distinct(BCR) %>%
+    dplyr::pull(BCR)
+  
+  missing_safe <- det_bcr_counts %>%
+    dplyr::filter(!BCR %in% safe_bcrs)
+  
+  if (nrow(missing_safe) > 0) {
+    
+    msg <- paste(
+      paste0(
+        "BCR ", missing_safe$BCR,
+        " (", missing_safe$n_detections, " detections)\n**NOTE: Those surveys are omitted from modeling**"
+      ),
+      collapse = ", "
+    )
+    
+    warning(
+      paste0(
+        "Species '", sp_name,
+        "' has detections in BCR(s) with no safe dates: ",
+        msg
+      ),
+      call. = FALSE
+    )
+  }
+  
+  # ------------------------------------------------------------
+  # Define a province-wide prediction date, if possible
+  # ------------------------------------------------------------
+  
+  if (nrow(sp_safe_dates) == 0) {
+    pred_doy <- NA_real_
+    warning(
+      paste0("Species '", sp_name, "' has no BCR safe dates at all."),
+      call. = FALSE
+    )
+  } else {
+    overlap_start <- max(sp_safe_dates$start_doy, na.rm = TRUE)
+    overlap_end   <- min(sp_safe_dates$end_doy,   na.rm = TRUE)
+    
+    if (overlap_start <= overlap_end) {
+      pred_doy <- floor((overlap_start + overlap_end) / 2)
+      
+      message(
+        paste0(
+          "Species '", sp_name, "': province-wide prediction DOY = ", pred_doy,
+          " (overlap window ", overlap_start, " to ", overlap_end, ")."
+        )
+      )
+    } else {
+      pred_doy <- NA_real_
+      
+      warning(
+        paste0(
+          "Species '", sp_name,
+          "' has no single DOY that falls within all BCR safe-date windows. ",
+          "Latest start_doy = ", overlap_start,
+          ", earliest end_doy = ", overlap_end, "."
+        ),
+        call. = FALSE
+      )
+    }
+  }
+  
+  pred_doy
+  
+  # ------------------------------------------------------------
+  # Filter to within-safe-date surveys
+  # ------------------------------------------------------------
+  
+  sp_dat <- sp_dat %>%
+    dplyr::left_join(
+      sp_safe_dates,
+      by = "BCR"
+    ) %>%
+    dplyr::filter(
+      !is.na(start_doy),
+      !is.na(end_doy),
+      DayOfYear >= start_doy,
+      DayOfYear <= end_doy
+    ) %>%
+    dplyr::mutate(
+      days_midpoint = DayOfYear - pred_doy
+    )
   
   # --- Covariates spec
   covars_present <- intersect(base_covars, names(sp_dat))
   cov_df_sp <- make_cov_df(covars_present)
   
-  # square identifier (persistent across atlases)
-  sp_dat$square_idx <- as.numeric(as.factor(sp_dat$square_id))
-
   # --- Specify priors
   priors_list <- list(
     
     # SPDE priors
-    prior_range_abund = c(200, 0.1),           # 10% chance spatial autocorrelation range of shared field is less than 200 km
+    prior_range_abund = c(250, 0.5),           # 10% chance spatial autocorrelation range of shared field is less than 200 km
     prior_sigma_abund = c(3, 0.1),             # 10% chance SD is larger than 3
-    prior_range_change = c(200, 0.1),          # 10% chance spatial autocorrelation range of change field is less than 200 km
+    prior_range_change = c(250, 0.5),          # 10% chance spatial autocorrelation range of change field is less than 200 km
     prior_sigma_change = c(0.1, 0.1),          # 10% chance SD is larger than 0.1
     
     # Priors for HSS effect
@@ -260,9 +421,6 @@ for (i in seq_len(nrow(species_run))) {
     # Priors for DOY effects,
     prior_DOY_range_global = c(7, 0.9),
     prior_DOY_sigma_global = c(3, 0.1),        # global curve captures large deviations
-    
-    prior_DOY_range_BCR = c(7, 0.9),
-    prior_DOY_sigma_BCR = c(0.5, 0.1),         # BCR-level deviations should be small
     
     # atlas square iid effect
     kappa_pcprec_diff   = c(1, 0.1)           # 10% chance SD of iid random effect is larger than 1
@@ -298,27 +456,28 @@ for (i in seq_len(nrow(species_run))) {
         prior_DOY_range_global = priors_list$prior_DOY_range_global,
         prior_DOY_sigma_global = priors_list$prior_DOY_sigma_global,        
         
-        prior_DOY_range_BCR = priors_list$prior_DOY_range_BCR,
-        prior_DOY_sigma_BCR = priors_list$prior_DOY_sigma_BCR,         
+        #prior_DOY_range_BCR = priors_list$prior_DOY_range_BCR,
+        #prior_DOY_sigma_BCR = priors_list$prior_DOY_sigma_BCR,         
         
         # atlas square iid effect
         kappa_pcprec_diff   = priors_list$kappa_pcprec_diff,
         
-        int_strategy = "ccd",
-        strategy = "laplace",
+        int_strategy = int_strategy,
+        strategy = strategy,
         
-        family = "nbinomial"),
+        family = error_family),
       
       silent = TRUE
     )
     
     if (inherits(mod, "try-error") || is.null(mod)) {
-      message("Model failed for ", sp_english, "; continuing.")
+      message("Model failed for ", sp_name, "; continuing.")
       next
     }
     
-    save_atomic(mod, model_path)
-    message("Saved model: ", model_path)
+    
+    #save_atomic(mod, model_path)
+    #message("Saved model: ", model_path)
   }
   end_model <- Sys.time()
   
@@ -326,15 +485,15 @@ for (i in seq_len(nrow(species_run))) {
   
   message(
     "\n====================\n",
-    i, "/", nrow(species_run), ": ", sp_english,
+    i, "/", nrow(species_run), ": ", sp_name,
     " (species_id = ", sp_code, "): ",
     fit_minutes, " minutes to fit model\n",
     "===================="
   )
   
   # --- Save minimal model summary (fast)
-  model_summaries[[sp_english]] <- list(
-    sp_english = sp_english,
+  model_summaries[[sp_name]] <- list(
+    sp_name = sp_name,
     sp_code = sp_code,
     priors = priors_list,
     summary_fixed = mod$summary.fixed,
@@ -360,9 +519,10 @@ for (i in seq_len(nrow(species_run))) {
       grid_OBBA3 %>% mutate(Atlas3 = 1)
     ) %>%
       mutate(
+        
         # reference values for predictions
         Hours_Since_Sunrise = 0,
-        days_rescaled = -7,
+        days_midpoint = 0,
         Atlas3_c = Atlas3 - 0.5,
         BCR_factor = as.numeric(factor(BCR)),
         BCR_idx = as.integer(BCR)
@@ -379,7 +539,7 @@ for (i in seq_len(nrow(species_run))) {
     )
     
     # Set "water" pixels to 0 expected abundance
-    preds$eta[which(pred_grid$on_water),] <- -Inf
+    preds$eta[which(pred_grid$on_water),] <- -Inf  # Note this is log-scale predicted abundance, so log(0) = -Inf
     
     idx2 <- which(pred_grid$Atlas == "OBBA2")
     idx3 <- which(pred_grid$Atlas == "OBBA3")
@@ -404,14 +564,6 @@ for (i in seq_len(nrow(species_run))) {
     # (e.g., for drawing "significance" boundaries on maps, or for summarizing results into BCRs)
     # -------------------------------------------------
     
-    # Associate each pixel with a particular hexagon
-    idx <- build_pixel_polygon_index(
-      grid_sf      = grid_OBBA2,         # the full pixel grid
-      polygons_sf  = hex_grid,           # e.g., BCRs/ecoregions/hexes
-      poly_id_col  = "hex_id",
-      join         = "within"
-    )
-    
     # Assess evidence of change within each polygon
     eta_draws_per_hex <- aggregate_polygon_draws_from_eta(
       eta         = preds$eta,
@@ -429,33 +581,37 @@ for (i in seq_len(nrow(species_run))) {
     
     message(
       "\n====================\n",
-      i, "/", nrow(species_run), ": ", sp_english,
+      i, "/", nrow(species_run), ": ", sp_name,
       " (species_id = ", sp_code, "): ",
-      pred_minutes, " minutes to fit model\n",
+      pred_minutes, " minutes to generate predictions\n",
       "===================="
     )
     
+    sp_square_summary <- sp_dat %>%
+      as.data.frame() %>%
+      group_by(Atlas,square_id) %>%
+      summarize(n_surveys = n(),
+                total_count = sum(count),
+                n_detections = sum(count>0))
+    
     # Save posterior summaries
     save_atomic(list(
-      sp_english = sp_english,
+      sp_name = sp_name,
       sp_code = sp_code,
-      
+      sp_square_summary = sp_square_summary,
       priors = priors_list,
-      
+      pred_doy = pred_doy,
       fit_minutes = fit_minutes,
       pred_minutes = pred_minutes,
+      
       OBBA2 = preds_OBBA2_summary,
       OBBA3 = preds_OBBA3_summary,
       abs_change = preds_abs_change_summary,
       
       # For plotting boundaries of important/significant population change
-      hexagon_sf = hex_grid,
-      eta_draws_per_hex = eta_draws_per_hex,
-      
-      meta = list(n_draws = ncol(eta))
+      eta_draws_per_hex = eta_draws_per_hex
     ), pred_path)
   }
-  
   
 }
 

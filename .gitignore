@@ -26,3 +26,5 @@ Analysis/testing/
 .Rproj.user
 Analysis/Ontario_BBA/R/supplementary_analysis/latent_bbs_atlas_regression.exe
 Analysis/Ontario_BBA/R/supplementary_analysis/latent_bbs_atlas_regression.stan
+Analysis/BAMv5/R/atlas_vs_bbs.exe
+Analysis/BAMv5/R/atlas_vs_bbs.stan

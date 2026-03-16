@@ -26,7 +26,7 @@ source(file.path(paths$functions, "figure_utils.R"))
 # Config
 # ------------------------------------------------------------
 
-model_type <- "joint_diffpriors5"
+model_type <- "joint2"
 atlas_year_gap <- 20
 plot_regions <- c("CA-ON-13", "CA-ON-12", "CA-ON-8", "CA-ON-7")
 eps <- 1e-9
@@ -113,10 +113,10 @@ summarize_bcr_detections <- function(sp_dat) {
     )
 }
 
-process_species_file <- function(pf, dat, all_surveys, counts, bcr_sf,
+process_species_file <- function(pf, dat, all_surveys, counts, bcr_sf,hex_sf,
                                  atlas_year_gap = 20, eps = 1e-9) {
   preds <- readRDS(pf)
-  sp_english <- preds$sp_english
+  sp_english <- preds$sp_name
   message(sp_english)
   
   sp_code <- dat$species_to_model %>%
@@ -131,7 +131,7 @@ process_species_file <- function(pf, dat, all_surveys, counts, bcr_sf,
   Mu3 <- eta$Mu3
   poly_ids <- eta$meta$poly_ids
   
-  sp_hex <- align_hex_to_draws(preds$hexagon_sf, poly_ids)
+  sp_hex <- align_hex_to_draws(hex_sf, poly_ids)
   stopifnot(nrow(sp_hex) == nrow(Mu2), nrow(sp_hex) == nrow(Mu3))
   
   w_obj <- build_bcr_weight_matrix(sp_hex, bcr_sf)
@@ -183,6 +183,7 @@ dat <- readRDS(in_data)
 all_surveys <- dat$all_surveys
 counts      <- dat$counts
 bcr_sf      <- st_transform(dat$bcr_sf, st_crs(dat$grid_OBBA2))
+hex_sf      <- dat$hex_grid
 
 pred_files <- list.files(pred_dir, pattern = "\\.rds$", full.names = TRUE)
 stopifnot(length(pred_files) > 0)
@@ -199,10 +200,13 @@ atlas_change_summary <- map_dfr(
   all_surveys = all_surveys,
   counts = counts,
   bcr_sf = bcr_sf,
+  hex_sf = hex_sf,
   atlas_year_gap = atlas_year_gap,
   eps = eps
 ) %>%
   mutate(region = paste0("CA-ON-", BCR))
+
+saveRDS(atlas_change_summary,file = paste0("data_clean/model_output/summaries_",model_type,"/atlas_BCR_change_estimates.rds"))
 
 # ------------------------------------------------------------
 # Load and clean BBS summaries
@@ -223,6 +227,7 @@ BBS_trend_summary <- read.csv(
   )
 
 subset(BBS_trend_summary, english_name == "Bank Swallow")
+
 # ------------------------------------------------------------
 # Combine atlas and BBS
 # ------------------------------------------------------------
@@ -282,10 +287,16 @@ comparison_plot <- comparison_log %>%
   filter(
     n_sq_OBBA2 >= min_sq_per_atlas,
     n_sq_OBBA3 >= min_sq_per_atlas
-  ) %>%
-  subset(BCR != 8)
+  )
 
-subset(comparison_log, english_name == "Northern Cardinal")
+# ------------------------------------------------------------
+# Identify species for which counts are potentially too variable for Poisson
+# ------------------------------------------------------------
+nb_species <- subset(dat$species_to_model, error_family == "nbinomial")
+
+comparison_plot$consider_nbinomial <- "No"
+comparison_plot$consider_nbinomial[comparison_plot$english_name %in% nb_species$english_name] <- "Yes"
+
 # ------------------------------------------------------------
 # Summaries by BCR
 # ------------------------------------------------------------
@@ -316,16 +327,16 @@ lim <- range(
 fig3 <- ggplot(comparison_plot) +
   geom_abline(slope = 1, col = "gray80") +
   
-  geom_text_repel(
-    aes(
-      x = BBS_mean_log,
-      y = atlas_median_log,
-      label = english_name
-    ),
-    size = 2,
-    max.overlaps = 50,
-    col = "gray50"
-  ) +
+  # geom_text_repel(
+  #   aes(
+  #     x = BBS_mean_log,
+  #     y = atlas_median_log,
+  #     label = english_name
+  #   ),
+  #   size = 2,
+  #   max.overlaps = 50,
+  #   col = "gray50"
+  # ) +
   geom_text(
     data = bcr_summaries,
     aes(x = -Inf, y = Inf, label = cor_label),
@@ -334,30 +345,30 @@ fig3 <- ggplot(comparison_plot) +
     inherit.aes = FALSE
   ) +
 
-  geom_errorbar(
-    aes(
-      x = BBS_mean_log,
-      ymin = atlas_q025_log,
-      ymax = atlas_q975_log
-    ),
-    colour = "black",
-    width = 0
-  ) +
-  geom_errorbarh(
-    aes(
-      xmin = BBS_q025_log,
-      xmax = BBS_q975_log,
-      y = atlas_median_log
-    ),
-    colour = "black",
-    height = 0
-  ) +
+  # geom_errorbar(
+  #   aes(
+  #     x = BBS_mean_log,
+  #     ymin = atlas_q025_log,
+  #     ymax = atlas_q975_log,
+  #     col = consider_nbinomial
+  #   ),
+  #   width = 0
+  # ) +
+  # geom_errorbarh(
+  #   aes(
+  #     xmin = BBS_q025_log,
+  #     xmax = BBS_q975_log,
+  #     y = atlas_median_log,
+  #     col = consider_nbinomial
+  #   ),
+  #   height = 0
+  # ) +
   geom_point(
     aes(
       x = BBS_mean_log,
-      y = atlas_median_log
+      y = atlas_median_log,
+      col = consider_nbinomial
     ),
-    colour = "black"
   ) +
   facet_grid(region ~ .) +
   scale_x_continuous(
@@ -373,6 +384,10 @@ fig3 <- ggplot(comparison_plot) +
     guide = "none",
     trans = "log"
   ) +
+  scale_color_manual(
+    values = c("black","red"), guide = "none"
+  ) +
+  
   coord_cartesian(xlim = lim, ylim = lim) +
   theme_bw()
 

@@ -1,14 +1,8 @@
 # ============================================================
 # figure_utils.R
 #
-# Purpose:
-#   Utilities for making publication-quality maps from
-#   per-pixel prediction summaries.
-#
-# Philosophy:
-#   - Functions RETURN ggplot objects (do not ggsave()).
-#   - Caller script controls filenames, dpi, sizes.
-#   - Minimal, consistent styling + a few sensible defaults.
+# Utilities for making maps from pixel-level prediction summaries.
+# Functions return ggplot objects; saving is handled elsewhere.
 # ============================================================
 
 suppressPackageStartupMessages({
@@ -20,62 +14,93 @@ suppressPackageStartupMessages({
   library(ggtext)
   library(ggspatial)
   library(RColorBrewer)
+  library(igraph)
+  library(smoothr)
+  library(units)
 })
 
-# ---------------------------
+# ------------------------------------------------------------
 # Small helpers
-# ---------------------------
+# ------------------------------------------------------------
+
+# compute abundance limits for plotting
+compute_shared_zmax <- function(preds, prob = 0.99, fallback = 1) {
+  zmax2 <- as.numeric(stats::quantile(preds$OBBA2$OBBA2_q50, prob, na.rm = TRUE))
+  zmax3 <- as.numeric(stats::quantile(preds$OBBA3$OBBA3_q50, prob, na.rm = TRUE))
+  zmax <- max(zmax2, zmax3, na.rm = TRUE)
+  if (!is.finite(zmax) || zmax <= 0) zmax <- fallback
+  zmax
+}
+
+# build square overlays 
+build_atlas_square_overlays <- function(sp_square_summary, atlas_sq_centroids_all) {
+  if (is.null(sp_square_summary)) {
+    return(list(OBBA2 = NULL, OBBA3 = NULL))
+  }
+  
+  sq2 <- dplyr::filter(sp_square_summary, Atlas == "OBBA2")
+  sq3 <- dplyr::filter(sp_square_summary, Atlas == "OBBA3")
+  
+  list(
+    OBBA2 = dplyr::left_join(atlas_sq_centroids_all, sq2, by = "square_id"),
+    OBBA3 = dplyr::left_join(atlas_sq_centroids_all, sq3, by = "square_id")
+  )
+}
+
 
 #' Wrap a species label for nicer plot titles
 #'
-#' Long common names can overflow plot margins. This helper inserts line
-#' breaks so labels stay readable in map facets and figure titles.
-#'
-#' @param label Character; species name/label.
-#' @param max_length Maximum characters per line before wrapping.
-#' @return A wrapped character string.
+#' @param label Character species name.
+#' @param max_length Maximum characters before wrapping.
+#' @return Character string, optionally with "<br>" inserted.
 wrap_species_label <- function(label, max_length = 18) {
-  if (nchar(label) <= max_length) return(label)
+  if (is.na(label) || nchar(label) <= max_length) return(label)
+  
   words <- strsplit(label, " ")[[1]]
-  if (length(words) == 1) return(label)
-  paste0(paste(words[-length(words)], collapse = " "), "<br>", words[length(words)])
+  if (length(words) <= 1) return(label)
+  
+  paste0(
+    paste(words[-length(words)], collapse = " "),
+    "<br>",
+    words[length(words)]
+  )
 }
 
 #' Expand a bounding box by a fraction
 #'
-#' Adds padding around an `sf` bbox so maps have breathing room around the
-#' study area.
-#'
-#' @param bbox An `sf::bbox` object.
-#' @param frac Fractional expansion (e.g., 0.10 adds 10% padding).
-#' @return Expanded bbox (same class).
+#' @param bbox An sf bbox object.
+#' @param frac Fractional expansion.
+#' @return Named numeric vector xmin/ymin/xmax/ymax.
 expand_bbox <- function(bbox, frac = 0.10) {
   bbox <- as.numeric(bbox)
-  names(bbox) <- c("xmin","ymin","xmax","ymax")  # ensure names exist
+  names(bbox) <- c("xmin", "ymin", "xmax", "ymax")
   
   xrange <- bbox["xmax"] - bbox["xmin"]
   yrange <- bbox["ymax"] - bbox["ymin"]
   
-  bbox["xmin"] <- bbox["xmin"] - xrange * frac
-  bbox["xmax"] <- bbox["xmax"] + xrange * frac
-  bbox["ymin"] <- bbox["ymin"] - yrange * frac
-  bbox["ymax"] <- bbox["ymax"] + yrange * frac
+  bbox["xmin"] <- bbox["xmin"] - frac * xrange
+  bbox["xmax"] <- bbox["xmax"] + frac * xrange
+  bbox["ymin"] <- bbox["ymin"] - frac * yrange
+  bbox["ymax"] <- bbox["ymax"] + frac * yrange
   
   bbox
 }
 
-# Rasterize an sf grid using a column name; returns stars object
+#' Get a padded plotting bbox from a study boundary
+#'
+#' @param study_boundary sf polygon.
+#' @param frac Fractional expansion.
+#' @return Named numeric vector xmin/ymin/xmax/ymax.
+map_bbox <- function(study_boundary, frac = 0.10) {
+  expand_bbox(sf::st_bbox(study_boundary), frac = frac)
+}
 
-#' Rasterize an sf grid to a `stars` object for fast plotting
+#' Rasterize an sf grid to a stars object
 #'
-#' Converts a regular prediction grid (sf points/polygons with values) into
-#' a `stars` raster at resolution `res`. This can be faster than plotting
-#' huge point layers directly with ggplot.
-#'
-#' @param grid_sf `sf` with geometry and a value column.
-#' @param field Name of the value column to rasterize.
-#' @param res Resolution (in map units) for the output raster.
-#' @return A `stars` object.
+#' @param grid_sf sf object with geometry and a value field.
+#' @param field Name of field to rasterize.
+#' @param res Raster resolution in map units.
+#' @return stars object.
 rasterize_sf_to_stars <- function(grid_sf, field, res) {
   stopifnot(inherits(grid_sf, "sf"))
   stopifnot(field %in% names(grid_sf))
@@ -83,17 +108,13 @@ rasterize_sf_to_stars <- function(grid_sf, field, res) {
   v <- terra::vect(grid_sf)
   r_template <- terra::rast(v, res = res)
   r <- terra::rasterize(v, r_template, field = field, fun = mean, na.rm = TRUE)
+  
   stars::st_as_stars(r)
 }
 
-# Build a consistent "map theme"
-
-#' Standard ggplot theme for maps in this project
+#' Standard project map theme
 #'
-#' Removes axes, sets consistent fonts, and standardizes legend placement.
-#' Used across figure-building functions so outputs look uniform.
-#'
-#' @return A `ggplot2` theme object.
+#' @return ggplot theme object.
 theme_map <- function() {
   theme_void() +
     theme(
@@ -108,39 +129,184 @@ theme_map <- function() {
     )
 }
 
-# ---------------------------
+#' Build a formatted legend title
+#'
+#' @param species_name Character species common name.
+#' @param title Main panel title.
+#' @param subtitle Secondary title.
+#' @param stat_label Statistic label.
+#' @return Character string containing markdown/html for ggtext legend title.
+legend_title_map <- function(species_name, title, subtitle, stat_label) {
+  paste0(
+    "<span style='font-size:20pt; font-weight:bold'>",
+    wrap_species_label(species_name),
+    "</span><br><br>",
+    "<span style='font-size:14pt'>", title, "</span><br>",
+    "<span style='font-size:7pt'>", subtitle, "</span><br>",
+    "<span style='font-size:7pt'>", stat_label, "</span>"
+  )
+}
+
+#' Add common overlays to a map
+#'
+#' @param p ggplot object.
+#' @param study_boundary sf boundary polygon.
+#' @param bcr_sf Optional sf BCR polygons.
+#' @param water_sf Optional sf water polygons.
+#' @param atlas_squares_centroids Optional sf square centroids.
+#' @param water_fill Fill for water layer.
+#'   "plain" for black points, or "none" for no square overlay.
+#' @return ggplot object.
+add_base_map_layers <- function(p,
+                                study_boundary,
+                                bcr_sf = NULL,
+                                water_sf = NULL,
+                                atlas_squares_centroids = NULL,
+                                water_fill = "#EDF7FB") {
+  
+  if (!is.null(bcr_sf)) {
+    p <- p + geom_sf(
+      data = bcr_sf,
+      colour = "gray80",
+      fill = NA,
+      linewidth = 0.3
+    )
+  }
+  
+  
+  if (!is.null(water_sf)) {
+    p <- p + geom_sf(
+      data = water_sf,
+      fill = water_fill,
+      col = "transparent"
+    )
+  }
+  
+  p <- p + geom_sf(
+    data = study_boundary,
+    colour = "gray80",
+    fill = NA,
+    linewidth = 0.5,
+    show.legend = FALSE
+  )
+  
+  if (!is.null(atlas_squares_centroids)) {
+    
+    sq <- atlas_squares_centroids %>%
+      dplyr::filter(!is.na(n_detections))
+    
+    if (nrow(sq) > 0) {
+      sq <- sq %>%
+        dplyr::mutate(detected = n_detections > 0)
+      
+      # surveyed, not detected
+      p <- p + geom_sf(
+        data = sq, # dplyr::filter(sq, !detected),
+        colour = "black",
+        shape = 1,
+        size = 0.5,
+        alpha = 1,
+        stroke = 0.1
+      )
+      
+      # surveyed, detected
+      p <- p + geom_sf(
+        data = dplyr::filter(sq, detected),
+        colour = "black",
+        shape = 16,   #46,
+        size = 0.5, # 0.75,
+        stroke = 0.1,
+        alpha = 1
+      )
+    }
+  }
+  p
+}
+
+#' Add common annotations and map extent
+#'
+#' @param p ggplot object.
+#' @param study_boundary sf boundary polygon.
+#' @param bb Optional bbox. If NULL, computed from study_boundary.
+#' @return ggplot object.
+add_map_annotations <- function(p, study_boundary, bb = NULL) {
+  if (is.null(bb)) {
+    bb <- map_bbox(study_boundary)
+  }
+  
+  p +
+    theme_map() +
+    ggspatial::annotation_scale(location = "br", width_hint = 0.3) +
+    ggspatial::annotation_north_arrow(
+      location = "tr",
+      which_north = "true",
+      pad_x = unit(0.2, "in"),
+      pad_y = unit(0.2, "in"),
+      style = ggspatial::north_arrow_fancy_orienteering()
+    ) +
+    coord_sf(
+      crs = sf::st_crs(study_boundary),
+      xlim = c(bb["xmin"], bb["xmax"]),
+      ylim = c(bb["ymin"], bb["ymax"]),
+      expand = FALSE
+    )
+}
+
+#' Compute a shared upper plotting limit for OBBA2 and OBBA3 q50 surfaces
+#'
+#' @param preds Prediction object containing OBBA2 and OBBA3 summaries.
+#' @param prob Quantile used for upper cap.
+#' @param fallback Fallback value if cap is invalid.
+#' @return Positive numeric scalar.
+compute_shared_zmax <- function(preds, prob = 0.99, fallback = 1) {
+  zmax2 <- as.numeric(stats::quantile(preds$OBBA2$OBBA2_q50, prob, na.rm = TRUE))
+  zmax3 <- as.numeric(stats::quantile(preds$OBBA3$OBBA3_q50, prob, na.rm = TRUE))
+  zmax <- max(zmax2, zmax3, na.rm = TRUE)
+  
+  if (!is.finite(zmax) || zmax <= 0) zmax <- fallback
+  zmax
+}
+
+#' Build Atlas 2 / Atlas 3 atlas-square centroid overlays
+#'
+#' @param sp_square_summary Data frame with square summaries and Atlas column.
+#' @param atlas_sq_centroids_all sf centroid layer with square_id.
+#' @return Named list with OBBA2 and OBBA3 sf objects (or NULL values).
+build_atlas_square_overlays <- function(sp_square_summary, atlas_sq_centroids_all) {
+  if (is.null(sp_square_summary)) {
+    return(list(OBBA2 = NULL, OBBA3 = NULL))
+  }
+  
+  sq2 <- dplyr::filter(sp_square_summary, Atlas == "OBBA2")
+  sq3 <- dplyr::filter(sp_square_summary, Atlas == "OBBA3")
+  
+  list(
+    OBBA2 = dplyr::left_join(atlas_sq_centroids_all, sq2, by = "square_id"),
+    OBBA3 = dplyr::left_join(atlas_sq_centroids_all, sq3, by = "square_id")
+  )
+}
+
+# ------------------------------------------------------------
 # Relative abundance maps
-# ---------------------------
+# ------------------------------------------------------------
 
-#' Build relabund maps (median + CV)
+#' Create relative-abundance maps for one atlas period
 #'
-#' @param grid_sf sf polygons for the atlas period (OBBA2 or OBBA3)
-#' @param pred_summary data.frame with columns:
-#'   - <prefix>_q50 (required)
-#'   - <prefix>_cv_median (preferred) OR <prefix>_sd + <prefix>_q50 (fallback)
-#' @param prefix "OBBA2" or "OBBA3"
-#' @param res raster resolution for plotting (in map units)
-#' @param bounds list with optional upper/lower; if NULL it is computed from q50
-#' @return named list: list(q50_plot = <ggplot>, cv_plot = <ggplot>)
-
-#' Create relative abundance maps for Atlas 2 and Atlas 3
+#' Returns a posterior-median map and a CV map.
 #'
-#' Produces publication-ready maps showing posterior summaries of predicted
-#' relative abundance (or intensity) on the prediction grid for each atlas.
-#' Designed for the reporting pipeline: handles common overlays (BCR,
-#' water, boundary), legends, and optional file output.
-#'
-#' @param species_name Common name used for titles/filenames.
-#' @param grid_sf Prediction grid as `sf`.
-#' @param pred_summary Data frame of posterior summaries aligned to `grid_sf`.
-#' @param prefix Character vector of atlas labels (default c("OBBA2","OBBA3")).
-#' @param study_boundary Boundary polygon for outline.
-#' @param bcr_sf Optional BCR polygons for overlay.
-#' @param water_sf Optional water polygons/lines for context.
-#' @param atlas_squares_centroids Optional centroids for atlas squares.
-#' @param template_bbox Optional bbox to enforce identical map extents.
-#' @param save_dir Optional directory; if provided, figures are saved there.
-#' @return A named list of `ggplot` objects (and/or file paths).
+#' @param species_name Common name for legend title.
+#' @param grid_sf sf prediction grid.
+#' @param pred_summary Data frame aligned to grid_sf.
+#' @param prefix Either "OBBA2" or "OBBA3".
+#' @param study_boundary sf boundary polygon.
+#' @param bcr_sf Optional sf BCR overlay.
+#' @param water_sf Optional sf water overlay.
+#' @param atlas_squares_centroids Optional sf square-centroid overlay.
+#' @param title Panel title. If NULL, inferred from prefix.
+#' @param subtitle Subtitle for legend title.
+#' @param res Raster resolution in map units.
+#' @param bounds Optional list with lower and upper abundance bounds.
+#' @return List with q50_plot, cv_plot, and bounds.
 make_relabund_maps <- function(species_name,
                                grid_sf,
                                pred_summary,
@@ -150,39 +316,34 @@ make_relabund_maps <- function(species_name,
                                water_sf = NULL,
                                atlas_squares_centroids = NULL,
                                title = NULL,
-                               subtitle = "Relative Abundance",
+                               subtitle = "Relative abundance",
                                res = 1000,
                                bounds = NULL) {
-  
   prefix <- match.arg(prefix)
+  
   stopifnot(inherits(grid_sf, "sf"))
   stopifnot(inherits(study_boundary, "sf"))
+  stopifnot(is.data.frame(pred_summary))
   
   q50_col <- paste0(prefix, "_q50")
+  cv_col  <- paste0(prefix, "_cv_median")
+  sd_col  <- paste0(prefix, "_sd")
+  
   if (!(q50_col %in% names(pred_summary))) {
-    stop("pred_summary missing required column: ", q50_col)
+    stop("pred_summary is missing required column: ", q50_col)
   }
   
-  # attach q50
   grid <- grid_sf
   grid$pred_q50 <- pred_summary[[q50_col]]
   
-  # attach CV (prefer cv_median; else compute sd/q50)
-  cv_col <- paste0(prefix, "_cv_median")
   if (cv_col %in% names(pred_summary)) {
     grid$pred_cv <- pred_summary[[cv_col]]
-  } else {
-    sd_col <- paste0(prefix, "_sd")
-    if (!(sd_col %in% names(pred_summary))) {
-      stop("Need either ", cv_col, " or ", sd_col, " to make CV map.")
-    }
+  } else if (sd_col %in% names(pred_summary)) {
     grid$pred_cv <- pred_summary[[sd_col]] / pmax(pred_summary[[q50_col]], 1e-12)
+  } else {
+    stop("pred_summary must contain either ", cv_col, " or ", sd_col)
   }
   
-  # bounds
-  # If caller supplies bounds, we use them as-is (so OBBA2 and OBBA3 can share
-  # identical colour limits for side-by-side comparison). Otherwise compute a
-  # sensible default from the 99th percentile of the median surface.
   if (is.null(bounds)) {
     upper <- as.numeric(stats::quantile(grid$pred_q50, 0.99, na.rm = TRUE))
     if (!is.finite(upper) || upper <= 0) upper <- 1
@@ -191,283 +352,245 @@ make_relabund_maps <- function(species_name,
     if (is.null(bounds$lower)) bounds$lower <- 0
     if (is.null(bounds$upper)) {
       bounds$upper <- as.numeric(stats::quantile(grid$pred_q50, 0.99, na.rm = TRUE))
+      if (!is.finite(bounds$upper) || bounds$upper <= 0) bounds$upper <- 1
     }
   }
   
-  # cap for plotting (keeps visual scale stable)
-  grid$pred_capped_q50 <- as.numeric(pmax(pmin(grid$pred_q50, bounds$upper), bounds$lower))
-  grid$pred_capped_cv  <- as.numeric(pmax(pmin(grid$pred_cv, 1), 0))
+  grid$pred_capped_q50 <- pmax(pmin(grid$pred_q50, bounds$upper), bounds$lower)
+  grid$pred_capped_cv  <- pmax(pmin(grid$pred_cv, 1), 0)
   
-  # rasterize to stars
   q50_stars <- rasterize_sf_to_stars(grid, "pred_capped_q50", res = res)
   cv_stars  <- rasterize_sf_to_stars(grid, "pred_capped_cv",  res = res)
   
-  # bbox
-  bb <- expand_bbox(st_bbox(study_boundary), 0.10)
+  if (is.null(title)) {
+    title <- ifelse(prefix == "OBBA2", "Atlas 2", "Atlas 3")
+  }
   
-  # palette
-  colscale_q50 <- c(
+  bb <- map_bbox(study_boundary)
+  
+  q50_cols <- colorRampPalette(c(
     "#FEFEFE", "#FBF7E2", "#FCF8D0", "#EEF7C2", "#CEF2B0",
     "#94E5A0", "#51C987", "#18A065", "#008C59", "#007F53", "#006344"
-  )
-  colpal_q50 <- colorRampPalette(colscale_q50)
+  ))(10)
   
-  colscale_cv <- c("#FEFEFE", "#FFF4B3", "#F5D271", "#F2B647", "#EC8E00", "#CA302A")
-  colpal_cv <- colorRampPalette(colscale_cv)
-  
-  if (is.null(title)) title <- ifelse(prefix == "OBBA2", "Atlas 2", "Atlas 3")
-  
-  legend_title_q50 <- paste0(
-    "<span style='font-size:20pt; font-weight:bold'>", wrap_species_label(species_name), "</span><br><br>",
-    "<span style='font-size:14pt'>", title, "</span><br>",
-    "<span style='font-size:7pt'>", subtitle, "</span><br>",
-    "<span style='font-size:7pt'>Posterior Median</span>"
-  )
-  
-  legend_title_cv <- paste0(
-    "<span style='font-size:20pt; font-weight:bold'>", wrap_species_label(species_name), "</span><br><br>",
-    "<span style='font-size:14pt'>", title, "</span><br>",
-    "<span style='font-size:7pt'>", subtitle, "</span><br>",
-    "<span style='font-size:7pt'>Prediction CV</span>"
-  )
-  
-  base_layers <- list()
-  if (!is.null(bcr_sf))   base_layers <- c(base_layers, list(geom_sf(data = bcr_sf, colour = "gray80", fill = NA, linewidth = 0.3)))
-  base_layers <- c(base_layers, list(stars::geom_stars(data = q50_stars)))
-  if (!is.null(water_sf)) base_layers <- c(base_layers, list(geom_sf(data = water_sf, fill = "#EDF7FB", col = "transparent")))
-  if (!is.null(atlas_squares_centroids)) {
-    
-    # If the caller doesn't supply a detected flag, set to NA.
-    if (!("detected" %in% names(atlas_squares_centroids))) atlas_squares_centroids$detected <- NA
-    
-    base_layers <- c(base_layers, list(
-      geom_sf(
-        data = atlas_squares_centroids,
-        aes(colour = detected),
-        shape = 46,
-        size = 0.5,
-        alpha = 1
-      )
-    ))
-  }
-  base_layers <- c(base_layers, list(geom_sf(data = study_boundary, colour = "gray80", fill = NA, linewidth = 0.5, show.legend = FALSE)))
+  cv_cols <- colorRampPalette(c(
+    "#FEFEFE", "#FFF4B3", "#F5D271", "#F2B647", "#EC8E00", "#CA302A"
+  ))(11)
   
   q50_plot <- ggplot() +
-    base_layers +
+    stars::geom_stars(data = q50_stars)
+  
+  q50_plot <- add_base_map_layers(
+    p = q50_plot,
+    study_boundary = study_boundary,
+    bcr_sf = bcr_sf,
+    water_sf = water_sf,
+    atlas_squares_centroids = atlas_squares_centroids,
+    water_fill = "#EDF7FB"
+  )
+  
+  q50_plot <- q50_plot +
     scale_fill_gradientn(
-      name = legend_title_q50,
-      colors = colpal_q50(10),
+      name = legend_title_map(species_name, title, subtitle, "Posterior median"),
+      colors = q50_cols,
       na.value = "transparent",
       limits = c(bounds$lower, bounds$upper)
-    ) +
-    {if (!is.null(atlas_squares_centroids)) scale_colour_manual(values = c(`TRUE` = "black", `FALSE` = "gray60"), guide = "none")} +
-    theme_map() +
-    ggspatial::annotation_scale(location = "br", width_hint = 0.3) +
-    ggspatial::annotation_north_arrow(
-      location = "tr",
-      which_north = "true",
-      pad_x = unit(0.2, "in"),
-      pad_y = unit(0.2, "in"),
-      style = ggspatial::north_arrow_fancy_orienteering()
-    ) +
-    coord_sf(
-      crs = sf::st_crs(study_boundary),
-      xlim = c(bb["xmin"], bb["xmax"]),
-      ylim = c(bb["ymin"], bb["ymax"]),
-      expand = FALSE
     )
   
+  q50_plot <- add_map_annotations(q50_plot, study_boundary, bb)
+  
   cv_plot <- ggplot() +
-    {if (!is.null(bcr_sf)) geom_sf(data = bcr_sf, colour = "gray80", fill = NA, linewidth = 0.3)} +
-    stars::geom_stars(data = cv_stars) +
+    stars::geom_stars(data = cv_stars)
+  
+  cv_plot <- add_base_map_layers(
+    p = cv_plot,
+    study_boundary = study_boundary,
+    bcr_sf = bcr_sf,
+    water_sf = water_sf,
+    atlas_squares_centroids = atlas_squares_centroids,
+    water_fill = "#EDF7FB"
+  )
+  
+  cv_plot <- cv_plot +
     scale_fill_gradientn(
-      name = legend_title_cv,
-      colors = colpal_cv(11),
+      name = legend_title_map(species_name, title, subtitle, "Prediction CV"),
+      colors = cv_cols,
       na.value = "transparent",
       breaks = seq(0, 1, length.out = 5),
       labels = c("0", "0.25", "0.5", "0.75", ">1"),
       limits = c(0, 1)
-    ) +
-    {if (!is.null(water_sf)) geom_sf(data = water_sf, fill = "#EDF7FB", col = "transparent")} +
-    {if (!is.null(atlas_squares_centroids)) geom_sf(data = atlas_squares_centroids, colour = "black", size = 0.2, shape = 46, stroke = 0.1, alpha = 0.5)} +
-    theme_map() +
-    ggspatial::annotation_scale(location = "br", width_hint = 0.3) +
-    ggspatial::annotation_north_arrow(
-      location = "tr",
-      which_north = "true",
-      pad_x = unit(0.2, "in"),
-      pad_y = unit(0.2, "in"),
-      style = ggspatial::north_arrow_fancy_orienteering()
-    )+
-    coord_sf(
-      crs = sf::st_crs(study_boundary),
-      xlim = c(bb["xmin"], bb["xmax"]),
-      ylim = c(bb["ymin"], bb["ymax"]),
-      expand = FALSE
     )
   
-  list(q50_plot = q50_plot, cv_plot = cv_plot, bounds = bounds)
+  cv_plot <- add_map_annotations(cv_plot, study_boundary, bb)
+  
+  list(
+    q50_plot = q50_plot,
+    cv_plot = cv_plot,
+    bounds = bounds
+  )
 }
 
-# ---------------------------
-# Change maps (absolute change + CI width)
-# ---------------------------
+# ------------------------------------------------------------
+# Absolute change maps
+# ------------------------------------------------------------
 
-#' Create absolute change maps between atlases
+#' Create absolute-change maps between atlas periods
 #'
-#' Plots pixel-wise differences in predicted abundance/intensity between
-#' Atlas 3 and Atlas 2 (or other configured contrasts), using posterior
-#' summaries (median, credible intervals, significance masks).
+#' Returns a posterior-median absolute-change map and a CI-width map.
 #'
-#' @param species_name Common name used for titles/filenames.
-#' @param grid_sf Prediction grid (`sf`).
-#' @param change_summary Data frame of change summaries aligned to `grid_sf`.
-#' @param study_boundary Boundary polygon.
-#' @param bcr_sf Optional BCR overlay.
-#' @param water_sf Optional water overlay.
-#' @param template_bbox Optional bbox to match extents across figures.
-#' @param save_dir Optional output directory to save maps.
-#' @return A named list of `ggplot` objects (and/or file paths).
+#' @param species_name Common name for legend title.
+#' @param grid_sf sf prediction grid (typically the OBBA3 grid geometry).
+#' @param abs_change_summary Data frame aligned to grid_sf.
+#' @param study_boundary sf boundary polygon.
+#' @param bcr_sf Optional sf BCR overlay.
+#' @param water_sf Optional sf water overlay.
+#' @param signif_poly Optional sf polygons classed as Increase/Decrease.
+#' @param res Raster resolution in map units.
+#' @param max_abs Optional symmetric upper plotting bound for change.
+#' @param title Panel title.
+#' @param subtitle Subtitle for legend title.
+#' @return List with chg_plot, ciw_plot, and max_abs.
 make_abs_change_maps <- function(species_name,
-                                 grid_sf,               # usually OBBA3 grid (for geometry)
-                                 abs_change_summary,    # from predictions/<sp>.rds
+                                 grid_sf,
+                                 abs_change_summary,
                                  study_boundary,
                                  bcr_sf = NULL,
                                  water_sf = NULL,
                                  signif_poly = NULL,
                                  res = 1000,
-                                 # Optional: force symmetric bounds for change map.
-                                 # If provided, colour limits will be -max_abs..+max_abs.
                                  max_abs = NULL,
                                  title = "Absolute change",
                                  subtitle = "OBBA2 to OBBA3") {
-  
   stopifnot(inherits(grid_sf, "sf"))
+  stopifnot(inherits(study_boundary, "sf"))
   stopifnot(is.data.frame(abs_change_summary))
   
-  q50_col <- "abs_change_q50"
-  lcl_col <- "abs_change_lower"
-  ucl_col <- "abs_change_upper"
-  
-  if (!all(c(q50_col, lcl_col, ucl_col) %in% names(abs_change_summary))) {
-    stop("abs_change_summary must contain: abs_change_q50, abs_change_lower, abs_change_upper")
+  required_cols <- c("abs_change_q50", "abs_change_lower", "abs_change_upper")
+  if (!all(required_cols %in% names(abs_change_summary))) {
+    stop(
+      "abs_change_summary must contain: ",
+      paste(required_cols, collapse = ", ")
+    )
   }
   
   grid <- grid_sf
-  grid$chg_q50 <- abs_change_summary[[q50_col]]
-  grid$chg_ciw <- abs_change_summary[[ucl_col]] - abs_change_summary[[lcl_col]]
+  grid$chg_q50 <- abs_change_summary$abs_change_q50
+  grid$chg_ciw <- abs_change_summary$abs_change_upper - abs_change_summary$abs_change_lower
   
-  # symmetric bounds around 0
-  # If caller supplies max_abs, we use it (e.g., to match relabund colour scale).
   if (is.null(max_abs)) {
     max_abs <- as.numeric(stats::quantile(abs(grid$chg_q50), 0.99, na.rm = TRUE))
-    if (!is.finite(max_abs) || max_abs == 0) max_abs <- max(abs(grid$chg_q50), na.rm = TRUE)
-    if (!is.finite(max_abs) || max_abs == 0) max_abs <- 1
+    
+    if (!is.finite(max_abs) || max_abs <= 0) {
+      max_abs <- max(abs(grid$chg_q50), na.rm = TRUE)
+    }
+    
+    if (!is.finite(max_abs) || max_abs <= 0) {
+      max_abs <- 1
+    }
   } else {
     max_abs <- as.numeric(max_abs)
     if (!is.finite(max_abs) || max_abs <= 0) max_abs <- 1
   }
   
-  grid$chg_capped <- pmax(pmin(grid$chg_q50,  max_abs), -max_abs)
-  grid$ciw_capped <- pmax(pmin(grid$chg_ciw,  max_abs), 0)
+  grid$chg_capped <- pmax(pmin(grid$chg_q50, max_abs), -max_abs)
+  grid$ciw_capped <- pmax(pmin(grid$chg_ciw, max_abs), 0)
   
   chg_stars <- rasterize_sf_to_stars(grid, "chg_capped", res = res)
   ciw_stars <- rasterize_sf_to_stars(grid, "ciw_capped", res = res)
   
-  bb <- expand_bbox(st_bbox(study_boundary), 0.10)
+  bb <- map_bbox(study_boundary)
   
-  colscale_chg <- RColorBrewer::brewer.pal(11, "RdBu")
-  colpal_chg <- colorRampPalette(colscale_chg)
+  chg_cols <- colorRampPalette(RColorBrewer::brewer.pal(11, "RdBu"))(11)
+  unc_cols <- colorRampPalette(c(
+    "#FEFEFE", "#FFF4B3", "#F5D271", "#F2B647", "#EC8E00", "#CA302A"
+  ))(11)
   
-  colscale_unc <- c("#FEFEFE", "#FFF4B3", "#F5D271", "#F2B647", "#EC8E00", "#CA302A")
-  colpal_unc <- colorRampPalette(colscale_unc)
-  
-  legend_title_chg <- paste0(
-    "<span style='font-size:20pt; font-weight:bold'>", wrap_species_label(species_name), "</span><br><br>",
-    "<span style='font-size:14pt'>", title, "</span><br>",
-    "<span style='font-size:7pt'>", subtitle, "</span><br>",
-    "<span style='font-size:7pt'>Posterior Median</span>"
-  )
-  
-  legend_title_ciw <- paste0(
-    "<span style='font-size:20pt; font-weight:bold'>", wrap_species_label(species_name), "</span><br><br>",
-    "<span style='font-size:14pt'>", title, "</span><br>",
-    "<span style='font-size:7pt'>", subtitle, "</span><br>",
-    "<span style='font-size:7pt'>90% CI width</span>"
-  )
-  
-  breaks <- seq(-max_abs, max_abs, length.out = 7)
-  breaks[4] <- 0
-  
-  chg_plot <- ggplot() +
-    (if (!is.null(bcr_sf)) geom_sf(data = bcr_sf, colour = "gray80", fill = NA, linewidth = 0.3) else NULL) +
-    stars::geom_stars(data = chg_stars) +
-    scale_fill_gradientn(
-      name = legend_title_chg,
-      colors = colpal_chg(11),
-      na.value = "transparent",
-      breaks = breaks,
-      labels = signif(breaks, 2),
-      limits = c(-max_abs, max_abs)
-    ) +
-    (if (!is.null(water_sf)) geom_sf(data = water_sf, fill = "#F5F5F5", col = "transparent") else NULL) +
-    (if (!is.null(signif_poly)) list(
-      geom_sf(data = subset(signif_poly, classification == "Increase"),
-              fill = "transparent", col = "dodgerblue", linewidth = 1),
-      geom_sf(data = subset(signif_poly, classification == "Decrease"),
-              fill = "transparent", col = "orangered", linewidth = 1)
-    ) else NULL) +
-    geom_sf(data = study_boundary, colour = "gray80", fill = NA, linewidth = 0.5, show.legend = FALSE) +
-    theme_map() +
-    ggspatial::annotation_scale(location = "br", width_hint = 0.3) +
-    ggspatial::annotation_north_arrow(
-      location = "tr",
-      which_north = "true",
-      pad_x = unit(0.2, "in"),
-      pad_y = unit(0.2, "in"),
-      style = ggspatial::north_arrow_fancy_orienteering()
-    ) +
-    coord_sf(
-      crs = sf::st_crs(study_boundary),
-      xlim = c(bb["xmin"], bb["xmax"]),
-      ylim = c(bb["ymin"], bb["ymax"]),
-      expand = FALSE
-    )
-  
+  chg_breaks <- seq(-max_abs, max_abs, length.out = 7)
+  chg_breaks[4] <- 0
   ciw_breaks <- seq(0, max_abs, length.out = 7)
   
-  ciw_plot <- ggplot() +
-    {if (!is.null(bcr_sf)) geom_sf(data = bcr_sf, colour = "gray80", fill = NA, linewidth = 0.3)} +
-    stars::geom_stars(data = ciw_stars) +
+  chg_plot <- ggplot() +
+    stars::geom_stars(data = chg_stars)
+  
+  chg_plot <- add_base_map_layers(
+    p = chg_plot,
+    study_boundary = study_boundary,
+    bcr_sf = bcr_sf,
+    water_sf = water_sf,
+    atlas_squares_centroids = NULL,
+    water_fill = "#F5F5F5"
+  )
+  
+  chg_plot <- chg_plot +
     scale_fill_gradientn(
-      name = legend_title_ciw,
-      colors = colpal_unc(11),
+      name = legend_title_map(species_name, title, subtitle, "Posterior median"),
+      colors = chg_cols,
+      na.value = "transparent",
+      breaks = chg_breaks,
+      labels = signif(chg_breaks, 2),
+      limits = c(-max_abs, max_abs)
+    )
+  
+  if (!is.null(signif_poly) && nrow(signif_poly) > 0) {
+    if ("classification" %in% names(signif_poly)) {
+      if (any(signif_poly$classification == "Increase")) {
+        chg_plot <- chg_plot +
+          geom_sf(
+            data = subset(signif_poly, classification == "Increase"),
+            fill = "transparent",
+            col = "dodgerblue",
+            linewidth = 1
+          )
+      }
+      
+      if (any(signif_poly$classification == "Decrease")) {
+        chg_plot <- chg_plot +
+          geom_sf(
+            data = subset(signif_poly, classification == "Decrease"),
+            fill = "transparent",
+            col = "orangered",
+            linewidth = 1
+          )
+      }
+    }
+  }
+  
+  chg_plot <- add_map_annotations(chg_plot, study_boundary, bb)
+  
+  ciw_plot <- ggplot() +
+    stars::geom_stars(data = ciw_stars)
+  
+  ciw_plot <- add_base_map_layers(
+    p = ciw_plot,
+    study_boundary = study_boundary,
+    bcr_sf = bcr_sf,
+    water_sf = water_sf,
+    atlas_squares_centroids = NULL,
+    water_fill = "#F5F5F5"
+  )
+  
+  ciw_plot <- ciw_plot +
+    scale_fill_gradientn(
+      name = legend_title_map(species_name, title, subtitle, "90% CI width"),
+      colors = unc_cols,
       na.value = "transparent",
       breaks = ciw_breaks,
       labels = signif(ciw_breaks, 2),
       limits = c(0, max_abs)
-    ) +
-    {if (!is.null(water_sf)) geom_sf(data = water_sf, fill = "#F5F5F5", col = "transparent")} +
-    geom_sf(data = study_boundary, colour = "black", fill = NA, linewidth = 0.5, show.legend = FALSE) +
-    theme_map() +
-    ggspatial::annotation_scale(location = "br", width_hint = 0.3) +
-    ggspatial::annotation_north_arrow(
-      location = "tr",
-      which_north = "true",
-      pad_x = unit(0.2, "in"),
-      pad_y = unit(0.2, "in"),
-      style = ggspatial::north_arrow_fancy_orienteering()
-    ) +
-    coord_sf(
-      crs = sf::st_crs(study_boundary),
-      xlim = c(bb["xmin"], bb["xmax"]),
-      ylim = c(bb["ymin"], bb["ymax"]),
-      expand = FALSE
     )
   
-  list(chg_plot = chg_plot, ciw_plot = ciw_plot, max_abs = max_abs)
+  ciw_plot <- add_map_annotations(ciw_plot, study_boundary, bb)
+  
+  list(
+    chg_plot = chg_plot,
+    ciw_plot = ciw_plot,
+    max_abs = max_abs
+  )
 }
 
+# ------------------------------------------------------------
+# Meaningful change polygons
+# ------------------------------------------------------------
 
 #' Flag hexagons with strong posterior support for change
 #'

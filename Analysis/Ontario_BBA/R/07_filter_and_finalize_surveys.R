@@ -2,91 +2,79 @@
 # 07_filter_and_finalize_surveys.R
 #
 # Purpose
-#   Create the final, analysis-ready dataset for modeling by applying *all*
-#   survey filters and final bookkeeping in one place. This is the last step
-#   before model fitting and cross-validation scripts.
+#   Create the final analysis-ready survey dataset used by downstream
+#   modeling scripts.
 #
 # What this script does
-#   1) Loads the covariate-augmented surveys and grids from:
-#        data_clean/birds/analysis_data_covariates.rds   (script 06)
-#
-#   2) Filters surveys to a consistent “analysis window”, e.g.,:
-#        - duration == 5 minutes
+#   1) Loads survey, count, grid, and boundary objects produced by
+#      06_extract_covariates.R.
+#   2) Filters surveys to a common analysis window:
+#        - 5-minute duration
 #        - Hours_Since_Sunrise in [-1, 6]
 #        - DayOfYear in [135, 196]
-#        - within the Ontario study boundary
-#        - NOTE: THIS STEP MIGHT NEED TO BE REMOVED SO THAT ANALYSIS WINDOWS
-#                ARE DIFFERENT FOR EACH SPECIES
-#
-#   3) Removes duplicate sampling locations (keeps one survey per rounded x/y).
-#      NOTE: dedupe_by_location() uses random sampling; we set a seed here so
-#      results are reproducible.
-#   4) Subsets the survey × species count matrix to match the filtered surveys.
-#      IMPORTANT: in the current workflow, the link between surveys and the
-#      count matrix is row order (via obs_idx). This script preserves and uses
-#      obs_idx consistently to maintain alignment.
-#   5) Adds helper variables used by multiple downstream scripts:
-#        - Atlas3 indicator (0/1 for OBBA2/OBBA3)
-#        - ARU indicator (0/1)
-#        - square_atlas and square_year (factor IDs for random effects)
-#   6) (Optional) Flags prediction-grid points overlapping large-water polygons
-#      if data_clean/spatial/water_filtered.shp is available.
-#   7) Standardizes selected continuous covariates (currently prec and tmax)
-#      using means/sds computed from the filtered surveys (not the full grid).
-#   8) Creates derived “north vs south BCR” covariate splits used in some model
-#      formulations (e.g., lc_1S vs lc_1N), plus simple binary on_river/on_road
+#        - within the study boundary
+#   3) Removes duplicate survey locations, retaining one survey per
+#      rounded x/y location.
+#   4) Subsets the survey × species count matrix to match the filtered
+#      surveys, preserving alignment through obs_idx.
+#   5) Adds survey-level helper variables used in modeling.
+#   6) Flags prediction-grid points that intersect optional large-water
+#      polygons, if available.
+#   7) Standardizes selected continuous covariates using statistics
+#      calculated from the filtered surveys.
+#   8) Adds derived north/south BCR covariates and simple road/river
 #      indicators.
-#   9) Builds species summary tables (detections and occupied squares) to help
-#      triage which species to model and to support reporting/QA.
+#   9) Builds species summary tables:
+#        - detections and occupied squares by atlas/BCR
+#        - raw-count dispersion summaries for Poisson vs nbinomial triage
+#        - safe-date summaries by atlas/BCR
+#   10) Builds a hex grid for later regional summaries.
 #
 # Inputs
-#   - data_clean/birds/analysis_data_covariates.rds   (from script 06)
+#   - data_clean/birds/analysis_data_covariates.rds
 #       must contain:
 #         * all_surveys_with_covs (sf)
-#         * count_matrix (matrix or df)
-#         * grid_OBBA2, grid_OBBA3 (sf points; EPSG:3978)
-#         * boundary (sf; Ontario boundary)
+#         * count_matrix
+#         * grid_OBBA2, grid_OBBA3 (sf)
+#         * boundary (sf)
+#         * bcr_sf (sf)
+#         * all_species
 #   - R/functions/survey_processing_utils.R
 #       used functions:
 #         * as_counts_tbl()
 #         * dedupe_by_location()
 #         * standardize_covars()
+#   - R/functions/inla_model_utils.R
+#       used functions:
+#         * make_hex_grid()
 #   - Optional:
 #       data_clean/spatial/water_filtered.shp
+#       data_clean/metadata/safe_dates_OBBA.xlsx
 #
-# Outputs
+# Output
 #   - data_clean/birds/data_ready_for_analysis.rds
 #       list with:
-#         * study_boundary (sf)
-#         * all_surveys (sf; filtered + finalized)
-#         * counts (tibble; aligned with all_surveys by obs_idx)
-#         * grid_OBBA2, grid_OBBA3 (sf; covariates + optional on_water flag)
-#         * species_square_summary (tbl)
-#         * species_total_squares (tbl)
-#         * species_to_model (tbl)
-#         * covar_stats (tbl; means/sds used for standardization)
+#         * study_boundary
+#         * bcr_sf
+#         * all_surveys
+#         * counts
+#         * grid_OBBA2, grid_OBBA3
+#         * species_to_model
+#         * outside_safe_dates
+#         * missing_safe_dates
+#         * dispersion_screening
+#         * hex_grid
+#         * safe_dates
 #         * date_created
 #
-# Key design choices / conventions
-#   - CRS: surveys may be stored in km-units CRS for modeling, but the prediction
-#     grids are expected to be in EPSG:3978 (metres). This script does not
-#     reproject grids; it assumes they are already in EPSG:3978 from script 06.
-#   - Reproducibility: because dedupe_by_location() uses slice_sample(), set a
-#     fixed seed before de-duplication to ensure deterministic outputs.
-#   - Alignment: obs_idx is treated as the stable “row-position key” linking
-#     surveys and the count matrix within this workflow. If you modify earlier
-#     scripts, ensure this alignment remains valid.
-#
-# Common adaptations for other atlases / agencies
-#   - Adjust the seasonal window (DayOfYear) to match local breeding phenology.
-#   - Adjust the sunrise window (Hours_Since_Sunrise) for survey protocols.
-#   - Modify duplicate-location handling (rounding scale and selection rule).
-#   - Update BCR groupings (north/south) or remove these derived covariates if
-#     covariate effects should not differ by region
-#
+# Notes
+#   - obs_idx is treated as the row-position key linking filtered surveys
+#     to the saved count matrix.
+#   - dedupe_by_location() uses random sampling; a fixed seed is set here
+#     for reproducibility.
 # ============================================================
 
-rm(list = ls())
+rm(list=ls())
 
 suppressPackageStartupMessages({
   library(sf)
@@ -94,16 +82,17 @@ suppressPackageStartupMessages({
   library(tidyr)
   library(lubridate)
   library(here)
+  library(readxl)
 })
 
-# Centralized paths
+# ------------------------------------------------------------
+# Paths and utilities
+# ------------------------------------------------------------
+
 source(here::here("R", "00_config_paths.R"))
+source(file.path(paths$functions, "survey_processing_utils.R"))
+source(file.path(paths$functions, "inla_model_utils.R"))
 
-# Utilities
-survey_processing_utils_path <- file.path(paths$functions, "survey_processing_utils.R")
-source(survey_processing_utils_path)
-
-# Ensure output dir exists
 dir.create(file.path(paths$data_clean, "birds"), recursive = TRUE, showWarnings = FALSE)
 
 # ------------------------------------------------------------
@@ -113,38 +102,32 @@ dir.create(file.path(paths$data_clean, "birds"), recursive = TRUE, showWarnings 
 in_file  <- file.path(paths$data_clean, "birds", "analysis_data_covariates.rds")
 out_file <- file.path(paths$data_clean, "birds", "data_ready_for_analysis.rds")
 
-# Filtering windows
 keep_duration_min <- 5
 hss_min <- -1
 hss_max <- 6
 doy_min <- 135
 doy_max <- 196
 
-# Duplicate location handling (rounding in projected coordinates; kiolmetre CRS)
-# digits = 2 means nearest 10 m; 1 nearest 100 m.
 dup_coord_digits <- 2
-
-# Make dedupe reproducible (dedupe_by_location uses slice_sample)
 dedupe_seed <- 1
 
 covars_for_stats <- c(
-  "insect_broadleaf","insect_needleleaf","road","water_river","prec","tmax",
-  "urban_2","urban_3",
-  "lc_1","lc_4","lc_5","lc_8","lc_9","lc_10","lc_11","lc_12","lc_14","lc_17"
+  "insect_broadleaf", "insect_needleleaf", "road", "water_river", "prec", "tmax",
+  "urban_2", "urban_3",
+  "lc_1", "lc_4", "lc_5", "lc_8", "lc_9", "lc_10", "lc_11", "lc_12", "lc_14", "lc_17"
 )
-covars_to_standardize <- c("prec","tmax")
+covars_to_standardize <- c("prec", "tmax")
 
-# Optional water polygon layer path
+south_bcr <- c(12, 13)
+north_bcr <- c(7, 8)
+
 water_filtered_path <- file.path(paths$data_clean, "spatial", "water_filtered.shp")
+safe_date_path <- file.path(paths$data_clean, "metadata", "safe_dates_OBBA.xlsx")
 
 # ------------------------------------------------------------
 # Load input object
 # ------------------------------------------------------------
 
-if (!file.exists(in_file)) {
-  stop("Cannot find input at: ", in_file,
-       "\nHave you run 06_extract_covariates.R?")
-}
 dat <- readRDS(in_file)
 
 all_surveys    <- dat$all_surveys_with_covs
@@ -158,37 +141,46 @@ stopifnot(inherits(grid_OBBA2, "sf"))
 stopifnot(inherits(grid_OBBA3, "sf"))
 
 water_filtered <- if (file.exists(water_filtered_path)) {
-  sf::st_read(water_filtered_path, quiet = TRUE)
+  st_read(water_filtered_path, quiet = TRUE)
 } else {
   NULL
 }
 
-# Ensure obs_idx exists and is stable
+all_species_unique <- dat$all_species %>%
+  distinct(species_id, .keep_all = TRUE) %>%
+  transmute(
+    species_id = as.character(species_id),
+    english_name
+  )
+
+# ------------------------------------------------------------
+# Basic data checks and setup
+# ------------------------------------------------------------
+
 if (!("obs_idx" %in% names(all_surveys))) {
-  all_surveys <- all_surveys %>% mutate(obs_idx = row_number(), .before = 1)
+  all_surveys <- all_surveys %>%
+    mutate(obs_idx = row_number(), .before = 1)
 } else {
-  all_surveys <- all_surveys %>% arrange(obs_idx)
+  all_surveys <- all_surveys %>%
+    arrange(obs_idx)
 }
 
-# Convert count matrix to tibble with row-position obs_idx = 1..N
-# IMPORTANT: this obs_idx reflects row order in the saved matrix,
-# not any persistent survey identifier.
 counts <- as_counts_tbl(count_matrix)
 
-# Day-of-year (if missing)
 if (!("DayOfYear" %in% names(all_surveys))) {
-  all_surveys <- all_surveys %>% mutate(DayOfYear = yday(Date_Time))
+  all_surveys <- all_surveys %>%
+    mutate(DayOfYear = yday(Date_Time))
+}
+
+required_cols <- c("Survey_Duration_Minutes", "Hours_Since_Sunrise", "DayOfYear", "Date_Time", "Atlas")
+missing_cols <- setdiff(required_cols, names(all_surveys))
+if (length(missing_cols) > 0) {
+  stop("Missing required survey columns: ", paste(missing_cols, collapse = ", "))
 }
 
 # ------------------------------------------------------------
-# 1) Filter surveys (duration, sunrise window, season)
+# 1) Filter surveys to the analysis window
 # ------------------------------------------------------------
-
-req <- c("Survey_Duration_Minutes", "Hours_Since_Sunrise", "DayOfYear", "Date_Time")
-missing <- setdiff(req, names(all_surveys))
-if (length(missing) > 0) {
-  stop("Missing required survey columns: ", paste(missing, collapse = ", "))
-}
 
 surveys_f <- all_surveys %>%
   filter(
@@ -201,15 +193,17 @@ surveys_f <- all_surveys %>%
   arrange(obs_idx)
 
 # ------------------------------------------------------------
-# 2) Keep only surveys inside study boundary
+# 2) Keep only surveys inside the study boundary
 # ------------------------------------------------------------
 
 study_boundary <- st_transform(study_boundary, st_crs(surveys_f))
 inside <- st_within(surveys_f, study_boundary, sparse = FALSE)[, 1]
-surveys_f <- surveys_f[inside, , drop = FALSE] %>% arrange(obs_idx)
+
+surveys_f <- surveys_f[inside, , drop = FALSE] %>%
+  arrange(obs_idx)
 
 # ------------------------------------------------------------
-# 3) Retain a single survey per repeated location (reproducible)
+# 3) Remove duplicate survey locations
 # ------------------------------------------------------------
 
 set.seed(dedupe_seed)
@@ -217,76 +211,85 @@ surveys_f <- dedupe_by_location(surveys_f, digits = dup_coord_digits) %>%
   arrange(obs_idx)
 
 # ------------------------------------------------------------
-# 4) Subset counts to remaining surveys
+# 4) Subset counts to the retained surveys
 # ------------------------------------------------------------
-# Because as_counts_tbl() defines obs_idx = row_number(), we subset by row position.
-# This is valid IF the original count_matrix rows were in the same order as all_surveys
-# when they were saved together in script 06 (which they should be).
+
 stopifnot(max(surveys_f$obs_idx) <= nrow(counts))
 
 counts_f <- counts %>%
-  slice(surveys_f$obs_idx)
+  slice(surveys_f$obs_idx) %>%
+  mutate(obs_idx = surveys_f$obs_idx)
 
-# Ensure alignment
 stopifnot(nrow(counts_f) == nrow(surveys_f))
 
-# Replace counts_f$obs_idx with the survey obs_idx for downstream joins clarity
-counts_f$obs_idx <- surveys_f$obs_idx
-
 # ------------------------------------------------------------
-# 5) Add helper columns
+# 5) Add helper columns used downstream
 # ------------------------------------------------------------
-
-if (!("Atlas" %in% names(surveys_f))) stop("Missing 'Atlas' column in surveys (expected OBBA2/OBBA3).")
 
 surveys_f <- surveys_f %>%
   mutate(
-    Atlas3 = ifelse(Atlas == "OBBA2", 0L, 1L),
-    ARU    = ifelse("Survey_Type" %in% names(surveys_f) & Survey_Type == "ARU", 1L, 0L)
+    Atlas3   = if_else(Atlas == "OBBA3", 1L, 0L),
+    Atlas3_c = Atlas3 - 0.5,
+    days_rescaled = DayOfYear - 166,
+    BCR_idx = as.integer(factor(BCR))
   )
+
+if ("Survey_Type" %in% names(surveys_f)) {
+  surveys_f <- surveys_f %>%
+    mutate(ARU = if_else(Survey_Type == "ARU", 1L, 0L))
+} else {
+  surveys_f <- surveys_f %>%
+    mutate(ARU = 0L)
+}
 
 if ("square_id" %in% names(surveys_f)) {
   surveys_f <- surveys_f %>%
     mutate(
-      square_atlas = as.numeric(factor(paste0(square_id, "-", Atlas))),
-      square_year  = as.numeric(factor(paste0(square_id, "-", year(Date_Time))))
+      square_atlas = as.integer(factor(paste0(square_id, "-", Atlas))),
+      square_year  = as.integer(factor(paste0(square_id, "-", year(Date_Time))))
     )
 } else {
-  surveys_f$square_atlas <- NA_real_
-  surveys_f$square_year  <- NA_real_
+  surveys_f <- surveys_f %>%
+    mutate(
+      square_atlas = NA_integer_,
+      square_year  = NA_integer_
+    )
 }
 
 # ------------------------------------------------------------
-# 6) Grid: on_water flag + NA handling + pixel_id
+# 6) Prediction grids: add on_water and pixel_id
 # ------------------------------------------------------------
 
 if (!is.null(water_filtered)) {
-  water_filtered <- st_make_valid(water_filtered)
-  water_filtered <- st_transform(water_filtered, st_crs(grid_OBBA2))
+  water_filtered <- water_filtered %>%
+    st_make_valid() %>%
+    st_transform(st_crs(grid_OBBA2))
   
-  overlaps2 <- st_intersects(grid_OBBA2, water_filtered)
-  overlaps3 <- st_intersects(grid_OBBA3, water_filtered)
-  
-  grid_OBBA2$on_water <- lengths(overlaps2) > 0
-  grid_OBBA3$on_water <- lengths(overlaps3) > 0
+  grid_OBBA2$on_water <- lengths(st_intersects(grid_OBBA2, water_filtered)) > 0
+  grid_OBBA3$on_water <- grid_OBBA2$on_water
 } else {
   grid_OBBA2$on_water <- NA
   grid_OBBA3$on_water <- NA
 }
 
-# Avoid na.omit() removing rows due to optional covariates missing
 core_grid_vars <- intersect(c("prec", "tmax"), names(grid_OBBA2))
 if (length(core_grid_vars) > 0) {
-  grid_OBBA2 <- grid_OBBA2 %>% filter(if_all(all_of(core_grid_vars), ~ !is.na(.x)))
-  grid_OBBA3 <- grid_OBBA3 %>% filter(if_all(all_of(core_grid_vars), ~ !is.na(.x)))
+  grid_OBBA2 <- grid_OBBA2 %>%
+    filter(if_all(all_of(core_grid_vars), ~ !is.na(.x)))
+  
+  grid_OBBA3 <- grid_OBBA3 %>%
+    filter(if_all(all_of(core_grid_vars), ~ !is.na(.x)))
 }
 
-# Preserve existing pixel_id if present
-if (!("pixel_id" %in% names(grid_OBBA2))) grid_OBBA2$pixel_id <- seq_len(nrow(grid_OBBA2))
-if (!("pixel_id" %in% names(grid_OBBA3))) grid_OBBA3$pixel_id <- seq_len(nrow(grid_OBBA3))
+if (!("pixel_id" %in% names(grid_OBBA2))) {
+  grid_OBBA2$pixel_id <- seq_len(nrow(grid_OBBA2))
+}
+if (!("pixel_id" %in% names(grid_OBBA3))) {
+  grid_OBBA3$pixel_id <- seq_len(nrow(grid_OBBA3))
+}
 
 # ------------------------------------------------------------
-# 7) Standardize prec and tmax only (based on surveys)
+# 7) Standardize selected continuous covariates
 # ------------------------------------------------------------
 
 std <- standardize_covars(
@@ -303,196 +306,222 @@ grid_OBBA3  <- std$grid3
 covar_stats <- std$stats
 
 # ------------------------------------------------------------
-# 8) Derived covariates (north/south components)
+# 8) Add derived north/south BCR covariates
 # ------------------------------------------------------------
 
 add_derived_covariates <- function(df, south_bcr = c(12, 13), north_bcr = c(7, 8)) {
-  if (!("BCR" %in% names(df))) stop("BCR missing; required for lc_* split.")
-  get0 <- function(nm) if (nm %in% names(df)) df[[nm]] else 0
+  if (!("BCR" %in% names(df))) {
+    stop("BCR missing; required for derived covariates.")
+  }
+  
+  get_or_zero <- function(nm) {
+    if (nm %in% names(df)) df[[nm]] else rep(0, nrow(df))
+  }
+  
+  df <- df %>%
+    mutate(
+      on_river = as.integer(get_or_zero("water_river") > 0),
+      on_road  = as.integer(get_or_zero("road") > 0)
+    )
+  
+  for (nm in c("lc_1", "lc_4", "lc_5", "lc_8", "lc_9", "lc_10")) {
+    df[[paste0(nm, "S")]] <- if_else(df$BCR %in% south_bcr, get_or_zero(nm), 0)
+    df[[paste0(nm, "N")]] <- if_else(df$BCR %in% north_bcr, get_or_zero(nm), 0)
+  }
   
   df %>%
     mutate(
-      on_river = as.integer(!is.na(get0("water_river")) & get0("water_river") > 0),
-      on_road  = as.integer(!is.na(get0("road")) & get0("road") > 0),
-      
-      lc_1S  = ifelse(BCR %in% south_bcr, get0("lc_1"),  0),
-      lc_1N  = ifelse(BCR %in% north_bcr, get0("lc_1"),  0),
-      lc_4S  = ifelse(BCR %in% south_bcr, get0("lc_4"),  0),
-      lc_4N  = ifelse(BCR %in% north_bcr, get0("lc_4"),  0),
-      lc_5S  = ifelse(BCR %in% south_bcr, get0("lc_5"),  0),
-      lc_5N  = ifelse(BCR %in% north_bcr, get0("lc_5"),  0),
-      lc_8S  = ifelse(BCR %in% south_bcr, get0("lc_8"),  0),
-      lc_8N  = ifelse(BCR %in% north_bcr, get0("lc_8"),  0),
-      lc_9S  = ifelse(BCR %in% south_bcr, get0("lc_9"),  0),
-      lc_9N  = ifelse(BCR %in% north_bcr, get0("lc_9"),  0),
-      lc_10S = ifelse(BCR %in% south_bcr, get0("lc_10"), 0),
-      lc_10N = ifelse(BCR %in% north_bcr, get0("lc_10"), 0),
-      
-      onriver_S = ifelse(BCR %in% south_bcr, on_river, 0),
-      onriver_N = ifelse(BCR %in% north_bcr, on_river, 0)
+      onriver_S = if_else(BCR %in% south_bcr, on_river, 0L),
+      onriver_N = if_else(BCR %in% north_bcr, on_river, 0L)
     )
 }
 
-south_bcr <- c(12, 13)
-north_bcr <- c(7, 8)
-
-surveys_f  <- add_derived_covariates(surveys_f,  south_bcr, north_bcr)
+surveys_f  <- add_derived_covariates(surveys_f, south_bcr, north_bcr)
 grid_OBBA2 <- add_derived_covariates(grid_OBBA2, south_bcr, north_bcr)
 grid_OBBA3 <- add_derived_covariates(grid_OBBA3, south_bcr, north_bcr)
 
 # ------------------------------------------------------------
-# 9) Species summary tables
+# 9) Build survey metadata and long-format count table once
 # ------------------------------------------------------------
 
-all_species_unique <- dat$all_species %>%
-  group_by(species_id) %>%
-  slice(1) %>%
-  ungroup() %>%
-  mutate(species_id = as.character(species_id)) %>%
-  select(species_id, english_name)
-
-species_square_summary <- counts_f %>%
-  pivot_longer(cols = -obs_idx, names_to = "species_id", values_to = "count") %>%
-  left_join(st_drop_geometry(surveys_f), by = "obs_idx") %>%
-  group_by(species_id, square_id, Atlas, BCR) %>%
-  summarise(n_surveys_det = sum(count > 0, na.rm = TRUE), .groups = "drop") %>%
-  group_by(species_id, Atlas, BCR) %>%
-  summarise(
-    n_det = sum(n_surveys_det, na.rm = TRUE),
-    n_sq  = sum(n_surveys_det > 0, na.rm = TRUE),
-    .groups = "drop"
-  ) %>%
-  left_join(all_species_unique, by = "species_id")
-
-species_total_squares <- species_square_summary %>%
-  group_by(species_id, Atlas) %>%
-  summarise(
-    total_detections = sum(n_det, na.rm = TRUE),
-    total_squares    = sum(n_sq,  na.rm = TRUE),
-    .groups = "drop"
-  ) %>%
-  pivot_wider(
-    names_from = Atlas,
-    values_from = c(total_detections, total_squares),
-    values_fill = 0
-  ) %>%
-  left_join(all_species_unique, by = "species_id")
-
-species_to_model <- species_total_squares %>%
-  arrange(desc(total_squares_OBBA3)) %>%
-  relocate(species_id, english_name)
-
-# ------------------------------------------------------------
-# Add additional survey-level covariates needed for INLA modeling
-# ------------------------------------------------------------
-
-surveys_f <- surveys_f %>%
+survey_meta <- surveys_f %>%
+  st_drop_geometry() %>%
   mutate(
-    days_rescaled = DayOfYear - 166,             # Days since june 15
-    BCR_idx = as.integer(as.factor(BCR)),        # Integer
-    Atlas3 = ifelse(Atlas == "OBBA2", 0, 1),
-    Atlas3_c = Atlas3 - 0.5
+    ecoregion = case_when(
+      BCR == 7 ~ "Hudson Plains",
+      BCR %in% c(8, 12) ~ "Boreal Shield",
+      BCR == 13 ~ "Mixedwood Plains",
+      TRUE ~ NA_character_
+    ),
+    survey_doy = yday(as.Date(Date_Time))
   )
 
-# ------------------------------------------------------------
-# For each species, determine whether default model should be poisson or negative binomial
-# ------------------------------------------------------------
-species_to_model$error_family = "poisson"
+counts_long <- counts_f %>%
+  pivot_longer(
+    cols = -obs_idx,
+    names_to = "species_id",
+    values_to = "count"
+  ) %>%
+  mutate(species_id = as.character(species_id)) %>%
+  left_join(survey_meta, by = "obs_idx") %>%
+  left_join(all_species_unique, by = "species_id")
 
-# Loop through species and create summaries of raw counts
+# ------------------------------------------------------------
+# 10) Dispersion screening for Poisson vs nbinomial default
+# ------------------------------------------------------------
 
-dispersion_screening <- vector("list", nrow(species_to_model))
-for (i in seq_len(nrow(species_to_model))) {
+species_ids <- setdiff(names(counts_f), "obs_idx")
+
+dispersion_screening <- lapply(seq_along(species_ids), function(i) {
+  sp_code <- species_ids[i]
+  sp_english <- all_species_unique$english_name[match(sp_code, all_species_unique$species_id)]
   
-  
-  sp_english <- species_to_model$english_name[i]
-  sp_code <- as.character(species_to_model$species_id[i])
-  
-  message("\n====================\n", i, "/", nrow(species_to_model), ": ", sp_english, " (species_id = ", sp_code, ")\n====================")
-  
-  # Append counts
-  sp_dat <- surveys_f %>% mutate(count = counts_f[[sp_code]])
-  
-  # ----------------------------------------------------------------------------
-  # Triage species for modeling with Poisson or nbinomial
-  # ----------------------------------------------------------------------------
-  
-  # Pull count vector
-  y <- sp_dat$count
+  y <- counts_f[[sp_code]]
   y <- y[!is.na(y)]
   
-  # Basic safeguards
   n_surveys <- length(y)
-  
   if (n_surveys == 0) {
-    dispersion_screening[[i]] <- tibble(
+    return(tibble(
       species_id = sp_code,
       english_name = sp_english,
       n_surveys = 0
-    )
-    next
+    ))
   }
   
-  positive_counts <- y[y > 0]
+  y_pos <- y[y > 0]
+  n_pos <- length(y_pos)
   
-  dispersion_screening[[i]] <- tibble(
-    species_id    = sp_code,
-    english_name  = sp_english,
-    n_surveys     = n_surveys,
-    n_positive    = sum(y > 0),
-    prop_zero     = mean(y == 0),
-    mean_count    = mean(y),
-    max_count     = max(y),
-    n_gt_7       = sum(y > 7),
-    n_gt_10       = sum(y > 10),
-    n_gt_25       = sum(y > 25),
-    
-    # Proportion of population in top 1% of non-zero counts
-    prop_total_top1pct_nonzero = {
-      
-      y_pos <- y[y > 0]
-      n_pos <- length(y_pos)
-      
-      if (n_pos == 0) {
-        NA_real_
-      } else {
-        
-        n_top <- max(1, ceiling(0.01 * n_pos))
-        y_sorted <- sort(y_pos, decreasing = TRUE)
-        
-        sum(y_sorted[seq_len(n_top)]) / sum(y_pos)
-      }
-      
+  tibble(
+    species_id = sp_code,
+    english_name = sp_english,
+    n_surveys = n_surveys,
+    n_positive = n_pos,
+    prop_zero = mean(y == 0),
+    mean_count = mean(y),
+    max_count = max(y),
+    n_gt_7 = sum(y > 7),
+    n_gt_10 = sum(y > 10),
+    n_gt_25 = sum(y > 25),
+    prop_total_top1pct_nonzero = if (n_pos == 0) {
+      NA_real_
+    } else {
+      n_top <- max(1, ceiling(0.01 * n_pos))
+      sum(sort(y_pos, decreasing = TRUE)[seq_len(n_top)]) / sum(y_pos)
     }
   )
-  
-  
-}
+}) %>%
+  bind_rows()
 
-dispersion_screening <- bind_rows(dispersion_screening)
-
-# Identify species that should be modeled using negative binomial
 nb_candidates <- dispersion_screening %>%
   filter(
+    n_positive > 200,
     
-    n_positive > 200 &
-    
-    (
-    # If more than 1% of non-zero counts are greater than 7
-    (n_gt_7/n_positive >= 0.01) |
-    
-    # If more than 15% of total count is in the top 1% of surveys (indicates flocking)
-    prop_total_top1pct_nonzero >=0.15)
-    
+    # If more than 1% of counts are > 7
+    (n_gt_7 / n_positive >= 0.01 & max_count >= 15) | 
+      
+    # More than 15% of total count is in the top 1% of counts (indicates colonial behaviour or flocking)
+    (prop_total_top1pct_nonzero >= 0.15) | 
+      
+    # Max count > 10
+    (max_count >= 20)
   ) %>%
   arrange(desc(max_count))
 
 nb_candidates %>% as.data.frame()
 
-species_to_model$error_family[which(species_to_model$english_name %in% nb_candidates$english_name)] <- "nbinomial"
+# ------------------------------------------------------------
+# 11) Build hex grid for later regional summaries
+# ------------------------------------------------------------
 
-# Other flocking or colonial species
-subset(dispersion_screening, english_name == "Pine Siskin")
+hex_grid <- make_hex_grid(study_boundary, width_km = 25)
+
+# ------------------------------------------------------------
+# 12) Load and apply safe dates
+# ------------------------------------------------------------
+
+species_manual_safedates <- c("Canada Jay", "Common Raven", "White-winged Crossbill", "Red Crossbill")
+
+if (!file.exists(safe_date_path)) {
+  stop("Cannot find safe date file at: ", safe_date_path)
+}
+
+safe_dates <- read_xlsx(safe_date_path) %>%
+  mutate(
+    start_doy = yday(as.Date(start)) - 4,
+    end_doy   = yday(as.Date(end)) + 4
+  ) %>%
+  select(sp_english, ecoregion, start_doy, end_doy)
+
+median_start <- median(safe_dates$start_doy, na.rm = TRUE)
+median_end   <- median(safe_dates$end_doy, na.rm = TRUE)
+
+safe_dates <- safe_dates %>%
+  mutate(
+    start_doy = if_else(sp_english %in% species_manual_safedates, median_start, start_doy),
+    end_doy   = if_else(sp_english %in% species_manual_safedates, median_end, end_doy)
+  )
+
+counts_long <- counts_long %>%
+  left_join(
+    safe_dates,
+    by = c("english_name" = "sp_english", "ecoregion" = "ecoregion")
+  ) %>%
+  mutate(
+    safe_date_status = case_when(
+      is.na(start_doy) | is.na(end_doy) ~ "no_safe_dates",
+      survey_doy >= start_doy & survey_doy <= end_doy ~ "inside",
+      TRUE ~ "outside"
+    )
+  )
+
+species_bcr_summary <- counts_long %>%
+  group_by(species_id, english_name, Atlas, BCR, ecoregion) %>%
+  summarise(
+    detections_total = sum(count > 0, na.rm = TRUE),
+    detections_safe = sum(count > 0 & safe_date_status == "inside", na.rm = TRUE),
+    detections_outside = sum(count > 0 & safe_date_status == "outside", na.rm = TRUE),
+    detections_no_safe = sum(count > 0 & safe_date_status == "no_safe_dates", na.rm = TRUE),
+    prop_outside = if_else(
+      detections_total > 0,
+      detections_outside / detections_total,
+      NA_real_
+    ),
+    prop_no_safe = if_else(
+      detections_total > 0,
+      detections_no_safe / detections_total,
+      NA_real_
+    ),
+    .groups = "drop"
+  )
+
+outside_safe_dates <- species_bcr_summary %>%
+  filter(prop_outside >= 0.1, detections_total >= 100) %>%
+  arrange(english_name, BCR, Atlas)
+
+missing_safe_dates <- species_bcr_summary %>%
+  filter(detections_total > 10, prop_no_safe > 0) %>%
+  arrange(desc(detections_total))
+
+species_safecounts_per_atlas <- counts_long %>%
+  group_by(species_id, english_name, Atlas) %>%
+  summarise(
+    detections_safe = sum(count > 0 & safe_date_status == "inside", na.rm = TRUE),
+    n_squares_safe = n_distinct(square_id[count > 0 & safe_date_status == "inside"]),
+    .groups = "drop"
+  ) %>%
+  pivot_wider(
+    names_from = Atlas,
+    values_from = c(detections_safe, n_squares_safe),
+    names_glue = "{.value}_{Atlas}",
+    values_fill = 0
+  )
+
+species_to_model <- species_safecounts_per_atlas %>%
+  mutate(
+    error_family = if_else(species_id %in% nb_candidates$species_id, "nbinomial", "poisson")
+  ) %>%
+  arrange(desc(n_squares_safe_OBBA3)) %>%
+  relocate(species_id, english_name, error_family)
 
 # ------------------------------------------------------------
 # Save
@@ -500,17 +529,25 @@ subset(dispersion_screening, english_name == "Pine Siskin")
 
 saveRDS(
   list(
+    
     study_boundary = study_boundary,
     bcr_sf = dat$bcr_sf,
+    
     all_surveys = surveys_f,
     counts = counts_f,
     grid_OBBA2 = grid_OBBA2,
     grid_OBBA3 = grid_OBBA3,
-    species_square_summary = species_square_summary,
-    species_total_squares = species_total_squares,
+    
     species_to_model = species_to_model,
+    species_bcr_summary = species_bcr_summary,
+    
+    outside_safe_dates = outside_safe_dates,
+    missing_safe_dates = missing_safe_dates,
+    
     dispersion_screening = dispersion_screening,
-    covar_stats = covar_stats,
+    
+    hex_grid = hex_grid,
+    safe_dates = safe_dates,
     date_created = Sys.time()
   ),
   file = out_file

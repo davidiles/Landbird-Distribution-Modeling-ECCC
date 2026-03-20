@@ -112,6 +112,19 @@ rasterize_sf_to_stars <- function(grid_sf, field, res) {
   stars::st_as_stars(r)
 }
 
+rasterize_sf <- function(grid_sf, field, res,metadata) {
+  stopifnot(inherits(grid_sf, "sf"))
+  stopifnot(field %in% names(grid_sf))
+  
+  v <- terra::vect(grid_sf)
+  r_template <- terra::rast(v, res = res)
+  r <- terra::rasterize(v, r_template, field = field, fun = mean, na.rm = TRUE)
+  names(r) <- field
+  metags(r) <- metadata
+  
+  r
+}
+
 #' Standard project map theme
 #'
 #' @return ggplot theme object.
@@ -849,4 +862,132 @@ build_meaningful_change_polys <- function(eta_draws_per_hex,
   }
   
   change_polys_smoothed
+}
+
+
+
+
+#' Summarize posterior change within each hexagon and join to hex sf
+#'
+#' For each hexagon, compute posterior summaries for a parameter such as
+#' absolute change, then join those summaries onto the hex geometry.
+#'
+#' @param eta_draws_per_hex Named list of posterior draws by hexagon.
+#''   Expected structure:
+#'   eta_draws_per_hex[[hex_id]][[param]] = numeric vector of draws
+#' @param hexagon_sf sf object of hexagons. Must include `hex_id`.
+#' @param param Name of parameter to summarize, default "abs_change".
+#' @param threshold Threshold for evaluating probability of meaningful change.
+#' @param ci_probs Length-2 numeric vector giving lower/upper credible interval
+#'   probabilities, e.g. c(0.05, 0.95).
+#' @param include_median Logical; if TRUE, also compute posterior median.
+#'
+#' @return sf object with one row per hexagon and posterior summary columns joined.
+#' @export
+summarize_change_by_hex <- function(eta_draws_per_hex,
+                                    hexagon_sf,
+                                    param = "abs_change",
+                                    threshold = 0,
+                                    ci_probs = c(0.05, 0.95),
+                                    include_median = TRUE) {
+  
+  stopifnot(inherits(hexagon_sf, "sf"))
+  stopifnot("hex_id" %in% names(hexagon_sf))
+  stopifnot(length(ci_probs) == 2)
+  
+  hex_sf <- hexagon_sf %>%
+    dplyr::mutate(hex_id = as.character(hex_id))
+  
+  # helper to extract a numeric draw vector for one hex
+  extract_draws <- function(x, param) {
+    if (is.null(x)) return(NULL)
+    
+    # most likely case: list element contains named components
+    if (is.list(x) && !is.null(x[[param]])) {
+      return(as.numeric(x[[param]]))
+    }
+    
+    # alternative: data.frame/tibble with a column named param
+    if (is.data.frame(x) && param %in% names(x)) {
+      return(as.numeric(x[[param]]))
+    }
+    
+    # fallback: if x itself is the numeric draw vector and param is implicit
+    if (is.numeric(x)) {
+      return(as.numeric(x))
+    }
+    
+    NULL
+  }
+  
+  # if list is unnamed, try to align by order
+  if (is.null(names(eta_draws_per_hex))) {
+    if (length(eta_draws_per_hex) != nrow(hex_sf)) {
+      stop("eta_draws_per_hex is unnamed and does not match nrow(hexagon_sf).")
+    }
+    names(eta_draws_per_hex) <- hex_sf$hex_id
+  }
+  
+  hex_summaries <- lapply(names(eta_draws_per_hex), function(id) {
+    draws <- extract_draws(eta_draws_per_hex[[id]], param = param)
+    
+    if (is.null(draws) || length(draws) == 0 || all(is.na(draws))) {
+      return(data.frame(
+        hex_id = as.character(id),
+        n_draws = 0,
+        mean_change = NA_real_,
+        median_change = NA_real_,
+        lower = NA_real_,
+        upper = NA_real_,
+        prob_gt_threshold = NA_real_,
+        prob_lt_neg_threshold = NA_real_,
+        prob_abs_gt_threshold = NA_real_
+      ))
+    }
+    
+    draws <- draws[is.finite(draws)]
+    
+    if (length(draws) == 0) {
+      return(data.frame(
+        hex_id = as.character(id),
+        n_draws = 0,
+        mean_change = NA_real_,
+        median_change = NA_real_,
+        lower = NA_real_,
+        upper = NA_real_,
+        prob_gt_threshold = NA_real_,
+        prob_lt_neg_threshold = NA_real_,
+        prob_abs_gt_threshold = NA_real_
+      ))
+    }
+    
+    out <- data.frame(
+      hex_id = as.character(id),
+      n_draws = length(draws),
+      mean_change = mean(draws),
+      lower = as.numeric(stats::quantile(draws, ci_probs[1], na.rm = TRUE)),
+      upper = as.numeric(stats::quantile(draws, ci_probs[2], na.rm = TRUE)),
+      prob_gt_threshold = mean(draws > threshold),
+      prob_lt_neg_threshold = mean(draws < -threshold),
+      prob_abs_gt_threshold = mean(abs(draws) > threshold)
+    )
+    
+    if (include_median) {
+      out$median_change <- stats::median(draws, na.rm = TRUE)
+      out <- out[, c(
+        "hex_id", "n_draws", "mean_change", "median_change", "lower", "upper",
+        "prob_gt_threshold", "prob_lt_neg_threshold", "prob_abs_gt_threshold"
+      )]
+    } else {
+      out$median_change <- NULL
+    }
+    
+    out
+  })
+  
+  hex_summaries <- dplyr::bind_rows(hex_summaries)
+  
+  hex_sf %>%
+    dplyr::left_join(hex_summaries, by = "hex_id") %>%
+    sf::st_as_sf()
 }

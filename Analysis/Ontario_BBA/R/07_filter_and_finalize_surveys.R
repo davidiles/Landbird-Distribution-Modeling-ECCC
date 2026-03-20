@@ -367,76 +367,13 @@ counts_long <- counts_f %>%
   left_join(all_species_unique, by = "species_id")
 
 # ------------------------------------------------------------
-# 10) Dispersion screening for Poisson vs nbinomial default
-# ------------------------------------------------------------
-
-species_ids <- setdiff(names(counts_f), "obs_idx")
-
-dispersion_screening <- lapply(seq_along(species_ids), function(i) {
-  sp_code <- species_ids[i]
-  sp_english <- all_species_unique$english_name[match(sp_code, all_species_unique$species_id)]
-  
-  y <- counts_f[[sp_code]]
-  y <- y[!is.na(y)]
-  
-  n_surveys <- length(y)
-  if (n_surveys == 0) {
-    return(tibble(
-      species_id = sp_code,
-      english_name = sp_english,
-      n_surveys = 0
-    ))
-  }
-  
-  y_pos <- y[y > 0]
-  n_pos <- length(y_pos)
-  
-  tibble(
-    species_id = sp_code,
-    english_name = sp_english,
-    n_surveys = n_surveys,
-    n_positive = n_pos,
-    prop_zero = mean(y == 0),
-    mean_count = mean(y),
-    max_count = max(y),
-    n_gt_7 = sum(y > 7),
-    n_gt_10 = sum(y > 10),
-    n_gt_25 = sum(y > 25),
-    prop_total_top1pct_nonzero = if (n_pos == 0) {
-      NA_real_
-    } else {
-      n_top <- max(1, ceiling(0.01 * n_pos))
-      sum(sort(y_pos, decreasing = TRUE)[seq_len(n_top)]) / sum(y_pos)
-    }
-  )
-}) %>%
-  bind_rows()
-
-nb_candidates <- dispersion_screening %>%
-  filter(
-    n_positive > 200,
-    
-    # If more than 1% of counts are > 7
-    (n_gt_7 / n_positive >= 0.01 & max_count >= 15) | 
-      
-    # More than 15% of total count is in the top 1% of counts (indicates colonial behaviour or flocking)
-    (prop_total_top1pct_nonzero >= 0.15) | 
-      
-    # Max count > 10
-    (max_count >= 20)
-  ) %>%
-  arrange(desc(max_count))
-
-nb_candidates %>% as.data.frame()
-
-# ------------------------------------------------------------
-# 11) Build hex grid for later regional summaries
+# 10) Build hex grid for later regional summaries
 # ------------------------------------------------------------
 
 hex_grid <- make_hex_grid(study_boundary, width_km = 25)
 
 # ------------------------------------------------------------
-# 12) Load and apply safe dates
+# 11) Load and apply safe dates
 # ------------------------------------------------------------
 
 species_manual_safedates <- c("Canada Jay", "Common Raven", "White-winged Crossbill", "Red Crossbill")
@@ -517,11 +454,8 @@ species_safecounts_per_atlas <- counts_long %>%
   )
 
 species_to_model <- species_safecounts_per_atlas %>%
-  mutate(
-    error_family = if_else(species_id %in% nb_candidates$species_id, "nbinomial", "poisson")
-  ) %>%
   arrange(desc(n_squares_safe_OBBA3)) %>%
-  relocate(species_id, english_name, error_family)
+  relocate(species_id, english_name)
 
 # ------------------------------------------------------------
 # Save
@@ -543,8 +477,6 @@ saveRDS(
     
     outside_safe_dates = outside_safe_dates,
     missing_safe_dates = missing_safe_dates,
-    
-    dispersion_screening = dispersion_screening,
     
     hex_grid = hex_grid,
     safe_dates = safe_dates,

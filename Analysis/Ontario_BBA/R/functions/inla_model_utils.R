@@ -459,7 +459,7 @@ make_pred_formula_multiatlas <- function(cov_df = NULL, include_kappa = FALSE, i
   eta_expr <- paste(c(base_terms, cov_terms), collapse = " + ")
   
   if (include_kappa) {
-    eta_expr <- paste0(eta_expr, " + kappa_diff + kappa_shared")
+    eta_expr <- paste0(eta_expr, " + kappa_diff")
   }
   
   as.formula(paste0("~ data.frame(eta = ", eta_expr, ")"))

@@ -241,7 +241,12 @@ comparison <- atlas_change_summary %>%
   ) %>%
   mutate(
     region = factor(region, levels = rev(plot_regions))
-  )
+  ) %>%
+  mutate(region = factor(region, levels = c("CA-ON-13","CA-ON-12","CA-ON-8","CA-ON-7")))
+
+# Omit colonial species that we know the atlas model does not work for
+comparison <- comparison %>%
+  filter(!(english_name %in% c("Double-crested Cormorant","Ring-billed Gull")))
 
 # ------------------------------------------------------------
 # Transform to log-multiplicative change scale
@@ -282,7 +287,7 @@ comparison_log <- comparison_log %>%
 
 # Must have at least 10 squares per atlas to be included in the figure
 min_sq_per_atlas <- 10
-min_bbs_routes <- 5
+min_bbs_routes <- 10
 comparison_plot <- comparison_log %>%
   filter(
     n_sq_OBBA2 >= min_sq_per_atlas,
@@ -301,10 +306,6 @@ comparison_plot <- comparison_log %>%
 # ------------------------------------------------------------
 # Identify species for which counts are potentially too variable for Poisson
 # ------------------------------------------------------------
-nb_species <- subset(dat$species_to_model, error_family == "nbinomial")
-
-comparison_plot$consider_nbinomial <- "No"
-comparison_plot$consider_nbinomial[comparison_plot$english_name %in% nb_species$english_name] <- "Yes"
 
 # ------------------------------------------------------------
 # Summaries by BCR
@@ -315,8 +316,8 @@ bcr_summaries <- comparison_plot %>%
   summarise(
     n_species = n(),
     perc_higher = mean(atlas_median_log > BBS_mean_log, na.rm = TRUE) * 100,
-    mean_diff = weighted.mean(diff_mean, weight, na.rm = TRUE),
-    correlation = weighted_cor(atlas_median_log, BBS_mean_log, weight),
+    #mean_diff = weighted.mean(diff_mean, weight, na.rm = TRUE),
+    correlation = cor(atlas_median_log, BBS_mean_log, use = "pairwise.complete.obs", method = "spearman"),
     mean_diff_CIW = mean(diff_CIW, na.rm = TRUE),
     median_diff_CIW = median(diff_CIW, na.rm = TRUE),
     perc_atlas_more_precise = mean(diff_CIW > 0, na.rm = TRUE) * 100,
@@ -329,8 +330,8 @@ bcr_summaries <- comparison_plot %>%
 # ------------------------------------------------------------
 
 lim <- range(
-  #comparison_plot[, c("BBS_q025_log", "BBS_q975_log", "atlas_q025_log", "atlas_q975_log")],
-  comparison_plot[, c("BBS_mean_log", "atlas_median_log")],
+  comparison_plot[, c("BBS_q025_log", "BBS_q975_log", "atlas_q025_log", "atlas_q975_log")],
+  #comparison_plot[, c("BBS_mean_log", "atlas_median_log")],
   
   na.rm = TRUE
 )
@@ -380,8 +381,7 @@ fig3 <- ggplot(comparison_plot) +
     aes(
       x = BBS_mean_log,
       ymin = atlas_q025_log,
-      ymax = atlas_q975_log,
-      col = consider_nbinomial
+      ymax = atlas_q975_log
     ),
     width = 0
   ) +
@@ -389,16 +389,14 @@ fig3 <- ggplot(comparison_plot) +
     aes(
       xmin = BBS_q025_log,
       xmax = BBS_q975_log,
-      y = atlas_median_log,
-      col = consider_nbinomial
+      y = atlas_median_log
     ),
     height = 0
   ) +
   geom_point(
     aes(
       x = BBS_mean_log,
-      y = atlas_median_log,
-      col = consider_nbinomial
+      y = atlas_median_log
     ),
   ) +
   scale_x_continuous(
@@ -413,9 +411,6 @@ fig3 <- ggplot(comparison_plot) +
     range = c(0.2, 1),
     guide = "none",
     trans = "log"
-  ) +
-  scale_color_manual(
-    values = c("black","red"), guide = "none"
   ) +
   
   coord_cartesian(xlim = lim, ylim = lim) +
@@ -607,11 +602,34 @@ line_df_all <- region_fits %>%
   map("line_df") %>%
   bind_rows()
 
+# Lables for summary statistics
+library(glue)
+annot_df <- post_summary_all %>%
+  mutate(
+    stat_label = case_when(
+      parameter == "Bayesian_R2" ~ glue("Cor = {round(sqrt(mean), 2)}"),
+      parameter == "intercept"   ~ glue("int = {round(mean, 2)} [{round(q2.5, 2)}, {round(q97.5, 2)}]"),
+      parameter == "slope"       ~ glue("slope = {round(mean, 2)} [{round(q2.5, 2)}, {round(q97.5, 2)}]"),
+      parameter == "sigma"       ~ glue("sigma = {round(mean, 2)} [{round(q2.5, 2)}, {round(q97.5, 2)}]")
+    )
+  ) %>%
+  select(region, parameter, stat_label) %>%
+  pivot_wider(names_from = parameter, values_from = stat_label) %>%
+  mutate(
+    label = paste(
+      Bayesian_R2,
+      intercept,
+      slope,
+      sigma,
+      sep = "\n"
+    )
+  )
+
 # --- Plot
 fig4 <- ggplot(comparison_plot) +
   geom_abline(slope = 1, col = "gray80") +
-  geom_hline(yintercept = thresholds_to_plot, linetype = 2) +
-  geom_vline(xintercept = thresholds_to_plot, linetype = 2) +
+  #geom_hline(yintercept = thresholds_to_plot, linetype = 2) +
+  #geom_vline(xintercept = thresholds_to_plot, linetype = 2) +
   
   geom_ribbon(
     data = line_df_all,
@@ -638,19 +656,21 @@ fig4 <- ggplot(comparison_plot) +
     max.overlaps = 50,
     col = "gray50"
   ) +
+  
   geom_text(
-    data = bcr_summaries,
-    aes(x = -Inf, y = Inf, label = cor_label),
-    hjust = -0.25,
-    vjust = 2,
-    inherit.aes = FALSE
+    data = annot_df,
+    aes(x = -Inf, y = Inf, label = label),
+    hjust = -0.1,
+    vjust = 1.1,
+    inherit.aes = FALSE,
+    size = 3
   ) +
+  
   geom_errorbar(
     aes(
       x = BBS_mean_log,
       ymin = atlas_q025_log,
-      ymax = atlas_q975_log,
-      col = consider_nbinomial
+      ymax = atlas_q975_log
     ),
     width = 0
   ) +
@@ -658,16 +678,14 @@ fig4 <- ggplot(comparison_plot) +
     aes(
       xmin = BBS_q025_log,
       xmax = BBS_q975_log,
-      y = atlas_median_log,
-      col = consider_nbinomial
+      y = atlas_median_log
     ),
     height = 0
   ) +
   geom_point(
     aes(
       x = BBS_mean_log,
-      y = atlas_median_log,
-      col = consider_nbinomial
+      y = atlas_median_log
     )
   ) +
   scale_x_continuous(
@@ -682,10 +700,6 @@ fig4 <- ggplot(comparison_plot) +
     range = c(0.2, 1),
     guide = "none",
     trans = "log"
-  ) +
-  scale_color_manual(
-    values = c("black", "red"),
-    guide = "none"
   ) +
   coord_cartesian(xlim = lim, ylim = lim) +
   facet_grid(. ~ region) +

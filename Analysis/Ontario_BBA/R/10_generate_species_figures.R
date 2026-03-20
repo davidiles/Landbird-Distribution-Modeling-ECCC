@@ -30,8 +30,8 @@ suppressPackageStartupMessages({
 source(here::here("R", "00_config_paths.R"))
 
 # helper-functions
-inla_utils_path <- file.path(paths$functions, "inla_model_utils2.R")
-figure_utils_path <- file.path(paths$functions, "figure_utils2.R")
+inla_utils_path <- file.path(paths$functions, "inla_model_utils.R")
+figure_utils_path <- file.path(paths$functions, "figure_utils.R")
 
 source(inla_utils_path)
 source(figure_utils_path)
@@ -125,9 +125,9 @@ message("Prediction files found: ", length(pred_files))
 # Loop species
 # ------------------------------------------------------------
 
-for (pf in rev(pred_files)) {
+for (i in seq_len(length(pred_files))) {
   
-  preds <- readRDS(pf)
+  preds <- readRDS(pred_files[i])
   
   # ----------------------------------------------------------
   # Basic identifiers
@@ -262,6 +262,18 @@ for (pf in rev(pred_files)) {
     dpi = dpi, type = ggsave_type, limitsize = FALSE
   )
   
+  
+  hex_change_sf <- summarize_abs_change_by_hex(
+    eta_draws_per_hex = preds$eta_draws_per_hex,
+    hexagon_sf = hex_grid,
+    threshold = zmax / 20,
+    ci_probs = c(0.05, 0.95)
+  ) %>%
+    st_centroid()
+  
+  ggplot(hex_change_sf) +
+    geom_sf(data = study_boundary, fill = NA, colour = "black")+
+    geom_sf(aes(col = mean_abs_change))
   
 }
 

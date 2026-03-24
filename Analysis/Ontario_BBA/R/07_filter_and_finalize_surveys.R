@@ -457,6 +457,55 @@ species_to_model <- species_safecounts_per_atlas %>%
   arrange(desc(n_squares_safe_OBBA3)) %>%
   relocate(species_id, english_name)
 
+
+# ------------------------------------------------------------
+# Save covariate rasters
+# ------------------------------------------------------------
+rast_dir  <- file.path(paths$data_clean,"spatial")
+
+rast_path_a2 <- file.path(rast_dir, "atlas2_cov_rasterstack.tif")
+rast_path_a3 <- file.path(rast_dir, "atlas3_cov_rasterstack.tif")
+
+# contains function for rasterizing
+figure_utils_path <- file.path(paths$functions, "figure_utils.R")
+source(figure_utils_path)
+
+vars_to_rasterize <- c("prec",
+                       "tmax",
+                       "on_road",
+                       "on_river",
+                       "lc_1",
+                       "lc_4",
+                       "lc_5",
+                       "lc_8",
+                       "lc_9",
+                       "lc_10",
+                       "lc_11",
+                       "lc_12",
+                       "lc_14",
+                       "lc_17",
+                       "insect_broadleaf",
+                       "insect_needleleaf")
+
+# Covariate raster stack for atlas 2
+r2 = rasterize_sf(grid_OBBA2,
+                  vars_to_rasterize,
+                  res = 1001,
+                  metadata = c(
+                    description = c("Covariates at 1 km resolution")
+                  ))
+writeRaster(r2,filename = rast_path_a2,overwrite = TRUE)
+
+
+# Covariate raster stack for atlas 2
+r3 = rasterize_sf(grid_OBBA3,
+                  vars_to_rasterize,
+                  res = 1001,
+                  metadata = c(
+                    description = c("Covariates at 1 km resolution")
+                  ))
+writeRaster(r3,filename = rast_path_a3,overwrite = TRUE)
+
 # ------------------------------------------------------------
 # Save
 # ------------------------------------------------------------

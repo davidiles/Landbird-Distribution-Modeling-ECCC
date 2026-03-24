@@ -28,6 +28,8 @@ suppressPackageStartupMessages({
   library(scales)
   library(patchwork)
   library(RColorBrewer)
+  library(colorspace)
+  library(ggtext)
 })
 
 source(here::here("R", "00_config_paths.R"))
@@ -368,6 +370,178 @@ classify_min_supported_change <- function(hex_sf) {
 }
 
 
+summarize_provincial_change <- function(eta_draws_per_hex,
+                                        min_pix_number = 100,
+                                        baseline_min = 1e-5,
+                                        ci_level = 0.95,
+                                        return_draws = FALSE) {
+  
+  # ----------------------------------------------------------
+  # PURPOSE
+  # ----------------------------------------------------------
+  # Summarize province-wide abundance and change by combining
+  # posterior draws across hexagons, weighted by the number of
+  # 1-km pixels contributing to each hexagon.
+  #
+  # ASSUMPTION:
+  #   Mu2 and Mu3 are posterior expected abundance values on a
+  #   per-pixel (or average-within-hex) basis, so province-wide
+  #   totals are obtained as weighted sums across hexagons.
+  #
+  # INPUTS
+  #   eta_draws_per_hex:
+  #     List with:
+  #       - Mu2: matrix [n_hex x n_draw]
+  #       - Mu3: matrix [n_hex x n_draw]
+  #       - meta$n_pixels: vector of pixel counts per hex
+  #
+  #   min_pix_number:
+  #     Hexagons with fewer than this many pixels are excluded.
+  #
+  #   baseline_min:
+  #     Small positive number used to avoid unstable proportional
+  #     and log-change calculations when province-wide Mu2 is near 0.
+  #
+  #   ci_level:
+  #     Credible interval width, e.g. 0.95 for 95% CI.
+  #
+  #   return_draws:
+  #     If TRUE, also return the full province-wide posterior draws.
+  #
+  # OUTPUT
+  #   A tibble with one row summarizing province-wide change.
+  #   Optionally returns the underlying draw vectors as well.
+  # ----------------------------------------------------------
+  
+  # ---- checks
+  if (!is.numeric(ci_level) || length(ci_level) != 1 ||
+      ci_level <= 0 || ci_level >= 1) {
+    stop("ci_level must be a single number strictly between 0 and 1.")
+  }
+  
+  alpha <- (1 - ci_level) / 2
+  
+  Mu2  <- eta_draws_per_hex$Mu2
+  Mu3  <- eta_draws_per_hex$Mu3
+  npix <- eta_draws_per_hex$meta$n_pixels
+  
+  if (is.null(Mu2) || is.null(Mu3)) {
+    stop("eta_draws_per_hex must contain elements named 'Mu2' and 'Mu3'.")
+  }
+  
+  if (!is.matrix(Mu2) || !is.matrix(Mu3)) {
+    stop("Mu2 and Mu3 must both be matrices.")
+  }
+  
+  if (!identical(dim(Mu2), dim(Mu3))) {
+    stop("Mu2 and Mu3 must have identical dimensions.")
+  }
+  
+  if (is.null(rownames(Mu2)) || is.null(rownames(Mu3))) {
+    stop("Mu2 and Mu3 must both have rownames corresponding to hex_id.")
+  }
+  
+  if (!identical(rownames(Mu2), rownames(Mu3))) {
+    stop("Rownames of Mu2 and Mu3 must match exactly.")
+  }
+  
+  if (is.null(npix)) {
+    stop("eta_draws_per_hex$meta$n_pixels is missing.")
+  }
+  
+  hex_ids <- rownames(Mu2)
+  
+  # ---- align pixel counts
+  if (is.null(names(npix))) {
+    if (length(npix) != nrow(Mu2)) {
+      stop("n_pixels has no names and its length does not match nrow(Mu2).")
+    }
+    npix_aligned <- npix
+  } else {
+    npix_aligned <- npix[hex_ids]
+  }
+  
+  # ---- keep only sufficiently large hexes
+  keep_hex <- !is.na(npix_aligned) & npix_aligned >= min_pix_number
+  
+  if (!any(keep_hex)) {
+    stop("No hexagons remain after applying min_pix_number.")
+  }
+  
+  Mu2_keep <- Mu2[keep_hex, , drop = FALSE]
+  Mu3_keep <- Mu3[keep_hex, , drop = FALSE]
+  w_keep   <- npix_aligned[keep_hex]
+  
+  # ---- province-wide posterior totals for each draw
+  # weighted sum across hexagons
+  prov_mu2_draws <- colSums(Mu2_keep * w_keep, na.rm = TRUE)
+  prov_mu3_draws <- colSums(Mu3_keep * w_keep, na.rm = TRUE)
+  
+  # ---- draw-wise change metrics
+  abs_change_draws  <- prov_mu3_draws - prov_mu2_draws
+  prop_change_draws <- (prov_mu3_draws - prov_mu2_draws) / prov_mu2_draws
+  sym_change_draws  <- log(prov_mu3_draws / prov_mu2_draws)
+  
+  prop_change_draws[prov_mu2_draws <= baseline_min] <- NA_real_
+  sym_change_draws[prov_mu2_draws <= baseline_min]  <- NA_real_
+  
+  # ---- summarize
+  out <- tibble::tibble(
+    n_hex_total = nrow(Mu2),
+    n_hex_used = sum(keep_hex),
+    n_pixels_total_used = sum(w_keep, na.rm = TRUE),
+    
+    mu2_mean = mean(prov_mu2_draws, na.rm = TRUE),
+    mu2_median = median(prov_mu2_draws, na.rm = TRUE),
+    mu2_qlow = unname(stats::quantile(prov_mu2_draws, probs = alpha, na.rm = TRUE)),
+    mu2_qhigh = unname(stats::quantile(prov_mu2_draws, probs = 1 - alpha, na.rm = TRUE)),
+    
+    mu3_mean = mean(prov_mu3_draws, na.rm = TRUE),
+    mu3_median = median(prov_mu3_draws, na.rm = TRUE),
+    mu3_qlow = unname(stats::quantile(prov_mu3_draws, probs = alpha, na.rm = TRUE)),
+    mu3_qhigh = unname(stats::quantile(prov_mu3_draws, probs = 1 - alpha, na.rm = TRUE)),
+    
+    abs_change_mean = mean(abs_change_draws, na.rm = TRUE),
+    abs_change_median = median(abs_change_draws, na.rm = TRUE),
+    abs_change_qlow = unname(stats::quantile(abs_change_draws, probs = alpha, na.rm = TRUE)),
+    abs_change_qhigh = unname(stats::quantile(abs_change_draws, probs = 1 - alpha, na.rm = TRUE)),
+    
+    prop_change_mean = mean(prop_change_draws, na.rm = TRUE),
+    prop_change_median = median(prop_change_draws, na.rm = TRUE),
+    prop_change_qlow = unname(stats::quantile(prop_change_draws, probs = alpha, na.rm = TRUE)),
+    prop_change_qhigh = unname(stats::quantile(prop_change_draws, probs = 1 - alpha, na.rm = TRUE)),
+    
+    sym_change_mean = mean(sym_change_draws, na.rm = TRUE),
+    sym_change_median = median(sym_change_draws, na.rm = TRUE),
+    sym_change_qlow = unname(stats::quantile(sym_change_draws, probs = alpha, na.rm = TRUE)),
+    sym_change_qhigh = unname(stats::quantile(sym_change_draws, probs = 1 - alpha, na.rm = TRUE)),
+    
+    p_increase = mean(abs_change_draws > 0, na.rm = TRUE),
+    p_decrease = mean(abs_change_draws < 0, na.rm = TRUE),
+    
+    direction = dplyr::case_when(
+      mean(abs_change_draws > 0, na.rm = TRUE) > 0.975 ~ "increase",
+      mean(abs_change_draws < 0, na.rm = TRUE) > 0.975 ~ "decrease",
+      TRUE ~ "uncertain"
+    )
+  )
+  
+  if (return_draws) {
+    return(list(
+      summary = out,
+      draws = list(
+        mu2 = prov_mu2_draws,
+        mu3 = prov_mu3_draws,
+        abs_change = abs_change_draws,
+        prop_change = prop_change_draws,
+        sym_change = sym_change_draws
+      )
+    ))
+  }
+  
+  return(out)
+}
+
 # ------------------------------------------------------------
 # Load base data
 # ------------------------------------------------------------
@@ -448,17 +622,29 @@ for (i in seq_len(length(pred_files))) {
   
   message("Mapping: ", sp_english)
   
+  # Estimate of overall provincial change
+  prov_change <- summarize_provincial_change(
+    eta_draws_per_hex = preds$eta_draws_per_hex,
+    min_pix_number = 100,
+    ci_level = 0.90
+  )%>%
+    dplyr::mutate(
+      pct_change_median = 100 * prop_change_median,
+      pct_change_qlow   = 100 * prop_change_qlow,
+      pct_change_qhigh  = 100 * prop_change_qhigh
+    )
+  
+  
   hex_change_sf <- summarize_hex_change(
     hex_grid = hex_grid,
     eta_draws_per_hex = preds$eta_draws_per_hex,
-    ci_level = 0.95
-  ) %>%
-    mutate(mu_mean = (mu2_med + mu3_med)/2)
+    ci_level = 0.90
+  )
   
   hex_change_sf <- hex_change_sf %>%
     classify_min_supported_change()
   
-  zmax <- max(abs(hex_change_sf$mu_mean),na.rm = TRUE)
+  zmax <- max(abs(hex_change_sf$mu3_med),na.rm = TRUE)
   zmin <- min(c(0.01,(zmax/20)))
   
   hex_change_sf <- hex_change_sf %>%
@@ -472,20 +658,30 @@ for (i in seq_len(length(pred_files))) {
     "1.1x to 1.5x", "1.5x to 2x", "> 2x"
   )
   change_labels <- c(
-    "Large decrease\n(>50%)", "Moderate decrease\n(33%-50%)", "Small decrease\n(10% to 33%)",
+    "Large decrease\n(at least 50%)", "Moderate decrease\n(at least 33%)", "Small decrease\n(at least 10%)",
     "Little change\n(-10% to +10%)",
-    "Small increase\n(10% to 50%)", "Moderate increase\n(50% to 100%)", "Large increase\n(>100%)"
+    "Small increase\n(at least 10%)", "Moderate increase\n(at least 50%)", "Large increase\n(at least 100%)"
   )
   
-  change_colours <- RColorBrewer::brewer.pal(7,"RdBu")
+  tweak_colour <- function(col, lighten_amount = -0.15, saturate_amount = 0.2) {
+    hsl <- as(hex2RGB(col), "HLS")
+    hsl@coords[, "L"] <- pmin(1, pmax(0, hsl@coords[, "L"] + lighten_amount))
+    hsl@coords[, "S"] <- pmin(1, pmax(0, hsl@coords[, "S"] + saturate_amount))
+    hex(hsl)
+  }
+  
+  change_colours <- RColorBrewer::brewer.pal(7, "RdBu")
   change_colours[4] <- "white"
-
+  change_colours[-4] <- sapply(change_colours[-4], tweak_colour,
+                               lighten_amount = -0.1,   # negative = darker
+                               saturate_amount = 0.1)
+  
+  
   # Build the legend as its own ggplot
   legend_df <- tibble(
     level   = factor(change_levels, levels = rev(change_levels)),  # rev so top = strongest increase
     label   = factor(change_labels, levels = rev(change_labels)),  # keep in same order
-    colour  = change_colours,
-    present = change_levels %in% present_levels
+    colour  = change_colours
   )
   
   legend_plot <- ggplot(legend_df, aes(x = 1, y = level)) +
@@ -513,11 +709,31 @@ for (i in seq_len(length(pred_files))) {
     )
   
   # Main map — no legend
+  
+  # create title describing percent change
+  fmt_pct <- function(x, digits = 1) {
+    ifelse(
+      is.na(x),
+      NA_character_,
+      sprintf("%+.1f", round(100 * x, digits))
+    )
+  }
+  
+  title_text <- paste0(
+    "<span style='font-size:18pt;'><b>", sp_english, "</b></span><br><br>",
+    "<span style='font-size:14pt;'>",
+    "Overall change = ",
+    fmt_pct(prov_change$prop_change_median), "% [",
+    fmt_pct(prov_change$prop_change_qlow), "% to ",
+    fmt_pct(prov_change$prop_change_qhigh), "%]",
+    "</span>"
+  )
+  
   chg_plot <- ggplot() +
-    geom_sf(data = study_boundary) +
+    geom_sf(data = study_boundary, fill = "gray90") +
     geom_sf(
       data = st_centroid(hex_change_sf),
-      aes(colour = min_supported_change, size = mu2_med)
+      aes(colour = min_supported_change, size = mu3_med)
     ) +
     scale_colour_manual(
       values = setNames(change_colours, change_levels),
@@ -525,16 +741,17 @@ for (i in seq_len(length(pred_files))) {
     ) +
     scale_size_continuous(range = c(0, 2), guide = "none") +
     theme_bw()+
-    ggtitle(sp_english)+
+    ggtitle(title_text) +
     theme(
-      plot.title = element_text(size = 15, face = "bold")
+      plot.title = ggtext::element_markdown(lineheight = 1.1)
     )
+
   
   final_plot <- chg_plot + 
     inset_element(
       legend_plot,
       left   = 0.8,
-      bottom = 0.6,
+      bottom = 0.5,
       right  = 1.0,
       top    = 0.99
     )

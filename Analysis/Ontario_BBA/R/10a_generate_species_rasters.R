@@ -24,6 +24,8 @@ suppressPackageStartupMessages({
   library(units)
   library(igraph)
   library(here)
+  library(RColorBrewer)
+  library(viridis)
 })
 
 source(here::here("R", "00_config_paths.R"))
@@ -47,6 +49,9 @@ pred_dir <- file.path(paths$model_output, paste0("predictions_", model_type))
 
 rast_dir  <- file.path(paths$model_output, paste0("rasters_", model_type))
 dir.create(rast_dir, recursive = TRUE, showWarnings = FALSE)
+
+fig_dir  <- file.path(paths$model_output, paste0("figures_", model_type),"simplified_maps")
+dir.create(fig_dir, recursive = TRUE, showWarnings = FALSE)
 
 # Raster resolution in map units (meters in EPSG:3978)
 plot_res <- 1001
@@ -111,12 +116,13 @@ for (i in seq_len(length(pred_files))) {
   rast_path_a2 <- file.path(rast_dir, paste0(sp_file, "_a2.tif"))
   rast_path_a3 <- file.path(rast_dir, paste0(sp_file, "_a3.tif"))
   rast_path_chg     <- file.path(rast_dir, paste0(sp_file, "_chg.tif"))
+  fig_path <- file.path(fig_dir,paste0(sp_file,".png"))
   
   
-  if (file.exists(rast_path_chg)) {
-    message("Skipping ", sp_english, ": rasters already exist for this species")
-    next
-  }
+   if (file.exists(fig_path)) {
+     message("Skipping ", sp_english, ": rasters/figures already exist for this species")
+     next
+   }
   
   # ----------------------------------------------------------
   # Safety checks
@@ -196,5 +202,105 @@ for (i in seq_len(length(pred_files))) {
   writeRaster(rchg,
               filename = rast_path_chg,
               overwrite = TRUE)
+  
+}
+
+# ------------------------------------------------------------
+# Generate figures
+# ------------------------------------------------------------
+
+for (i in seq_len(length(pred_files))) {
+  
+  preds <- readRDS(pred_files[i])
+  
+  # ----------------------------------------------------------
+  # Basic identifiers
+  # ----------------------------------------------------------
+  sp_english <- preds$sp_name
+  sp_file <- sp_english |>
+    stringr::str_to_lower() |>
+    stringr::str_replace_all("[^a-z0-9]+", "_") |>
+    stringr::str_replace_all("^_|_$", "")
+  
+  sp_code <- dat$species_to_model |>
+    dplyr::filter(english_name == sp_english) |>
+    dplyr::pull(species_id)
+  
+  rast_path_a2 <- file.path(rast_dir, paste0(sp_file, "_a2.tif"))
+  rast_path_a3 <- file.path(rast_dir, paste0(sp_file, "_a3.tif"))
+  rast_path_chg     <- file.path(rast_dir, paste0(sp_file, "_chg.tif"))
+  fig_path <- file.path(fig_dir,paste0(sp_file,".png"))
+  
+  r2 <- rast(rast_path_a2)
+  r3 <- rast(rast_path_a3)
+  rchg <- rast(rast_path_chg)
+  
+  
+  if (file.exists(fig_path)) {
+    message("Skipping ", sp_english, ": rasters/figures already exist for this species")
+    next
+  }
+  
+  message("Generating rasters for ",sp_english)
+  
+  # ----------------------------------------------------------
+  # Generate simple raster plots
+  # ----------------------------------------------------------
+  
+  zmax <- c(values(r2$mu_q50), values(r3$mu_q50)) %>%
+    quantile(0.99, na.rm = TRUE)
+  
+  png(fig_path, width = 12, height = 4, units = "in", res = 600)
+  par(mfrow = c(1, 3))
+  par(mar = c(0, 0, 0, 0))
+  
+  # -------------------------
+  # abundance maps
+  # -------------------------
+  
+  # cap values at zmax for plotting
+  r2_plot <- clamp(r2$mu_q50, lower = 0, upper = zmax)
+  r3_plot <- clamp(r3$mu_q50, lower = 0, upper = zmax)
+  
+  # continuous-looking palette
+  colramp_abund <- colorRampPalette(c("gray98", RColorBrewer::brewer.pal(7, "Greens")))(200)
+  
+  plot(
+    r2_plot,
+    col = colramp_abund,
+    colNA = "gray95",
+    main = paste0(sp_english, " - Atlas 2")
+  )
+  plot(vect(study_boundary), add = TRUE)
+  
+  plot(
+    r3_plot,
+    col = colramp_abund,
+    colNA = "gray95",
+    main = paste0(sp_english, " - Atlas 3")
+  )
+  plot(vect(study_boundary), add = TRUE)
+  
+  # -------------------------
+  # change map
+  # -------------------------
+  
+  # cap change between -zmax and +zmax
+  rchg_plot <- clamp(rchg$chg_q50, lower = -zmax, upper = zmax)
+  
+  cols_chg_base <- (RColorBrewer::brewer.pal(11, "RdBu"))
+  cols_chg_base[6] <- "white"
+  colramp_chg <- colorRampPalette(cols_chg_base)(201)
+  
+  plot(
+    rchg_plot,
+    col = colramp_chg,
+    colNA = "gray95",
+    main = paste0(sp_english, " - Change"),
+    range = c(-zmax,zmax)
+  )
+  plot(vect(study_boundary), add = TRUE)
+  
+  dev.off()
   
 }

@@ -285,9 +285,9 @@ comparison_log <- comparison_log %>%
 # Filter species for further consideration
 # ------------------------------------------------------------
 
-# Must have at least 10 squares per atlas to be included in the figure
-min_sq_per_atlas <- 10
-min_bbs_routes <- 10
+# Must have at least 20 squares per atlas to be included in the figure
+min_sq_per_atlas <- 20 # Detected in at least 20 squares per atlas
+min_bbs_routes <- 10 # monitored by an average of 10 bbs routes per year per bcr
 comparison_plot <- comparison_log %>%
   filter(
     n_sq_OBBA2 >= min_sq_per_atlas,
@@ -417,7 +417,7 @@ fig3 <- ggplot(comparison_plot) +
   facet_grid(.~region) +
   theme_bw()
 
-fig3
+# fig3
 
 # ------------------------------------------------------------
 # Error-in-variables regression for Atlas vs BBS
@@ -607,7 +607,7 @@ library(glue)
 annot_df <- post_summary_all %>%
   mutate(
     stat_label = case_when(
-      parameter == "Bayesian_R2" ~ glue("Cor = {round(sqrt(mean), 2)}"),
+      parameter == "Bayesian_R2" ~ glue("Cor = {round(sqrt(mean), 2)} [{round(sqrt(q2.5), 2)}, {round(sqrt(q97.5), 2)}]"),
       parameter == "intercept"   ~ glue("int = {round(mean, 2)} [{round(q2.5, 2)}, {round(q97.5, 2)}]"),
       parameter == "slope"       ~ glue("slope = {round(mean, 2)} [{round(q2.5, 2)}, {round(q97.5, 2)}]"),
       parameter == "sigma"       ~ glue("sigma = {round(mean, 2)} [{round(q2.5, 2)}, {round(q97.5, 2)}]")

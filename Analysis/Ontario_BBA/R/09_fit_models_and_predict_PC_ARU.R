@@ -54,11 +54,15 @@ if (!file.exists(in_file)) {
        "\nHave you run 07_filter_and_finalize_surveys.R?")
 }
 
+
 out_dir <- paths$model_output
 dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
 dir.create(file.path(out_dir, paste0("models_",model_name)), recursive = TRUE, showWarnings = FALSE)
 dir.create(file.path(out_dir, paste0("predictions_",model_name)), recursive = TRUE, showWarnings = FALSE)
 dir.create(file.path(out_dir, paste0("summaries_",model_name)), recursive = TRUE, showWarnings = FALSE)
+
+# directory to store species-specific data that went into model
+dir.create(file.path(out_dir, paste0("data_used_",model_name)), recursive = TRUE, showWarnings = FALSE)
 
 # Summary caches
 model_summaries_path  <- file.path(out_dir, paste0("summaries_",model_name), "model_summaries.rds")
@@ -140,116 +144,9 @@ base_covars <- c(
   "insect_broadleaf","insect_needleleaf"
 )
 
-species_to_check <- c(
-  "Palm Warbler",
-  "Bobolink",
-  "Blue Jay",
-  "Canada Jay",
-  "Olive-sided Flycatcher",
-  "Winter Wren",
-  "Lesser Yellowlegs",
-  "Blackpoll Warbler",
-  "Connecticut Warbler",
-  "Lincoln's Sparrow",
-  "Fox Sparrow",
-  "Common Nighthawk",
-  "Long-eared Owl",
-  "American Tree Sparrow",
-  "LeConte's Sparrow",
-  "Nelson's Sparrow",
-  "Boreal Chickadee",
-  "Rusty Blackbird",
-  "Yellow-bellied Flycatcher",
-  "Greater Yellowlegs",
-  "Hudsonian Godwit",
-  "Canada Warbler",
-  "Eastern Wood-Peewee",
-  "Grasshopper Sparrow",
-  "Solitary Sandpiper",
-  "White-throated Sparrow",
-  "Bay-breasted Warbler",
-  "Marsh Wren",
-  "Eastern Towhee",
-  "Northern Cardinal",
-  "Carolina Wren",
-  "Black-and-white Warbler",
-  "Common Yellowthroat",
-  "Gray Catbird",
-  "Mourning Warbler",
-  "Red-eyed Vireo",
-  "Veery",
-  "Tennessee Warbler",
-  "Chestnut-sided Warbler",
-  "Brown Thrasher",
-  "American Redstart",
-  "Hairy Woodpecker",
-  "Belted Kingfisher",
-  "Yellow-bellied Sapsucker",
-  "Ruffed Grouse",
-  "Red-winged Blackbird",
-  "White-breasted Nuthatch",
-  "Black-billed Cuckoo",
-  "Northern Harrier",
-  "European Starling",
-  "House Finch",
-  "Savannah Sparrow",
-  "Alder Flycatcher",
-  "Evening Grosbeak",
-  "Northern Parula",
-  "Pine Siskin",
-  "Common Raven",
-  "Sandhill Crane",
-  "Wild Turkey",
-  "Bald Eagle",
-  "Blue-winged Teal",
-  "Western Meadowlark",
-  "Bank Swallow",
-  "Tree Swallow",
-  "Black-backed Woodpecker",
-  "Black-capped Chickadee",
-  "Black-throated Blue Warbler",
-  "Black-throated Green Warbler",
-  "Blackburnian Warbler",
-  "Blue-headed Vireo",
-  "Brown Creeper",
-  "Chipping Sparrow",
-  "Field Sparrow",
-  "Golden-crowned Kinglet",
-  "Golden-winged Warbler",
-  "Least Flycatcher",
-  "Nashville Warbler",
-  "Northern Waterthrush",
-  "Ovenbird",
-  "Purple Finch",
-  "Ruby-crowned Kinglet",
-  "Swainson's Thrush",
-  "Vesper Sparrow",
-  "Warbling Vireo",
-  "White-winged Crossbill",
-  "Wilson's Warbler",
-  "Orchard Oriole",
-  "Turkey Vulture",
-  "Sedge Wren",
-  # "Herring Gull",
-  "Black Tern",
-  "Wood Thrush",
-  "Purple Martin",
-  "Brown-headed Cowbird",
-  "Cliff Swallow",
-  "Northern Rough-winged Swallow",
-  # "Ring-billed Gull",
-  "Chimney Swift",
-  "Killdeer",
-  "Great Blue Heron",
-  "American Black Duck",
-  "Yellow-throated Vireo",
-  "House Wren",
-  "American Robin"
-) %>% unique()
-
 # Data requirements
-min_detections <- 150     # at least 150 detections in one atlas
-min_squares <- 50         # at least 50 squares in one atlas
+min_detections <- 100     # at least 100 detections in one atlas
+min_squares <- 10         # at least 10 squares in one atlas
 
 set.seed(123)
 species_run <- species_to_model %>%
@@ -262,9 +159,7 @@ species_run <- species_to_model %>%
          delta_squares_safe = log(n_squares_safe_OBBA3/n_squares_safe_OBBA2)) %>%
   
   # Arrange by species with largest changes
-  arrange(desc(abs(delta_squares_safe)))
-
-#species_run <- species_run %>% subset(english_name %in% species_to_check)
+  arrange(abs(delta_squares_safe)) 
 
 message("Species queued: ", nrow(species_run))
 species_run
@@ -285,11 +180,7 @@ for (i in seq_len(nrow(species_run))) {
   
   model_path <- file.path(out_dir,paste0("models_",model_name), paste0(sp_file, ".rds"))
   pred_path  <- file.path(out_dir, paste0("predictions_",model_name), paste0(sp_file, ".rds"))
-  
-  if (file.exists(pred_path) & rerun_predictions == FALSE){
-    message("Predictions already exist for ", sp_name, "; skipping")
-    next
-  }
+  dat_path <- file.path(out_dir,paste0("data_used_",model_name), paste0(sp_file, ".rds"))
   
   # --- Build species data
   if (!(sp_code %in% names(counts))) {
@@ -301,7 +192,6 @@ for (i in seq_len(nrow(species_run))) {
   sp_dat <- all_surveys %>%
     dplyr::mutate(count = counts[[sp_code]])
   
-
   # ------------------------------------------------------------
   # Filter data to only surveys conducted within the safe dates for this species
   # ------------------------------------------------------------
@@ -395,6 +285,16 @@ for (i in seq_len(nrow(species_run))) {
       days_midpoint = DayOfYear - pred_doy
     )
   
+  # Save species-specific data used in analysis (to help with atlas review)
+  dat_for_review <- sp_dat %>% 
+    dplyr::select(Date_Time,Survey_Type,count,Hours_Since_Sunrise,Atlas)
+  
+  saveRDS(list(sp_english = sp_name,
+               sp_code = sp_code,
+               sp_safe_dates = sp_safe_dates,
+               sp_dat = dat_for_review),
+          dat_path)
+  
   # ------------------------------------------------------------
   # Use raw counts as a basis for deciding whether to fit poisson or nbinomial
   # ------------------------------------------------------------
@@ -424,11 +324,17 @@ for (i in seq_len(nrow(species_run))) {
     error_family = "nbinomial"
   }
   
-  message("\n====================\n", i, "/", nrow(species_run), ": ", sp_name, " (species_id = ", sp_code, "): fitting model with ",error_family," error model\n====================")
   
   # ------------------------------------------------------------
   # Fit model
   # ------------------------------------------------------------
+  
+  if (file.exists(pred_path) & rerun_predictions == FALSE){
+    message("Predictions already exist for ", sp_name, "; skipping")
+    next
+  }
+  
+  message("\n====================\n", i, "/", nrow(species_run), ": ", sp_name, " (species_id = ", sp_code, "): fitting model with ",error_family," error model\n====================")
   
   # --- Covariates spec
   covars_present <- intersect(base_covars, names(sp_dat))

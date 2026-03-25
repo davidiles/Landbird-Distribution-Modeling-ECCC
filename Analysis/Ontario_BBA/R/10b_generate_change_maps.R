@@ -542,6 +542,8 @@ summarize_provincial_change <- function(eta_draws_per_hex,
   return(out)
 }
 
+
+
 # ------------------------------------------------------------
 # Load base data
 # ------------------------------------------------------------
@@ -634,13 +636,14 @@ for (i in seq_len(length(pred_files))) {
       pct_change_qhigh  = 100 * prop_change_qhigh
     )
   
-  
+  # Change in each hexagon
   hex_change_sf <- summarize_hex_change(
     hex_grid = hex_grid,
     eta_draws_per_hex = preds$eta_draws_per_hex,
     ci_level = 0.90
   )
   
+  # Classify according to particular binning strategy
   hex_change_sf <- hex_change_sf %>%
     classify_min_supported_change()
   
@@ -650,17 +653,17 @@ for (i in seq_len(length(pred_files))) {
   hex_change_sf <- hex_change_sf %>%
     filter(mu2_med>zmin)
   
-  
   # Define levels and colours in one place
   change_levels <- c(
     "< 0.5x", "0.5x to 0.67x", "0.67x to 0.9x",
     "0.9x to 1.1x",
     "1.1x to 1.5x", "1.5x to 2x", "> 2x"
   )
+  
   change_labels <- c(
-    "Large decrease\n(at least 50%)", "Moderate decrease\n(at least 33%)", "Small decrease\n(at least 10%)",
-    "Little change\n(-10% to +10%)",
-    "Small increase\n(at least 10%)", "Moderate increase\n(at least 50%)", "Large increase\n(at least 100%)"
+    "-50%", "-33%", "-10%",
+    "Weak or uncertain change",
+    "+10%", "+50%", "+100%"
   )
   
   tweak_colour <- function(col, lighten_amount = -0.15, saturate_amount = 0.2) {
@@ -679,8 +682,8 @@ for (i in seq_len(length(pred_files))) {
   
   # Build the legend as its own ggplot
   legend_df <- tibble(
-    level   = factor(change_levels, levels = rev(change_levels)),  # rev so top = strongest increase
-    label   = factor(change_labels, levels = rev(change_labels)),  # keep in same order
+    level   = factor(change_levels, levels = change_levels),  # rev so top = strongest increase
+    label   = factor(change_labels, levels = change_labels),  # keep in same order
     colour  = change_colours
   )
   
@@ -701,11 +704,11 @@ for (i in seq_len(length(pred_files))) {
       size  = 3
     ) +
     scale_fill_manual(values  = setNames(change_colours, change_levels), guide = "none") +
-    labs(title = "Minimum supported\npopulation change") +
+    labs(title = "Population changed\nby at least this much\n(95% confident)") +
     scale_x_continuous(limits = c(0.6, 5.5), expand = c(0, 0)) +  # wider for longer labels
     theme_void() +
     theme(
-      plot.title = element_text(size = 10, face = "bold", hjust = 0.15, vjust = 1, margin = margin(b = 4))
+      plot.title = element_text(size = 11, face = "bold", hjust = 0.15, vjust = 1, margin = margin(b = 4))
     )
   
   # Main map — no legend
@@ -746,12 +749,11 @@ for (i in seq_len(length(pred_files))) {
       plot.title = ggtext::element_markdown(lineheight = 1.1)
     )
 
-  
   final_plot <- chg_plot + 
     inset_element(
       legend_plot,
       left   = 0.8,
-      bottom = 0.5,
+      bottom = 0.65,
       right  = 1.0,
       top    = 0.99
     )

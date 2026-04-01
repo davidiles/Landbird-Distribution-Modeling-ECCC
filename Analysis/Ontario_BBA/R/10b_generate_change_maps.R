@@ -662,7 +662,7 @@ for (i in seq_len(length(pred_files))) {
   
   change_labels <- c(
     "-50%", "-33%", "-10%",
-    "Weak or uncertain change",
+    "Weak or\nuncertain",
     "+10%", "+50%", "+100%"
   )
   
@@ -708,7 +708,7 @@ for (i in seq_len(length(pred_files))) {
     scale_x_continuous(limits = c(0.6, 5.5), expand = c(0, 0)) +  # wider for longer labels
     theme_void() +
     theme(
-      plot.title = element_text(size = 11, face = "bold", hjust = 0.15, vjust = 1, margin = margin(b = 4))
+      plot.title = element_text(size = 9, face = "bold", hjust = 0.15, vjust = 1, margin = margin(b = 4))
     )
   
   # Main map — no legend
@@ -753,7 +753,7 @@ for (i in seq_len(length(pred_files))) {
     inset_element(
       legend_plot,
       left   = 0.8,
-      bottom = 0.65,
+      bottom = 0.5,
       right  = 1.0,
       top    = 0.99
     )

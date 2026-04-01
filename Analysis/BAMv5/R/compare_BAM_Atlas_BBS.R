@@ -108,7 +108,7 @@ n_bbs_required <- 10
 cmpr1 <- comparison %>%
   filter(n_BBS_routes_mean >= n_bbs_required)
 
-lim <- range(cmpr1[, c("BBS_mean_log","bam_median_log")],na.rm = TRUE)
+lim <- range(cmpr1[, c("BBS_mean_log","bam_median_log","atlas_median_log")],na.rm = TRUE)
 
 # Assess linear relationship between BAM and BBS within each region
 # fit linear model separately by region
@@ -222,155 +222,155 @@ lm1 <- lm(bam_median_log ~ BBS_mean_log, data = cmpr1_bcr13)
 sd(cmpr1_bcr13$bam_median_log)/sd(cmpr1_bcr13$BBS_mean_log)
 mean(abs(cmpr1_bcr13$bam_median_log)) / mean(abs(cmpr1_bcr13$BBS_mean_log))
 
-# ------------------------------------------------------------
-# Compare Atlas and BBS
-# ------------------------------------------------------------
-
-n_atlas_required <- 10
-cmpr2 <- comparison %>%
-  filter(n_BBS_routes_mean >= n_bbs_required &
-        (n_sq_OBBA2 >= n_atlas_required | n_sq_OBBA3 >= n_atlas_required))
-  
-# correlation label per region
-cor_labels <- cmpr2 %>%
-  group_by(region) %>%
-  summarise(
-    cor_val = cor(BBS_mean_log, atlas_median_log, use = "complete.obs", method = "spearman"),
-    label = paste0("Cor = ", round(cor_val, 2)),
-    .groups = "drop"
-  )
-
-fig2 <- ggplot(cmpr2) +
-  geom_abline(slope = 1, col = "black") +
-  
-  geom_smooth(aes(x = BBS_mean_log,
-                  y = atlas_median_log),
-              method = "lm",
-              col = "dodgerblue",
-              fill = "dodgerblue",
-              alpha = 0.2)+
-  
-  geom_text_repel(
-    aes(
-      x = BBS_mean_log,
-      y = atlas_median_log,
-      label = english_name
-    ),
-    size = 2,
-    max.overlaps = 20,
-    col = "dodgerblue",
-    alpha = 0.5
-  ) +
-  
-  geom_text(
-    data = cor_labels,
-    aes(x = -Inf, y = Inf, label = label),
-    hjust = -0.1,
-    vjust = 1.2,
-    inherit.aes = FALSE
-  ) +
-  
-  geom_point(
-    aes(
-      x = BBS_mean_log,
-      y = atlas_median_log
-    ),
-    col = "dodgerblue"
-  ) +
-  scale_x_continuous(
-    name = "BBS overall percent change from 2002 to 2022",
-    labels = function(x) sprintf("%+d%%", round(log_to_pct(x)))
-  ) +
-  scale_y_continuous(
-    name = "Atlas overall percent change from Atlas 2 to 3",
-    labels = function(x) sprintf("%+d%%", round(log_to_pct(x)))
-  ) +
-  coord_cartesian() +
-  theme_bw() +
-  coord_cartesian(xlim = lim, ylim = lim) +
-  facet_grid(.~region, scales = "free") +
-  ggtitle("Atlas vs BBS")
-
-fig2
-
-cmpr2_bcr13 <- cmpr2 %>% subset(region == "CA-ON-13")
-lm2 <- lm(atlas_median_log ~ BBS_mean_log, data = cmpr2_bcr13)
-summary(lm2)
-sd(cmpr2_bcr13$atlas_median_log)/sd(cmpr2_bcr13$BBS_mean_log)
-mean(abs(cmpr2_bcr13$atlas_median_log)) / mean(abs(cmpr2_bcr13$BBS_mean_log))
-
-# ------------------------------------------------------------
-# Compare Atlas and BAM
-# ------------------------------------------------------------
-
-cmpr3 <- comparison %>%
-  filter(n_sq_OBBA2 >= n_atlas_required | n_sq_OBBA3 >= n_atlas_required)
-
-# correlation label per region
-cor_labels <- cmpr3 %>%
-  group_by(region) %>%
-  summarise(
-    cor_val = cor(bam_median_log, atlas_median_log, use = "complete.obs", method = "spearman"),
-    label = paste0("Cor = ", round(cor_val, 2)),
-    .groups = "drop"
-  )
-
-fig3 <- ggplot(cmpr3) +
-  geom_abline(slope = 1, col = "black") +
-  
-  geom_smooth(aes(x = bam_median_log,
-                  y = atlas_median_log),
-              method = "lm",
-              col = "dodgerblue",
-              fill = "dodgerblue",
-              alpha = 0.2)+
-  
-  geom_text_repel(
-    aes(
-      x = bam_median_log,
-      y = atlas_median_log,
-      label = english_name
-    ),
-    size = 2,
-    max.overlaps = 20,
-    col = "dodgerblue",
-    alpha = 0.5
-  ) +
-  
-  geom_text(
-    data = cor_labels,
-    aes(x = -Inf, y = Inf, label = label),
-    hjust = -0.1,
-    vjust = 1.2,
-    inherit.aes = FALSE
-  ) +
-  
-  geom_point(
-    aes(
-      x = bam_median_log,
-      y = atlas_median_log
-    ),
-    col = "dodgerblue"
-  ) +
-  scale_x_continuous(
-    name = "BAM overall percent change from 2000 to 2020",
-    labels = function(x) sprintf("%+d%%", round(log_to_pct(x)))
-  ) +
-  scale_y_continuous(
-    name = "Atlas overall percent change from Atlas 2 to 3",
-    labels = function(x) sprintf("%+d%%", round(log_to_pct(x)))
-  ) +
-  coord_cartesian() +
-  theme_bw() +
-  coord_cartesian(xlim = lim, ylim = lim) +
-  facet_grid(.~region, scales = "free") +
-  ggtitle("Atlas vs BAM")
-
-fig3
-
-# ------------------------------------------------------------
-# Compare all 3 programs in a single figure
-# ------------------------------------------------------------
-
-head(comparison)
-
+# # ------------------------------------------------------------
+# # Compare Atlas and BBS
+# # ------------------------------------------------------------
+# 
+# n_atlas_required <- 10
+# cmpr2 <- comparison %>%
+#   filter(n_BBS_routes_mean >= n_bbs_required &
+#         (n_sq_OBBA2 >= n_atlas_required | n_sq_OBBA3 >= n_atlas_required))
+#   
+# # correlation label per region
+# cor_labels <- cmpr2 %>%
+#   group_by(region) %>%
+#   summarise(
+#     cor_val = cor(BBS_mean_log, atlas_median_log, use = "complete.obs", method = "spearman"),
+#     label = paste0("Cor = ", round(cor_val, 2)),
+#     .groups = "drop"
+#   )
+# 
+# fig2 <- ggplot(cmpr2) +
+#   geom_abline(slope = 1, col = "black") +
+#   
+#   geom_smooth(aes(x = BBS_mean_log,
+#                   y = atlas_median_log),
+#               method = "lm",
+#               col = "dodgerblue",
+#               fill = "dodgerblue",
+#               alpha = 0.2)+
+#   
+#   geom_text_repel(
+#     aes(
+#       x = BBS_mean_log,
+#       y = atlas_median_log,
+#       label = english_name
+#     ),
+#     size = 2,
+#     max.overlaps = 20,
+#     col = "dodgerblue",
+#     alpha = 0.5
+#   ) +
+#   
+#   geom_text(
+#     data = cor_labels,
+#     aes(x = -Inf, y = Inf, label = label),
+#     hjust = -0.1,
+#     vjust = 1.2,
+#     inherit.aes = FALSE
+#   ) +
+#   
+#   geom_point(
+#     aes(
+#       x = BBS_mean_log,
+#       y = atlas_median_log
+#     ),
+#     col = "dodgerblue"
+#   ) +
+#   scale_x_continuous(
+#     name = "BBS overall percent change from 2002 to 2022",
+#     labels = function(x) sprintf("%+d%%", round(log_to_pct(x)))
+#   ) +
+#   scale_y_continuous(
+#     name = "Atlas overall percent change from Atlas 2 to 3",
+#     labels = function(x) sprintf("%+d%%", round(log_to_pct(x)))
+#   ) +
+#   coord_cartesian() +
+#   theme_bw() +
+#   coord_cartesian(xlim = lim, ylim = lim) +
+#   facet_grid(.~region, scales = "free") +
+#   ggtitle("Atlas vs BBS")
+# 
+# fig2
+# 
+# cmpr2_bcr13 <- cmpr2 %>% subset(region == "CA-ON-13")
+# lm2 <- lm(atlas_median_log ~ BBS_mean_log, data = cmpr2_bcr13)
+# summary(lm2)
+# sd(cmpr2_bcr13$atlas_median_log)/sd(cmpr2_bcr13$BBS_mean_log)
+# mean(abs(cmpr2_bcr13$atlas_median_log)) / mean(abs(cmpr2_bcr13$BBS_mean_log))
+# 
+# # ------------------------------------------------------------
+# # Compare Atlas and BAM
+# # ------------------------------------------------------------
+# 
+# cmpr3 <- comparison %>%
+#   filter(n_sq_OBBA2 >= n_atlas_required | n_sq_OBBA3 >= n_atlas_required)
+# 
+# # correlation label per region
+# cor_labels <- cmpr3 %>%
+#   group_by(region) %>%
+#   summarise(
+#     cor_val = cor(bam_median_log, atlas_median_log, use = "complete.obs", method = "spearman"),
+#     label = paste0("Cor = ", round(cor_val, 2)),
+#     .groups = "drop"
+#   )
+# 
+# fig3 <- ggplot(cmpr3) +
+#   geom_abline(slope = 1, col = "black") +
+#   
+#   geom_smooth(aes(x = bam_median_log,
+#                   y = atlas_median_log),
+#               method = "lm",
+#               col = "dodgerblue",
+#               fill = "dodgerblue",
+#               alpha = 0.2)+
+#   
+#   geom_text_repel(
+#     aes(
+#       x = bam_median_log,
+#       y = atlas_median_log,
+#       label = english_name
+#     ),
+#     size = 2,
+#     max.overlaps = 20,
+#     col = "dodgerblue",
+#     alpha = 0.5
+#   ) +
+#   
+#   geom_text(
+#     data = cor_labels,
+#     aes(x = -Inf, y = Inf, label = label),
+#     hjust = -0.1,
+#     vjust = 1.2,
+#     inherit.aes = FALSE
+#   ) +
+#   
+#   geom_point(
+#     aes(
+#       x = bam_median_log,
+#       y = atlas_median_log
+#     ),
+#     col = "dodgerblue"
+#   ) +
+#   scale_x_continuous(
+#     name = "BAM overall percent change from 2000 to 2020",
+#     labels = function(x) sprintf("%+d%%", round(log_to_pct(x)))
+#   ) +
+#   scale_y_continuous(
+#     name = "Atlas overall percent change from Atlas 2 to 3",
+#     labels = function(x) sprintf("%+d%%", round(log_to_pct(x)))
+#   ) +
+#   coord_cartesian() +
+#   theme_bw() +
+#   coord_cartesian(xlim = lim, ylim = lim) +
+#   facet_grid(.~region, scales = "free") +
+#   ggtitle("Atlas vs BAM")
+# 
+# fig3
+# 
+# # ------------------------------------------------------------
+# # Compare all 3 programs in a single figure
+# # ------------------------------------------------------------
+# 
+# head(comparison)
+# 

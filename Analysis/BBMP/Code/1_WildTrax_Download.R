@@ -7,48 +7,23 @@
 # ------------------------------------------------
 # Load/install packages and set graphical themes / working directory
 # ------------------------------------------------
+
+# remotes::install_github("ABbiodiversity/wildRtrax@development")
+
+
 my_packs = c('tidyverse',
              'openxlsx',
              'RColorBrewer',
              'viridis',
              'ggrepel',
              'scales',
-             'wildRtrax',
+             'wildrtrax',
              'lubridate','sf')
 
 if (any(!my_packs %in% installed.packages()[, 'Package'])) {install.packages(my_packs[which(!my_packs %in% installed.packages()[, 'Package'])],dependencies = TRUE)}
 lapply(my_packs, require, character.only = TRUE)
 
 rm(list=ls())
-
-#remotes::install_github("ABbiodiversity/wildRtrax@development")
-
-# ------------------------------------------------
-# Set working directory
-# ------------------------------------------------
-
-stub <- function() {}
-thisPath <- function() {
-  cmdArgs <- commandArgs(trailingOnly = FALSE)
-  if (length(grep("^-f$", cmdArgs)) > 0) {
-    # R console option
-    normalizePath(dirname(cmdArgs[grep("^-f", cmdArgs) + 1]))[1]
-  } else if (length(grep("^--file=", cmdArgs)) > 0) {
-    # Rscript/R console option
-    scriptPath <- normalizePath(dirname(sub("^--file=", "", cmdArgs[grep("^--file=", cmdArgs)])))[1]
-  } else if (Sys.getenv("RSTUDIO") == "1") {
-    # RStudio
-    dirname(rstudioapi::getSourceEditorContext()$path)
-  } else if (is.null(attr(stub, "srcref")) == FALSE) {
-    # 'source'd via R console
-    dirname(normalizePath(attr(attr(stub, "srcref"), "srcfile")$filename))
-  } else {
-    stop("Cannot find file path")
-  }
-}
-
-dirname <- thisPath()
-setwd(dirname)
 
 # -----------------------------------------------
 # Useful functions
@@ -60,22 +35,25 @@ setwd(dirname)
 # Load list of species prepared by script 0_species_list.R
 # -----------------------------------------------
 
-all_species <- readRDS("../Data_Cleaned/all_species.RDS")
+all_species <- readRDS("Data_Cleaned/all_species.RDS")
 
 # -----------------------------------------------
 # Polygon delineating study area boundary
 # -----------------------------------------------
 
-BCR <- st_read("../../../Data/Spatial/National/BCR/BCR_Terrestrial_master.shp")  %>%
-  subset(COUNTRY == "CANADA") %>%
-  st_make_valid() %>%
-  dplyr::select(BCR, PROVINCE_S)
-
-BBMP_boundary <- st_read("../../../Data/Spatial/National/BBMP_hexagons/Hexagons_w_Attributes.shp") %>%
-  st_union() %>%
-  st_buffer(1000) %>%
-  st_buffer(-1000)
-ggplot()+geom_sf(data = BBMP_boundary)
+# BCR <- st_read("../../Data/Spatial/National/BCR/BCR_Terrestrial_master.shp")  %>%
+#   subset(COUNTRY == "CANADA") %>%
+#   st_make_valid() %>%
+#   dplyr::select(BCR, PROVINCE_S)
+# 
+# BBMP_boundary <- st_read("../../Data/Spatial/National/BBMP_hexagons/Hexagons_w_Attributes.shp") %>%
+#   st_union() %>%
+#   st_buffer(1000) %>%
+#   st_buffer(-1000)
+# 
+# ggplot()+
+#   geom_sf(data = BCR)+
+#   geom_sf(data = BBMP_boundary, fill = "darkgreen", alpha = 0.5)
 
 # -----------------------------------------------
 # WildTrax credentials
@@ -83,81 +61,65 @@ ggplot()+geom_sf(data = BBMP_boundary)
 
 wt_auth() # Need your wildtrax username
 
-# # ---------------------------------------------------------
-# # Identify all projects we have access to
-# # ---------------------------------------------------------
-#
-# ARU_projects <- wt_get_download_summary(sensor_id = 'ARU') %>% 
-#   subset(sensor == "ARU") %>% 
-#   arrange(project)
-# PC_projects <- wt_get_download_summary(sensor_id = 'PC') %>% subset(sensor == "PC") %>% arrange(project)
-#
 # ---------------------------------------------------------
 # Download projects with 'ARU' data
 # ---------------------------------------------------------
-# 
-# ARU_fulldat <- data.frame()
-# 
-# for (i in 1:nrow(ARU_projects)){
-#   print(i)
-# 
-#   loc <- wt_download_report(project_id = ARU_projects$project_id[i], sensor_id = "ARU", reports = c("location"), weather_cols = FALSE)
-# 
-#   if (is.null(nrow(loc))) next
-# 
-#   loc <- loc %>%
-#     select(location_id,latitude,longitude) %>%
-#     unique()
-# 
-#   rec <- wt_download_report(project_id = ARU_projects$project_id[i], sensor_id = "ARU", reports = c("recording"), weather_cols = FALSE) %>%
-#     mutate(year = as.numeric(year(recording_date_time))) %>%
-#     select(project_id,location_id,year) %>%
-#     unique()
-# 
-#   loc <- wt_download_report(project_id = ARU_projects$project_id[i], sensor_id = "ARU", reports = c("location"), weather_cols = FALSE) %>%
-#     select(location_id,latitude,longitude) %>%
-#     unique()
-# 
-#   dat <- full_join(loc,rec)
-# 
-#   ARU_fulldat <- rbind(ARU_fulldat, dat)
-# }
-# 
-# write.csv(ARU_fulldat, file = "../Data_Cleaned/WildTrax/WildTrax_ARU_locations.csv", row.names = FALSE)
-# 
-# # ---------------------------------------------------------
-# # Download projects with 'PC' data
-# # ---------------------------------------------------------
-# 
-# PC_fulldat <- data.frame()
-# 
-# for (i in 1:nrow(PC_projects)){
-#   print(i)
-# 
-#   loc <- wt_download_report(project_id = PC_projects$project_id[i], sensor_id = "PC", reports = c("location"), weather_cols = FALSE)
-# 
-#   if (is.null(nrow(loc))) next
-# 
-#   loc <- loc %>%
-#     select(location_id,latitude,longitude) %>%
-#     unique()
-# 
-#   rec <- wt_download_report(project_id = PC_projects$project_id[i], sensor_id = "PC", reports = c("point_count"), weather_cols = FALSE) %>%
-#     mutate(year = as.numeric(year(survey_date))) %>%
-#     select(project_id,location_id,year) %>%
-#     unique()
-# 
-#   loc <- wt_download_report(project_id = PC_projects$project_id[i], sensor_id = "PC", reports = c("location"), weather_cols = FALSE) %>%
-#     select(location_id,latitude,longitude) %>%
-#     unique()
-# 
-#   dat <- full_join(loc,rec)
-# 
-#   PC_fulldat <- rbind(PC_fulldat, dat)
-# }
-# 
-# write.csv(PC_fulldat, file = "../Data_Cleaned/WildTrax/WildTrax_PC_locations.csv", row.names = FALSE)
-#
+
+ARU_projects = wildrtrax::wt_get_projects(sensor = "ARU")
+
+ARU_fulldat <- data.frame()
+for (i in 1:nrow(ARU_projects)){
+  print(i)
+
+  start <- Sys.time()
+  aru_dat_list = wildrtrax::wt_download_report(project_id = ARU_projects$project_id[i],
+                                               sensor_id = "ARU",
+                                               report = c("location","recording"))
+  
+  loc <- aru_dat_list[[1]] %>% dplyr::select(location_id,latitude,longitude)
+  rec <- aru_dat_list[[2]] %>% dplyr::select(location_id, recording_id,task_method,task_duration)
+  dat <- full_join(loc,rec) %>% mutate(project_id = ARU_projects$project_id[i])
+
+  end <- Sys.time()
+  print(end-start)
+  ARU_fulldat <- rbind(ARU_fulldat, dat)
+}
+
+write.csv(ARU_fulldat, file = "../Data_Cleaned/WildTrax/WildTrax_ARU_locations.csv", row.names = FALSE)
+
+# ---------------------------------------------------------
+# Download projects with 'PC' data
+# ---------------------------------------------------------
+
+PC_fulldat <- data.frame()
+
+for (i in 1:nrow(PC_projects)){
+  print(i)
+
+  loc <- wt_download_report(project_id = PC_projects$project_id[i], sensor_id = "PC", reports = c("location"), weather_cols = FALSE)
+
+  if (is.null(nrow(loc))) next
+
+  loc <- loc %>%
+    select(location_id,latitude,longitude) %>%
+    unique()
+
+  rec <- wt_download_report(project_id = PC_projects$project_id[i], sensor_id = "PC", reports = c("point_count"), weather_cols = FALSE) %>%
+    mutate(year = as.numeric(year(survey_date))) %>%
+    select(project_id,location_id,year) %>%
+    unique()
+
+  loc <- wt_download_report(project_id = PC_projects$project_id[i], sensor_id = "PC", reports = c("location"), weather_cols = FALSE) %>%
+    select(location_id,latitude,longitude) %>%
+    unique()
+
+  dat <- full_join(loc,rec)
+
+  PC_fulldat <- rbind(PC_fulldat, dat)
+}
+
+write.csv(PC_fulldat, file = "../Data_Cleaned/WildTrax/WildTrax_PC_locations.csv", row.names = FALSE)
+
 
 # ---------------------------------------------------------
 # Subset to data within Study Area Boundary

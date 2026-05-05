@@ -78,11 +78,8 @@ fit_inla_multi_atlas <- function(
     covariates,
     timeout_min = 15,
     
-    # Mesh controls
-    mesh_max_edge = c(100, 200),
-    mesh_cutoff   = 50,
-    mesh_convex   = c(50, 150),
-    mesh_concave  = c(50, 150),
+    # Mesh
+    mesh_spatial,
     
     # SPDE priors
     prior_range_abund  = c(200, 0.1),   # 10% chance range < 200 km
@@ -131,7 +128,6 @@ fit_inla_multi_atlas <- function(
     "Hours_Since_Sunrise",
     "days_midpoint",
     "BCR_idx",
-    "square_atlas",
     "geometry"
   )
   missing_cols <- setdiff(required_cols, names(sp_dat))
@@ -167,26 +163,6 @@ fit_inla_multi_atlas <- function(
   sp_dat$days_midpoint       <- ensure_numeric(sp_dat$days_midpoint)
   sp_dat$Atlas3_c            <- ensure_numeric(sp_dat$Atlas3_c)
   sp_dat$BCR_idx             <- ensure_numeric(sp_dat$BCR_idx)
-  
-  # ------------------------------------------------------------
-  # Mesh + SPDEs
-  # ------------------------------------------------------------
-  
-  hull <- fmesher::fm_extensions(
-    study_boundary,
-    convex  = mesh_convex,
-    concave = mesh_concave
-  )
-  
-  mesh_spatial <- fmesher::fm_mesh_2d_inla(
-    loc      = sf::st_as_sfc(sp_dat),
-    boundary = hull,
-    max.edge = mesh_max_edge,
-    cutoff   = mesh_cutoff,
-    crs      = sf::st_crs(sp_dat)
-  )
-  
-  plot(mesh_spatial)
   
   # Shared abundance field
   matern_mean <- INLA::inla.spde2.pcmatern(
@@ -1393,7 +1369,7 @@ make_cov_df <- function(covars, mean = 0, sd_linear = 1) {
   tibble(
     covariate = covars,
     beta = 1,
-    sd_linear = 1,
+    sd_linear = sd_linear,
     model = "linear",
     mean = 0,
     prec = 1 / (sd_linear^2)

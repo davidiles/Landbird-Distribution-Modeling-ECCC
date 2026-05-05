@@ -40,7 +40,7 @@ source(figure_utils_path)
 # Config
 # ------------------------------------------------------------
 
-model_type <- "PC_ARU"
+model_type <- "PC_ARU_CL"
 
 # File paths
 in_data  <- file.path(paths$data_clean, "birds", "data_ready_for_analysis.rds")
@@ -75,8 +75,8 @@ all_surveys <- dat$all_surveys
 counts      <- dat$counts
 
 # prediction grid / study area
-grid2 <- dat$grid_OBBA2
-grid3 <- dat$grid_OBBA3
+grid2 <- dat$grid_OBBA2 %>% na.omit()
+grid3 <- dat$grid_OBBA3 %>% na.omit()
 study_boundary <- dat$study_boundary %>% sf::st_as_sf()
 
 hex_grid <- dat$hex_grid
@@ -270,10 +270,6 @@ for (i in seq_len(length(pred_files))) {
     ci_probs = c(0.05, 0.95)
   ) %>%
     st_centroid()
-  
-  ggplot(hex_change_sf) +
-    geom_sf(data = study_boundary, fill = NA, colour = "black")+
-    geom_sf(aes(col = mean_abs_change))
   
 }
 

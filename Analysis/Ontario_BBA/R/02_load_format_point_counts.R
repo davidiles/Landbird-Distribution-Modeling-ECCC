@@ -117,34 +117,40 @@ NC_OBBA3_PC <- NC_OBBA3_PC_raw %>%
 # Load and process Atlas 3 checklists
 # ------------------------------------------------------------
 
-# obba3_path <- file.path(paths$data, "Bird_Data_Raw","OBBA3","Point_Count","onatlas3pc_naturecounts_data.txt")
-# NC_OBBA3_PC_raw <- read.table(
-#   obba3_path,
-#   sep = "\t", header = TRUE, fill = TRUE, comment.char = "", quote = ""
-# ) %>%
-#   select(where(~ sum(!is.na(.x)) > 0)) %>%
-#   rename(species_id = SpeciesCode) %>%
-#   mutate(
-#     Date_Time = make_datetime_from_frac_hours(
-#       ymd(ObservationDate),
-#       TimeObservationsStarted,
-#       tz = "UTC"
-#     ),
-#     Project_Name = "OBBA3",
-#     Data_Source = "NatureCounts",
-#     Survey_Type = infer_survey_type_OBBA3(
-#       Remarks, Remarks2, EffortMeasurement1, SurveyAreaIdentifier
-#     ),
-#     Special_Survey = if_else(EffortMeasurement1 == "Special", "Special", "No")
-#   )
-# 
-# NC_OBBA3_PC <- NC_OBBA3_PC_raw %>%
-#   select(
-#     Data_Source, Project_Name, Survey_Type, Special_Survey,
-#     DecimalLatitude, DecimalLongitude,
-#     Date_Time, DurationInHours,
-#     species_id, ObservationCount
-#   )
+obba3_path <- file.path(paths$data, "Bird_Data_Raw","OBBA3","Checklist","onatlas3be_do_naturecounts_data.txt")
+NC_OBBA3_CL_raw <- read.table(
+  obba3_path,
+  sep = "\t", header = TRUE, fill = TRUE, comment.char = "", quote = ""
+) %>%
+  select(where(~ sum(!is.na(.x)) > 0)) %>%
+  rename(species_id = SpeciesCode) %>%
+  mutate(
+    species_id = as.numeric(species_id),
+    Survey_Type = ProtocolType,
+    DecimalLatitude = as.numeric(DecimalLatitude), 
+    DecimalLongitude = as.numeric(DecimalLongitude),
+    TimeObservationsStarted = as.numeric(TimeObservationsStarted),
+    DurationInHours = as.numeric(DurationInHours),
+    Date_Time = make_datetime_from_frac_hours(
+      ymd(ObservationDate),
+      TimeObservationsStarted,
+      tz = "UTC"
+    ),
+    Project_Name = "OBBA3",
+    Data_Source = "NatureCounts")
+
+NC_OBBA3_CL <- NC_OBBA3_CL_raw %>%
+  select(
+    Data_Source, Project_Name, Survey_Type,
+    DecimalLatitude, DecimalLongitude,
+    Date_Time, DurationInHours,
+    species_id, ObservationCount
+  )
+
+# Only include checklist surveys between 1 and 10 minutes in duration
+NC_OBBA3_CL <- NC_OBBA3_CL %>%
+  na.omit() %>%
+  subset(DurationInHours >= (1/60) & DurationInHours <= (10/60))
 
 # ------------------------------------------------------------
 # Load and process Atlas 2 point counts
@@ -183,52 +189,18 @@ NC_OBBA2_PC <- NC_OBBA2_PC_raw %>%
   )
 
 # ------------------------------------------------------------
-# Load and process Atlas 2 checklists (raw breeding evidence)
-# ------------------------------------------------------------
-
-# obba2_path <- file.path(paths$data, "Bird_Data_Raw","OBBA2","Raw_Breeding_Evidence","obba2be_raw_naturecounts_data.txt")
-# NC_OBBA2_CL_raw <- read.table(
-#   obba2_path,
-#   sep = "\t", header = TRUE, fill = TRUE, comment.char = "", quote = ""
-# ) %>%
-#   select(where(~ sum(!is.na(.x)) > 0)) %>%
-#   left_join(
-#     all_species[, c("sp_code", "species_id")],
-#     by = c("SpeciesCode" = "sp_code"),
-#     multiple = "first"
-#   ) %>%
-#   rename(TimeObservationsStarted = TimeCollected) %>%
-#   mutate(
-#     Date_Time = make_datetime_from_frac_hours(
-#       ymd(paste(YearCollected, MonthCollected, DayCollected, sep = "-")),
-#       TimeObservationsStarted,
-#       tz = "UTC"
-#     ),
-#     Project_Name = "OBBA2",
-#     Data_Source = "NatureCounts",
-#     Survey_Type = "Point_Count",
-#     Special_Survey = "No"
-#   )
-# 
-# NC_OBBA2_PC <- NC_OBBA2_PC_raw %>%
-#   select(
-#     Data_Source, Project_Name, Survey_Type, Special_Survey,
-#     DecimalLatitude, DecimalLongitude,
-#     Date_Time, DurationInHours,
-#     species_id, ObservationCount
-#   )
-
-# ------------------------------------------------------------
 # Combine atlases and basic cleaning
 # ------------------------------------------------------------
 
 # NOTE: the longitude filter removes obvious data errors (e.g., missing sign).
 # A stricter spatial filter (within Ontario boundary) occurs later in the pipeline.
 NC_long <- bind_rows(NC_OBBA3_PC, NC_OBBA2_PC) %>%
+  bind_rows(NC_OBBA3_CL) %>%
   filter(
     !is.na(DecimalLatitude),
     !is.na(DecimalLongitude),
     DecimalLongitude < -60,
+    DecimalLatitude < 60,
     !is.na(species_id),
     !is.na(ObservationCount),
     !is.na(Date_Time)

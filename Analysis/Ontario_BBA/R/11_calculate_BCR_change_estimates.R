@@ -183,7 +183,7 @@ dat <- readRDS(in_data)
 all_surveys <- dat$all_surveys
 counts      <- dat$counts
 bcr_sf      <- st_transform(dat$bcr_sf, st_crs(dat$grid_OBBA2))
-hex_sf      <- dat$hex_grid
+hex_sf      <- dat$hex_grid_25km
 
 # ------------------------------------------------------------
 # Build atlas summaries

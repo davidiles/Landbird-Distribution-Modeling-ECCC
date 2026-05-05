@@ -208,29 +208,102 @@ if (file.exists(insect_src)) {
   message("Insect damage layer not found; skipping insect covariates.")
 }
 
-# 4c) Water: open water vs river + large-water polygons for masking/plotting
-if (file.exists(water_src)) {
-  
-  water_river <- process_ohn_river_fast(
-    waterbody_path = waterbody_src,
-    watercourse_path = watercourse_src,
-    boundary_sf = boundary_buf_m,
-    crs_wkt = crs_raster_m,
-    raster_res_m = 100,
-    river_buffer_m = 500,
-    simplify_tolerance_m = 0,
-    touches = TRUE,
-    use_raster_distance_buffer = TRUE
+# ------------------------------------------------------------
+# 5) Lakes
+# ------------------------------------------------------------
+
+watercourse <- sf::st_read(watercourse_src, quiet = TRUE)
+waterbody <- sf::st_read(waterbody_src, quiet = TRUE)
+
+# ------- Separate large and small rivers
+large_rivers <- waterbody %>%
+  filter(
+    WATERBODY_ %in% c("River", "Canal"),
+    PERMANENCY == "Permanent"
+  ) %>%
+  sf::st_make_valid()
+
+small_rivers <- watercourse %>%
+  filter(
+    WATERCOURS == "Stream",
+    PERMANENCY == "Permanent",
+    FLOW_CLASS != "Flow Gap"
   )
-  
-  st_write(
-    water_layers$water_filtered,
-    file.path(out_spatial_dir, "water_filtered.shp"),
-    delete_layer = TRUE,
-    quiet = TRUE
+
+r_large <- process_river_proximity(
+  x = large_rivers,
+  boundary_sf = boundary_buf_m,
+  crs_wkt = crs_raster_m,
+  buffer_m = 500,
+  raster_res_m = 50,
+  simplify_tolerance_m = 0
+)
+
+r_small <- process_river_proximity(
+  x = small_rivers,
+  boundary_sf = boundary_buf_m,
+  crs_wkt = crs_raster_m,
+  buffer_m = 250,
+  raster_res_m = 50,
+  simplify_tolerance_m = 0
+)
+
+# merge into 3 class raster
+r_merged <- terra::ifel(
+  r_large == 1, 2,                      # near large river
+  terra::ifel(
+    r_small == 1, 1,                    # near small river
+    0                                   # not near river
   )
-} else {
-  message("OHN water layer not found; skipping water covariates.")
-}
+)
+
+names(r_merged) <- "river_class"
+
+writeRaster(r_merged, file.path(out_spatial_dir, "water_river.tif"), overwrite = TRUE)
+
+# ------- Separate large and small lakes
+small_lakes <- waterbody %>%
+  dplyr::filter(
+    WATERBODY_ %in% c("Lake", "Kettle Lake", "Pond", "Reservoir", "Beaver Pond"),
+    PERMANENCY == "Permanent"
+  ) %>%
+  sf::st_transform(crs_raster_m) %>%
+  sf::st_make_valid() %>%
+  dplyr::mutate(area_m2 = as.numeric(sf::st_area(geometry))) %>%
+  dplyr::filter(area_m2 < 1e6)
+
+large_lakes <- waterbody %>%
+  dplyr::filter(
+    WATERBODY_ %in% c("Lake", "Kettle Lake", "Pond", "Reservoir", "Beaver Pond"),
+    PERMANENCY == "Permanent"
+  ) %>%
+  sf::st_transform(crs_raster_m) %>%
+  sf::st_make_valid() %>%
+  dplyr::mutate(area_m2 = as.numeric(sf::st_area(geometry))) %>%
+  dplyr::filter(area_m2 >= 1e6)
+
+r_large_lake <- process_lake_proximity(
+  x = large_lakes,
+  boundary_sf = boundary_buf_m,
+  crs_wkt = crs_raster_m,
+  raster_res_m = 50,
+  buffer_m = 500,
+  simplify_tolerance_m = 0,
+  out_name = "near_large_lake"
+)
+
+r_small_lake <- process_lake_proximity(
+  x = small_lakes,
+  boundary_sf = boundary_buf_m,
+  crs_wkt = crs_raster_m,
+  raster_res_m = 50,
+  buffer_m = 250,
+  simplify_tolerance_m = 0,
+  out_name = "near_small_lake"
+)
+
+writeRaster(r_large_lake, file.path(out_spatial_dir, "water_lake_large.tif"), overwrite = TRUE)
+writeRaster(r_small_lake, file.path(out_spatial_dir, "water_lake_small.tif"), overwrite = TRUE)
+
 
 message("04_process_covariates.R complete.")

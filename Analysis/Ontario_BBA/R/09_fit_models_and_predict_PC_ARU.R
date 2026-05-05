@@ -45,8 +45,8 @@ source(inla_utils_path)
 # ------------------------------------------------------------
 
 model_name <- "PC_ARU"
-rerun_models <- FALSE
-rerun_predictions <- FALSE
+rerun_models <- TRUE
+rerun_predictions <- TRUE
 
 in_file <- file.path(paths$data_clean, "birds", "data_ready_for_analysis.rds")
 if (!file.exists(in_file)) {
@@ -114,7 +114,7 @@ safe_dates_bcr <- safe_dates %>%
     BCR = case_when(
       ecoregion == "Mixedwood Plains" ~ "13",
       ecoregion == "Hudson Plains"    ~ "7",
-      ecoregion == "Boreal Shield"    ~ "8,12",
+      ecoregion == "Boreal Shield"    ~ "8, 12",
       TRUE ~ NA_character_
     )
   ) %>%
@@ -130,7 +130,10 @@ safe_dates_bcr <- safe_dates %>%
 
 # Covariates to *potentially* include; per-species covariate variance screening can happen later
 base_covars <- c(
-  "on_river",
+  "on_river_7",
+  "on_river_8",
+  "on_river_12",
+  "on_river_13",
   "on_road",
   "urban_3",
   "lc_1",
@@ -140,7 +143,8 @@ base_covars <- c(
   "lc_9S","lc_9N",   # Savannas
   "lc_10S","lc_10N", # Grasslands
   "lc_11","lc_12",
-  "lc_14","lc_17",
+  "lc_14",
+  "lc_17",
   "insect_broadleaf","insect_needleleaf"
 )
 
@@ -167,20 +171,17 @@ species_run
 for (i in seq_len(nrow(species_run))) {
   
   # To choose a particular species:
-  # i = which(species_run$english_name == "Purple Martin")
+  i = which(species_run$english_name == "Black-and-white Warbler")
   
   sp_name <- species_run$english_name[i]
   sp_code <- as.character(species_run$species_id[i])
   sp_file <- sp_filename(sp_name)
 
-  int_strategy = "auto" # can be faster with "eb", but more likley to fail
-  strategy = "laplace"  # can be faster with "simplified.laplace" but more approximate
-  
   message("\n====================\n", i, "/", nrow(species_run), ": ", sp_name, " (species_id = ", sp_code, ")\n====================")
   
-  model_path <- file.path(out_dir,paste0("models_",model_name), paste0(sp_file, ".rds"))
-  pred_path  <- file.path(out_dir, paste0("predictions_",model_name), paste0(sp_file, ".rds"))
-  dat_path <- file.path(out_dir,paste0("data_used_",model_name), paste0(sp_file, ".rds"))
+  model_path <- file.path(out_dir,paste0("models_",model_name), paste0(sp_file, "_500m.rds"))
+  pred_path  <- file.path(out_dir, paste0("predictions_",model_name), paste0(sp_file, "_500m.rds"))
+  dat_path <- file.path(out_dir,paste0("data_used_",model_name), paste0(sp_file, "_500m.rds"))
   
   # --- Build species data
   if (!(sp_code %in% names(counts))) {
@@ -338,15 +339,23 @@ for (i in seq_len(nrow(species_run))) {
   
   # --- Covariates spec
   covars_present <- intersect(base_covars, names(sp_dat))
-  cov_df_sp <- make_cov_df(covars_present)
+  cov_df_sp <- make_cov_df(covars_present, mean = 0, sd_linear = 3)
   
+  # # Stronger shrinkage on landscape-level proportions
+  # covars_to_shrink <- c("lc_1","lc_1","lc_4","lc_5",
+  #                       "lc_8S","lc_8N","lc_9S","lc_9N","lc_10S","lc_10N",
+  #                       "lc_11","lc_12","lc_14","lc_17",
+  #                       "insect_broadleaf","insect_needleleaf")
+  # 
+  # cov_df_sp$prec[cov_df_sp$covariate %in% covars_to_shrink] <- 1/(0.35^2)
+  # 
   # --- Specify priors
   priors_list <- list(
     
     # SPDE priors
-    prior_range_abund = c(250, 0.5),           # 10% chance spatial autocorrelation range of shared field is less than 200 km
-    prior_sigma_abund = c(3, 0.1),             # 10% chance SD is larger than 3
-    prior_range_change = c(250, 0.5),          # 10% chance spatial autocorrelation range of change field is less than 200 km
+    prior_range_abund = c(250, 0.5),           # 50% chance spatial autocorrelation range of shared field is less than 250 km
+    prior_sigma_abund = c(1, 0.1),             # 10% chance SD is larger than 1
+    prior_range_change = c(250, 0.5),          # 50% chance spatial autocorrelation range of change field is less than 250 km
     prior_sigma_change = c(0.1, 0.1),          # 10% chance SD is larger than 0.1
     
     # Priors for HSS effect
@@ -358,11 +367,14 @@ for (i in seq_len(nrow(species_run))) {
     prior_DOY_sigma_global = c(3, 0.1),        # global curve captures large deviations
     
     # atlas square iid effect
-    kappa_pcprec_diff   = c(1, 0.1)           # 10% chance SD of iid random effect is larger than 1
+    kappa_pcprec_diff   = c(log(2), 0.01)           # 10% chance SD of iid random effect is larger than log(2)
     
   )
   
   # --- Fit (or load existing)
+  int_strategy = "auto" # can be faster with "eb", but more likley to fail
+  strategy = "laplace"  # can be faster with "simplified.laplace" but more approximate
+  
   start_model <- Sys.time()
   
   mod <- NULL
@@ -377,6 +389,12 @@ for (i in seq_len(nrow(species_run))) {
         study_boundary = study_boundary,
         covariates = cov_df_sp,
         
+        # Mesh controls
+        mesh_max_edge = c(100, 150),
+        mesh_cutoff   = 75,
+        mesh_convex   = c(100, 200),
+        mesh_concave  = c(50, 100),
+        
         # SPDE priors
         prior_range_abund = priors_list$prior_range_abund,          
         prior_sigma_abund = priors_list$prior_sigma_abund,            
@@ -390,9 +408,6 @@ for (i in seq_len(nrow(species_run))) {
         # Priors for DOY effects,
         prior_DOY_range_global = priors_list$prior_DOY_range_global,
         prior_DOY_sigma_global = priors_list$prior_DOY_sigma_global,        
-        
-        #prior_DOY_range_BCR = priors_list$prior_DOY_range_BCR,
-        #prior_DOY_sigma_BCR = priors_list$prior_DOY_sigma_BCR,         
         
         # atlas square iid effect
         kappa_pcprec_diff   = priors_list$kappa_pcprec_diff,
@@ -435,6 +450,7 @@ for (i in seq_len(nrow(species_run))) {
     summary_fixed = mod$summary.fixed,
     summary_hyperpar = mod$summary.hyperpar
   )
+  
   save_atomic(model_summaries, model_summaries_path)
   
   print(summary(mod))

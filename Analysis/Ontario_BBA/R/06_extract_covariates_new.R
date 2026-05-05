@@ -103,10 +103,6 @@ all_surveys_m <- st_transform(all_surveys, crs_rast)
 # Load rasters
 # ------------------------------------------------------------
 
-# Optional static layers
-water_open  <- try_rast(r_path("water_open.tif"))
-water_river <- try_rast(r_path("water_river.tif"))
-
 # Required processed rasters (from 04_process_covariates.R)
 req_obba2 <- c(
   r_path("prec_OBBA2.tif"),
@@ -128,16 +124,23 @@ need_files(req_obba3, "required OBBA3 rasters (run 04_process_covariates.R)")
 prec2  <- rast(r_path("prec_OBBA2.tif"))
 tmax2  <- rast(r_path("tmax_OBBA2.tif"))
 urban2 <- rast(r_path("Urban_2000.tif"))
-lc2    <- rast(r_path("MODIS_LC_OBBA2_mode.tif"))
+MODIS2    <- rast(r_path("MODIS_LC_OBBA2_mode.tif"))
 road2  <- try_rast(r_path("roadside_2005_100m.tif"))
 insect2 <- try_rast(r_path("insect_OBBA2.tif"))
 
 prec3  <- rast(r_path("prec_OBBA3.tif"))
 tmax3  <- rast(r_path("tmax_OBBA3.tif"))
 urban3 <- rast(r_path("Urban_2020.tif"))
-lc3    <- rast(r_path("MODIS_LC_OBBA3_mode.tif"))
+MODIS3    <- rast(r_path("MODIS_LC_OBBA3_mode.tif"))
 road3  <- try_rast(r_path("roadside_2025_100m.tif"))
 insect3 <- try_rast(r_path("insect_OBBA3.tif"))
+
+# New layers
+LCC2020 <- try_rast(file.path(paths$data,"Spatial","National","LandCoverCanada2020","landcover-2020-classification.tif"))
+water_river <- rast(r_path("water_river.tif"))
+water_lake_large <- rast(r_path("water_lake_large.tif"))
+water_lake_small <- rast(r_path("water_lake_small.tif"))
+
 
 # ------------------------------------------------------------
 # Build grid covariate tables (OBBA2 / OBBA3)
@@ -156,11 +159,18 @@ grid_OBBA3$tmax <- extract_mean(tmax3, grid_cells, boundary_buf_m)
 if (!is.null(road2)) grid_OBBA2$road <- extract_mean(road2, grid_cells, boundary_buf_m)
 if (!is.null(road3)) grid_OBBA3$road <- extract_mean(road3, grid_cells, boundary_buf_m)
 
-# MODIS LC fractions -> lc_#
-lc_frac2 <- extract_frac_clean(lc2, grid_cells, boundary_buf_m, prefix = "lc", drop0 = TRUE, clean_names = FALSE)
-lc_frac3 <- extract_frac_clean(lc3, grid_cells, boundary_buf_m, prefix = "lc", drop0 = TRUE, clean_names = FALSE)
-if (!is.null(lc_frac2)) grid_OBBA2 <- bind_cols(grid_OBBA2, lc_frac2)
-if (!is.null(lc_frac3)) grid_OBBA3 <- bind_cols(grid_OBBA3, lc_frac3)
+# MODIS LC fractions -> MODIS_#
+MODIS_frac2 <- extract_frac_clean(MODIS2, grid_cells, boundary_buf_m, prefix = "MODIS", drop0 = TRUE, clean_names = FALSE)
+MODIS_frac3 <- extract_frac_clean(MODIS3, grid_cells, boundary_buf_m, prefix = "MODIS", drop0 = TRUE, clean_names = FALSE)
+if (!is.null(MODIS_frac2)) grid_OBBA2 <- bind_cols(grid_OBBA2, MODIS_frac2)
+if (!is.null(MODIS_frac3)) grid_OBBA3 <- bind_cols(grid_OBBA3, MODIS_frac3)
+
+# LCC2020 fractions -> LCC2020_#
+LCC2020_frac <- extract_frac_clean(LCC2020, grid_cells, boundary_buf_m, prefix = "LCC2020", drop0 = TRUE, clean_names = FALSE)
+if (!is.null(LCC2020_frac)){
+  grid_OBBA2 <- bind_cols(grid_OBBA2, LCC2020_frac)
+  grid_OBBA3 <- bind_cols(grid_OBBA3, LCC2020_frac)
+}
 
 # Urban fractions -> urban_#
 urb_frac2 <- extract_frac_clean(urban2, grid_cells, boundary_buf_m, prefix = "urban", drop0 = TRUE, clean_names = FALSE)
@@ -186,18 +196,29 @@ if (!is.null(insect3)) {
   grid_OBBA3 <- bind_cols(grid_OBBA3, frac_in3)
 }
 
-# Water (static) – compute once and reuse
-# Water (0/1)
-if (!is.null(water_open)) {
-  w_open <- extract_mean(water_open, grid_cells, boundary_buf_m)
-  grid_OBBA2$water_open <- w_open
-  grid_OBBA3$water_open <- w_open
-}
-if (!is.null(water_river)) {
-  w_riv <- extract_mean(water_river, grid_cells, boundary_buf_m)
-  grid_OBBA2$water_river <- w_riv
-  grid_OBBA3$water_river <- w_riv
-}
+# # Water 
+
+# proximity to small and large rivers
+  river_frac <- extract_frac_clean(water_river, grid_cells, boundary_buf_m, prefix = "river", drop0 = TRUE, clean_names = FALSE)
+  if (!is.null(river_frac)){
+    grid_OBBA2 <- bind_cols(grid_OBBA2,river_frac)
+    grid_OBBA3 <- bind_cols(grid_OBBA3,river_frac)
+  }
+  
+# proximity to small and large lakes
+lake_lg <- extract_frac_clean(water_lake_large, grid_cells, boundary_buf_m, prefix = "lake_lg", drop0 = TRUE, clean_names = FALSE)
+grid_OBBA2 <- bind_cols(grid_OBBA2, lake_lg)
+grid_OBBA3 <- bind_cols(grid_OBBA3, lake_lg)
+
+lake_sm <- extract_frac_clean(water_lake_small, grid_cells, boundary_buf_m, prefix = "lake_sm", drop0 = TRUE, clean_names = FALSE)
+grid_OBBA2 <- bind_cols(grid_OBBA2, lake_sm)
+grid_OBBA3 <- bind_cols(grid_OBBA3, lake_sm)
+
+# -----------------------
+# ***********************
+# To do: add proximity to great lakes and James/Hudson Bay
+# -----------------------
+# ***********************
 
 # Keep geometry last
 grid_OBBA2 <- grid_OBBA2 %>% relocate(geometry, .after = last_col())

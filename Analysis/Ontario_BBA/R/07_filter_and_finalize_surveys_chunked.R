@@ -2,8 +2,8 @@
 # 07_filter_and_finalize_surveys.R
 #
 # Purpose
-#   Create the final analysis-ready survey dataset used by downstream
-#   modeling scripts.
+#   Create the final analysis-ready survey and prediction datasets used
+#   by downstream modeling scripts.
 #
 # What this script does
 #   1) Loads survey, count, grid, and boundary objects produced by
@@ -18,17 +18,21 @@
 #   4) Subsets the survey × species count matrix to match the filtered
 #      surveys, preserving alignment through obs_idx.
 #   5) Adds survey-level helper variables used in modeling.
-#   6) Flags prediction-grid points that intersect optional large-water
-#      polygons, if available.
+#   6) Prepares prediction grids:
+#        - flags optional open-water pixels
+#        - drops cells missing core covariates
+#        - ensures stable pixel_id values
 #   7) Standardizes selected continuous covariates using statistics
 #      calculated from the filtered surveys.
 #   8) Adds derived north/south BCR covariates and simple road/river
 #      indicators.
-#   9) Builds species summary tables:
-#        - detections and occupied squares by atlas/BCR
-#        - raw-count dispersion summaries for Poisson vs nbinomial triage
-#        - safe-date summaries by atlas/BCR
-#   10) Builds a hex grid for later regional summaries.
+#   9) Builds survey metadata and a long-format count table used for
+#      species summaries.
+#  10) Loads breeding safe dates, expands them from ecoregions to BCRs,
+#      and summarizes detections inside/outside safe dates.
+#  11) Builds a hex grid for later regional summaries and assigns each
+#      prediction pixel to a hexagon for chunked prediction.
+#  12) Optionally writes covariate raster stacks for atlas-wide mapping.
 #
 # Inputs
 #   - data_clean/birds/analysis_data_covariates.rds
@@ -47,6 +51,7 @@
 #   - R/functions/inla_model_utils.R
 #       used functions:
 #         * make_hex_grid()
+#         * build_pixel_polygon_index()
 #   - Optional:
 #       data_clean/spatial/water_filtered.shp
 #       data_clean/metadata/safe_dates_OBBA.xlsx
@@ -60,11 +65,14 @@
 #         * counts
 #         * grid_OBBA2, grid_OBBA3
 #         * species_to_model
+#         * species_bcr_summary
 #         * outside_safe_dates
 #         * missing_safe_dates
-#         * dispersion_screening
-#         * hex_grid
 #         * safe_dates
+#         * safe_dates_bcr
+#         * covar_stats
+#         * hex_grid
+#         * prediction_chunk_lookup
 #         * date_created
 #
 # Notes
@@ -72,9 +80,11 @@
 #     to the saved count matrix.
 #   - dedupe_by_location() uses random sampling; a fixed seed is set here
 #     for reproducibility.
+#   - The same hex-based chunk lookup is reused later for chunked model
+#     prediction, so it is created once here and saved.
 # ============================================================
 
-rm(list=ls())
+rm(list = ls())
 
 suppressPackageStartupMessages({
   library(sf)
@@ -102,7 +112,8 @@ dir.create(file.path(paths$data_clean, "birds"), recursive = TRUE, showWarnings 
 in_file  <- file.path(paths$data_clean, "birds", "analysis_data_covariates.rds")
 out_file <- file.path(paths$data_clean, "birds", "data_ready_for_analysis.rds")
 
-keep_duration_min <- 5
+min_duration <- 3
+max_duration <- 10
 hss_min <- -1
 hss_max <- 6
 doy_min <- 135
@@ -118,8 +129,8 @@ covars_for_stats <- c(
 )
 covars_to_standardize <- c("prec", "tmax")
 
-south_bcr <- c(12, 13)
-north_bcr <- c(7, 8)
+south_bcr <- c(13)
+north_bcr <- c(7, 8, 12)
 
 water_filtered_path <- file.path(paths$data_clean, "spatial", "water_filtered.shp")
 safe_date_path <- file.path(paths$data_clean, "metadata", "safe_dates_OBBA.xlsx")
@@ -184,13 +195,14 @@ if (length(missing_cols) > 0) {
 
 surveys_f <- all_surveys %>%
   filter(
-    round(Survey_Duration_Minutes) == keep_duration_min,
+    round(Survey_Duration_Minutes) >= min_duration & round(Survey_Duration_Minutes) <= max_duration,
     Hours_Since_Sunrise >= hss_min,
     Hours_Since_Sunrise <= hss_max,
     DayOfYear >= doy_min,
     DayOfYear <= doy_max
   ) %>%
   arrange(obs_idx)
+table(surveys_f$Survey_Type)
 
 # ------------------------------------------------------------
 # 2) Keep only surveys inside the study boundary
@@ -242,22 +254,16 @@ if ("Survey_Type" %in% names(surveys_f)) {
     mutate(ARU = 0L)
 }
 
-if ("square_id" %in% names(surveys_f)) {
-  surveys_f <- surveys_f %>%
+# add pixel id and square id
+surveys_f <- surveys_f %>%
     mutate(
-      square_atlas = as.integer(factor(paste0(square_id, "-", Atlas))),
-      square_year  = as.integer(factor(paste0(square_id, "-", year(Date_Time))))
+      pixel_atlas = as.integer(factor(paste0(pixel_id, "-", Atlas))),
+      square_atlas = as.integer(factor(paste0(square_id, "-", Atlas)))
     )
-} else {
-  surveys_f <- surveys_f %>%
-    mutate(
-      square_atlas = NA_integer_,
-      square_year  = NA_integer_
-    )
-}
+
 
 # ------------------------------------------------------------
-# 6) Prediction grids: add on_water and pixel_id
+# 6) Prepare prediction grids
 # ------------------------------------------------------------
 
 if (!is.null(water_filtered)) {
@@ -307,24 +313,6 @@ covar_stats <- std$stats
 
 # ------------------------------------------------------------
 # 8) Add derived covariates
-#
-# Purpose:
-#   Create additional covariates used in modeling by transforming
-#   existing environmental variables and allowing region-specific effects.
-#
-# What this does:
-#   - Converts continuous road and river covariates into binary indicators
-#       (on_road, on_river).
-#   - Splits selected land cover variables into north/south components
-#       based on predefined BCR groupings, allowing coefficients to differ
-#       between regions.
-#   - Creates BCR-specific river indicators (on_river_[BCR]), so that the
-#       effect of rivers can vary independently across BCRs.
-#
-# Notes:
-#   - All derived variables are set to 0 outside their relevant region.
-#   - This parameterization avoids fitting a single global effect when
-#     regional differences are expected or desired.
 # ------------------------------------------------------------
 
 add_derived_covariates <- function(df, south_bcr = c(12, 13), north_bcr = c(7, 8)) {
@@ -339,26 +327,30 @@ add_derived_covariates <- function(df, south_bcr = c(12, 13), north_bcr = c(7, 8
   df <- df %>%
     mutate(
       on_river = as.integer(get_or_zero("water_river") > 0),
+      on_open_water = as.integer(get_or_zero("water_open") > 0),
+      
       on_road  = as.integer(get_or_zero("road") > 0)
     )
   
-  for (nm in c("lc_1", "lc_4", "lc_5", "lc_8", "lc_9", "lc_10")) {
+  for (nm in c("lc_1", "lc_4", "lc_5", "lc_8", "lc_9", "lc_10","on_river","on_open_water","lc_17","urban_3")) {
     df[[paste0(nm, "S")]] <- if_else(df$BCR %in% south_bcr, get_or_zero(nm), 0)
     df[[paste0(nm, "N")]] <- if_else(df$BCR %in% north_bcr, get_or_zero(nm), 0)
   }
   
-  # create one river indicator per BCR
   bcr_vals <- sort(unique(df$BCR[!is.na(df$BCR)]))
-  
   for (bcr in bcr_vals) {
     df[[paste0("on_river_", bcr)]] <- if_else(df$BCR == bcr, df$on_river, 0L)
+    df[[paste0("on_open_water_", bcr)]] <- if_else(df$BCR == bcr, df$on_open_water, 0L)
+    
+    df[[paste0("water_river_", bcr)]] <- if_else(df$BCR == bcr, df$water_river, 0L)
+    df[[paste0("lc_17_", bcr)]] <- if_else(df$BCR == bcr, df$lc_17, 0L)
+    
   }
   
   df
-  
 }
 
-surveys_f <- add_derived_covariates(surveys_f, south_bcr, north_bcr)
+surveys_f  <- add_derived_covariates(surveys_f, south_bcr, north_bcr)
 grid_OBBA2 <- add_derived_covariates(grid_OBBA2, south_bcr, north_bcr)
 grid_OBBA3 <- add_derived_covariates(grid_OBBA3, south_bcr, north_bcr)
 
@@ -389,16 +381,12 @@ counts_long <- counts_f %>%
   left_join(all_species_unique, by = "species_id")
 
 # ------------------------------------------------------------
-# 10) Build hex grid for later regional summaries
+# 10) Load safe dates, expand them to BCR, and summarize species
 # ------------------------------------------------------------
 
-hex_grid <- make_hex_grid(study_boundary, width_km = 25)
-
-# ------------------------------------------------------------
-# 11) Load and apply safe dates
-# ------------------------------------------------------------
-
-species_manual_safedates <- c("Canada Jay", "Common Raven", "White-winged Crossbill", "Red Crossbill")
+species_manual_safedates <- c(
+  "Canada Jay", "Common Raven", "White-winged Crossbill", "Red Crossbill"
+)
 
 if (!file.exists(safe_date_path)) {
   stop("Cannot find safe date file at: ", safe_date_path)
@@ -420,10 +408,25 @@ safe_dates <- safe_dates %>%
     end_doy   = if_else(sp_english %in% species_manual_safedates, median_end, end_doy)
   )
 
+safe_dates_bcr <- safe_dates %>%
+  mutate(
+    BCR = case_when(
+      ecoregion == "Mixedwood Plains" ~ "13",
+      ecoregion == "Hudson Plains"    ~ "7",
+      ecoregion == "Boreal Shield"    ~ "8, 12",
+      TRUE ~ NA_character_
+    )
+  ) %>%
+  separate_rows(BCR, sep = ",") %>%
+  mutate(BCR = as.integer(trimws(BCR))) %>%
+  select(sp_english, BCR, start_doy, end_doy) %>%
+  arrange(sp_english, BCR) %>%
+  mutate(midpoint = (start_doy + end_doy) / 2)
+
 counts_long <- counts_long %>%
   left_join(
-    safe_dates,
-    by = c("english_name" = "sp_english", "ecoregion" = "ecoregion")
+    safe_dates_bcr,
+    by = c("english_name" = "sp_english", "BCR" = "BCR")
   ) %>%
   mutate(
     safe_date_status = case_when(
@@ -434,22 +437,14 @@ counts_long <- counts_long %>%
   )
 
 species_bcr_summary <- counts_long %>%
-  group_by(species_id, english_name, Atlas, BCR, ecoregion) %>%
+  group_by(species_id, english_name, Atlas, BCR) %>%
   summarise(
-    detections_total = sum(count > 0, na.rm = TRUE),
-    detections_safe = sum(count > 0 & safe_date_status == "inside", na.rm = TRUE),
+    detections_total   = sum(count > 0, na.rm = TRUE),
+    detections_safe    = sum(count > 0 & safe_date_status == "inside", na.rm = TRUE),
     detections_outside = sum(count > 0 & safe_date_status == "outside", na.rm = TRUE),
     detections_no_safe = sum(count > 0 & safe_date_status == "no_safe_dates", na.rm = TRUE),
-    prop_outside = if_else(
-      detections_total > 0,
-      detections_outside / detections_total,
-      NA_real_
-    ),
-    prop_no_safe = if_else(
-      detections_total > 0,
-      detections_no_safe / detections_total,
-      NA_real_
-    ),
+    prop_outside = if_else(detections_total > 0, detections_outside / detections_total, NA_real_),
+    prop_no_safe = if_else(detections_total > 0, detections_no_safe / detections_total, NA_real_),
     .groups = "drop"
   )
 
@@ -465,7 +460,7 @@ species_safecounts_per_atlas <- counts_long %>%
   group_by(species_id, english_name, Atlas) %>%
   summarise(
     detections_safe = sum(count > 0 & safe_date_status == "inside", na.rm = TRUE),
-    n_squares_safe = n_distinct(square_id[count > 0 & safe_date_status == "inside"]),
+    n_squares_safe  = n_distinct(square_id[count > 0 & safe_date_status == "inside"]),
     .groups = "drop"
   ) %>%
   pivot_wider(
@@ -479,59 +474,123 @@ species_to_model <- species_safecounts_per_atlas %>%
   arrange(desc(n_squares_safe_OBBA3)) %>%
   relocate(species_id, english_name)
 
-
 # ------------------------------------------------------------
-# Save covariate rasters
+# 11) Build hex grid and assign each prediction pixel to a chunk
 # ------------------------------------------------------------
-rast_dir  <- file.path(paths$data_clean,"spatial")
 
-rast_path_a2 <- file.path(rast_dir, "atlas2_cov_rasterstack.tif")
-rast_path_a3 <- file.path(rast_dir, "atlas3_cov_rasterstack.tif")
+n_prediction_chunks <- 1
 
-# contains function for rasterizing
-figure_utils_path <- file.path(paths$functions, "figure_utils.R")
-source(figure_utils_path)
+hex_grid <- make_hex_grid(study_boundary, width_km = 10)
 
-vars_to_rasterize <- c(
-  "prec",
-  "tmax",
-  "on_road",
-  "on_river_7",
-  "on_river_8",
-  "on_river_12",
-  "on_river_13",
-  "lc_1",
-  "lc_4",
-  "lc_5",
-  "lc_8",
-  "lc_9",
-  "lc_10",
-  "lc_11",
-  "lc_12",
-  "lc_14",
-  "lc_17",
-  "insect_broadleaf",
-  "insect_needleleaf"
+grid_OBBA2 <- grid_OBBA2 %>% mutate(Atlas = "OBBA2")
+grid_OBBA3 <- grid_OBBA3 %>% mutate(Atlas = "OBBA3")
+
+# Assign each prediction pixel to a hexagon
+hex_idx <- build_pixel_polygon_index(
+  grid_sf     = grid_OBBA2,
+  polygons_sf = hex_grid,
+  poly_id_col = "hex_id",
+  join        = "within"
 )
 
-# Covariate raster stack for atlas 2
-r2 = rasterize_sf(grid_OBBA2,
-                  vars_to_rasterize,
-                  res = 1001,
-                  metadata = c(
-                    description = c("Covariates at 1 km resolution")
-                  ))
-writeRaster(r2,filename = rast_path_a2,overwrite = TRUE)
+prediction_hex_lookup <- tibble(
+  pixel_id = grid_OBBA2$pixel_id,
+  hex_id   = hex_idx$pix_poly_id
+) %>%
+  filter(!is.na(hex_id))
 
+# Assign each hexagon to one of a fixed number of prediction chunks,
+# balancing chunks by the number of pixels they contain
+hex_chunk_lookup <- prediction_hex_lookup %>%
+  count(hex_id, name = "n_pixels") %>%
+  arrange(desc(n_pixels)) %>%
+  mutate(chunk_id = NA_integer_)
 
-# Covariate raster stack for atlas 2
-r3 = rasterize_sf(grid_OBBA3,
-                  vars_to_rasterize,
-                  res = 1001,
-                  metadata = c(
-                    description = c("Covariates at 1 km resolution")
-                  ))
-writeRaster(r3,filename = rast_path_a3,overwrite = TRUE)
+chunk_loads <- rep(0L, n_prediction_chunks)
+
+for (i in seq_len(nrow(hex_chunk_lookup))) {
+  k <- which.min(chunk_loads)
+  hex_chunk_lookup$chunk_id[i] <- k
+  chunk_loads[k] <- chunk_loads[k] + hex_chunk_lookup$n_pixels[i]
+}
+
+prediction_chunk_lookup <- prediction_hex_lookup %>%
+  left_join(
+    hex_chunk_lookup %>% select(hex_id, chunk_id),
+    by = "hex_id"
+  )
+
+grid_OBBA2 <- grid_OBBA2 %>%
+  left_join(prediction_chunk_lookup, by = "pixel_id")
+
+grid_OBBA3 <- grid_OBBA3 %>%
+  left_join(prediction_chunk_lookup, by = "pixel_id")
+
+# # ------------------------------------------------------------
+# # 12) Build another hex grid for survey-level random effects
+# # ------------------------------------------------------------
+
+hex_grid_5km <- make_hex_grid(study_boundary, width_km = 5)
+hex_grid_5km$hex_5km <- 1:nrow(hex_grid_5km) 
+# Assign survey locations to a 5 km hex id
+surveys_f = surveys_f %>%
+  st_join(
+  .,
+  hex_grid_5km %>% select(hex_5km),
+  join = st_intersects
+) %>%
+  mutate(hex_5km_atlas = as.numeric(factor(paste0(hex_5km,"-",Atlas))))
+
+# # ------------------------------------------------------------
+# # 12) Save optional covariate rasters
+# # ------------------------------------------------------------
+# 
+# rast_dir  <- file.path(paths$data_clean, "spatial")
+# rast_path_a2 <- file.path(rast_dir, "atlas2_cov_rasterstack.tif")
+# rast_path_a3 <- file.path(rast_dir, "atlas3_cov_rasterstack.tif")
+# 
+# figure_utils_path <- file.path(paths$functions, "figure_utils.R")
+# source(figure_utils_path)
+# 
+# vars_to_rasterize <- c(
+#   "prec",
+#   "tmax",
+#   "on_road",
+#   "on_river_7",
+#   "on_river_8",
+#   "on_river_12",
+#   "on_river_13",
+#   "lc_1",
+#   "lc_4",
+#   "lc_5",
+#   "lc_8",
+#   "lc_9",
+#   "lc_10",
+#   "lc_11",
+#   "lc_12",
+#   "lc_14",
+#   "lc_17",
+#   "insect_broadleaf",
+#   "insect_needleleaf"
+# )
+# 
+# # Covariate raster stack for atlas 2
+# r2 <- rasterize_sf(
+#   grid_OBBA2,
+#   vars_to_rasterize,
+#   res = 1001,
+#   metadata = c(description = c("Covariates at 1 km resolution"))
+# )
+# writeRaster(r2, filename = rast_path_a2, overwrite = TRUE)
+# 
+# # Covariate raster stack for atlas 3
+# r3 <- rasterize_sf(
+#   grid_OBBA3,
+#   vars_to_rasterize,
+#   res = 1001,
+#   metadata = c(description = c("Covariates at 1 km resolution"))
+# )
+# writeRaster(r3, filename = rast_path_a3, overwrite = TRUE)
 
 # ------------------------------------------------------------
 # Save
@@ -539,7 +598,6 @@ writeRaster(r3,filename = rast_path_a3,overwrite = TRUE)
 
 saveRDS(
   list(
-    
     study_boundary = study_boundary,
     bcr_sf = dat$bcr_sf,
     
@@ -548,14 +606,20 @@ saveRDS(
     grid_OBBA2 = grid_OBBA2,
     grid_OBBA3 = grid_OBBA3,
     
+    covar_stats = covar_stats,
+    
     species_to_model = species_to_model,
     species_bcr_summary = species_bcr_summary,
     
     outside_safe_dates = outside_safe_dates,
     missing_safe_dates = missing_safe_dates,
     
-    hex_grid = hex_grid,
     safe_dates = safe_dates,
+    safe_dates_bcr = safe_dates_bcr,
+    
+    hex_grid = hex_grid,
+    prediction_chunk_lookup = prediction_chunk_lookup,
+    
     date_created = Sys.time()
   ),
   file = out_file

@@ -41,7 +41,7 @@ source(figure_utils_path)
 # Config
 # ------------------------------------------------------------
 
-model_type <- "PC_ARU"
+model_type <- "PC_ARU_CL"
 
 # File paths
 in_data  <- file.path(paths$data_clean, "birds", "data_ready_for_analysis.rds")
@@ -71,8 +71,8 @@ all_surveys <- dat$all_surveys
 counts      <- dat$counts
 
 # prediction grid / study area
-grid2 <- dat$grid_OBBA2
-grid3 <- dat$grid_OBBA3
+grid2 <- dat$grid_OBBA2 %>% na.omit()
+grid3 <- dat$grid_OBBA3 %>% na.omit()
 study_boundary <- dat$study_boundary %>% sf::st_as_sf()
 
 stopifnot(inherits(grid2, "sf"), inherits(grid3, "sf"))
@@ -119,10 +119,10 @@ for (i in seq_len(length(pred_files))) {
   fig_path <- file.path(fig_dir,paste0(sp_file,".png"))
   
   
-   if (file.exists(fig_path)) {
-     message("Skipping ", sp_english, ": rasters/figures already exist for this species")
-     next
-   }
+   # if (file.exists(fig_path)) {
+   #   message("Skipping ", sp_english, ": rasters/figures already exist for this species")
+   #   next
+   # }
   
   # ----------------------------------------------------------
   # Safety checks
@@ -145,7 +145,7 @@ for (i in seq_len(length(pred_files))) {
            CI_95_width = preds$OBBA2$OBBA2_upper - preds$OBBA2$OBBA2_lower)
   
   vars_to_rasterize <- c("mu_q50","CI_95_width")
-  r2 = rasterize_sf(a2,vars_to_rasterize,res = 1001,
+  r2 = rasterize_sf(a2,vars_to_rasterize,res = plot_res,
                     metadata = c(
                       species_name = sp_english,
                       species_id   = sp_code,
@@ -168,7 +168,7 @@ for (i in seq_len(length(pred_files))) {
            CI_95_width = preds$OBBA3$OBBA3_upper - preds$OBBA3$OBBA3_lower)
   
   vars_to_rasterize <- c("mu_q50","CI_95_width")
-  r3 = rasterize_sf(a3,vars_to_rasterize,res = 1001,
+  r3 = rasterize_sf(a3,vars_to_rasterize,res = plot_res,
                     metadata = c(
                       species_name = sp_english,
                       species_id   = sp_code,
@@ -190,7 +190,7 @@ for (i in seq_len(length(pred_files))) {
            CI_95_width = preds$abs_change$abs_change_upper - preds$abs_change$abs_change_lower)
   
   vars_to_rasterize <- c("chg_q50","CI_95_width")
-  rchg = rasterize_sf(chg_sf,vars_to_rasterize,res = 1001,
+  rchg = rasterize_sf(chg_sf,vars_to_rasterize,res = plot_res,
                       metadata = c(
                         species_name = sp_english,
                         species_id   = sp_code,
@@ -236,12 +236,12 @@ for (i in seq_len(length(pred_files))) {
   rchg <- rast(rast_path_chg)
   
   
-  if (file.exists(fig_path)) {
-    message("Skipping ", sp_english, ": rasters/figures already exist for this species")
-    next
-  }
+  # if (file.exists(fig_path)) {
+  #   message("Skipping ", sp_english, ": figures already exist for this species")
+  #   next
+  # }
   
-  message("Generating rasters for ",sp_english)
+  message("Generating figures for ",sp_english)
   
   # ----------------------------------------------------------
   # Generate simple raster plots

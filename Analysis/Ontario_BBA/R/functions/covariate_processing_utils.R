@@ -176,7 +176,7 @@ rasterize_insect_presence_by_type <- function(insect_path,
                                               touches = TRUE) {
   
   # ---- helpers ----
-
+  
   #' Create an empty multi-layer raster stack matching a template
   #'
   #' Used when a vector source is missing or has no features after filtering.
@@ -280,131 +280,197 @@ rasterize_insect_presence_by_type <- function(insect_path,
 
 
 
-# Rasterize water (rivers and waterbodies)
-
-#' Process OHN water features into raster covariates
-#'
-#' Reads Ontario Hydro Network (OHN) water layers, optionally buffers/filters
-#' features (e.g., lakes, rivers), rasterizes onto `template`, and writes
-#' outputs to disk. Designed to be called from the covariate build script.
-#'
-#' @param water_path Path to OHN water vector data.
-#' @param boundary_sf Study boundary (`sf`).
-#' @param template Template raster for alignment.
-#' @param out_dir Output directory for derived rasters.
-#' @param buffer_m Buffer distance in metres (if applicable).
-#' @return A named list of output file paths (or rasters), depending on implementation.
-process_ohn_water <- function(water_path,
-                              boundary_sf,
-                              crs_wkt,
-                              raster_res_m = 30,
-                              river_buffer_m = 100,
-                              simplify_tolerance_m = 10,
-                              min_area_m2_for_filtered = 1e6,
-                              touches = TRUE) {
+# Rasterize rivers
+process_river_proximity <- function(x,
+                                    boundary_sf,
+                                    crs_wkt,
+                                    raster_res_m = 100,
+                                    buffer_m = 250,
+                                    simplify_tolerance_m = 10,
+                                    touches = TRUE,
+                                    use_raster_distance_buffer = TRUE) {
   
-  # ---- prep CRS ----
-  crs_target <- sf::st_crs(crs_wkt)
+  crs_target  <- sf::st_crs(crs_wkt)
   boundary_tr <- sf::st_transform(boundary_sf, crs_target)
   
-  # ---- read + geometry hygiene ----
-  water <- sf::st_read(water_path, quiet = TRUE) %>%
-    sf::st_transform(crs_target) %>%
-    sf::st_make_valid()
-  
-  # keep polygons only; OHN can have mixed geometry artifacts
-  water <- suppressWarnings(sf::st_collection_extract(water, "POLYGON"))
-  water <- suppressWarnings(sf::st_buffer(water, 0))   # extra repair step
-  water <- water[!sf::st_is_empty(water), , drop = FALSE]
-  
-  if (nrow(water) == 0) {
-    template <- make_template_raster_m(boundary_tr, raster_res_m, crs_wkt)
-    terra::values(template) <- 0
-    return(list(
-      water_open = template,
-      water_river = template,
-      water_filtered = boundary_tr[0, ]
-    ))
-  }
-  
-  # ---- spatial subset WITHOUT intersection ----
-  # Keeps only features that touch the boundary, without computing new geometry.
-  water <- sf::st_filter(water, boundary_tr, .predicate = sf::st_intersects)
-  if (nrow(water) == 0) {
-    template <- make_template_raster_m(boundary_tr, raster_res_m, crs_wkt)
-    terra::values(template) <- 0
-    return(list(
-      water_open = template,
-      water_river = template,
-      water_filtered = boundary_tr[0, ]
-    ))
-  }
-  
-  # ---- classify waterbodies ----
-  water <- water %>%
-    dplyr::mutate(
-      water_class = dplyr::case_when(
-        .data$WATERBODY_ %in% c("Lake", "Kettle Lake", "Pond", "Reservoir", "Beaver Pond") ~ "Open Water",
-        .data$WATERBODY_ %in% c("Canal", "River") ~ "River",
-        TRUE ~ NA_character_
-      )
-    )
-  
-  water_open  <- water %>% dplyr::filter(.data$water_class == "Open Water")
-  water_river <- water %>% dplyr::filter(.data$water_class == "River")
-  
-
-  # ---- simplify (optional) ----
-  if (!is.null(simplify_tolerance_m) && simplify_tolerance_m > 0) {
-    if (nrow(water_open)  > 0) water_open  <- suppressWarnings(sf::st_simplify(water_open,  dTolerance = simplify_tolerance_m))
-    if (nrow(water_river) > 0) water_river <- suppressWarnings(sf::st_simplify(water_river, dTolerance = simplify_tolerance_m))
-  }
-  
-  # Buffer river layer (to incorporate some notion of riparian habitat)
-  water_river <- water_river %>% st_buffer(river_buffer_m)
-  
-  # ---- template raster ----
   template <- make_template_raster_m(
     boundary_sf = boundary_tr,
     res_m = raster_res_m,
     crs_wkt = crs_wkt
   )
+  terra::values(template) <- 0
   
-  # Ensure template has values (prevents "SpatRaster has no values" in mask)
-  if (!terra::hasValues(template)) terra::values(template) <- 0
-  
-  # ---- rasterize presence ----
-  r_open <- template; terra::values(r_open) <- 0
-  r_riv  <- template; terra::values(r_riv)  <- 0
-  
-  if (nrow(water_open) > 0) {
-    r_open <- terra::rasterize(terra::vect(water_open), template, field = 1, background = 0, touches = touches)
-  }
-  if (nrow(water_river) > 0) {
-    r_riv  <- terra::rasterize(terra::vect(water_river), template, field = 1, background = 0, touches = touches)
+  empty_raster <- function() {
+    r <- template
+    terra::values(r) <- 0
+    r
   }
   
-  # ---- large waterbodies layer for masking/plotting ----
-  # Avoid intersection; just subset to those intersecting boundary
-  water_filtered <- sf::st_read(water_path, quiet = TRUE) %>%
-    sf::st_transform(crs_target) %>%
-    sf::st_make_valid() %>%
-    suppressWarnings(sf::st_collection_extract("POLYGON")) %>%
-    suppressWarnings(sf::st_buffer(., 0)) %>%
-    dplyr::mutate(area_m2 = as.numeric(sf::st_area(geometry))) %>%
-    dplyr::filter(.data$area_m2 >= min_area_m2_for_filtered)
+  if (nrow(x) == 0) return(empty_raster())
   
-  water_filtered <- water_filtered[!sf::st_is_empty(water_filtered), , drop = FALSE]
-  if (nrow(water_filtered) > 0) {
-    water_filtered <- sf::st_filter(water_filtered, boundary_tr, .predicate = sf::st_intersects)
+  old_s2 <- sf::sf_use_s2()
+  on.exit(sf::sf_use_s2(old_s2), add = TRUE)
+  sf::sf_use_s2(FALSE)
+  
+  # Transform + clean
+  x <- sf::st_transform(x, crs_target)
+  x <- x[!sf::st_is_empty(x), , drop = FALSE]
+  
+  # Simplify if needed
+  if (!is.null(simplify_tolerance_m) && simplify_tolerance_m > 0) {
+    x <- suppressWarnings(sf::st_simplify(
+      x,
+      dTolerance = simplify_tolerance_m,
+      preserveTopology = TRUE
+    ))
+    x <- x[!sf::st_is_empty(x), , drop = FALSE]
   }
   
-  # Final clip via raster mask (safe)
-  list(
-    water_open   = crop_mask_to_boundary(r_open, boundary_tr),
-    water_river  = crop_mask_to_boundary(r_riv,  boundary_tr),
-    water_filtered = water_filtered
+  if (nrow(x) == 0) return(empty_raster())
+  
+  # Rasterize / buffer
+  if (use_raster_distance_buffer && buffer_m > 0) {
+    
+    r0 <- terra::rasterize(
+      x = terra::vect(x),
+      y = template,
+      field = 1,
+      background = NA,
+      touches = touches,
+      fun = "max"
+    )
+    
+    d <- terra::distance(r0)
+    r <- terra::ifel(d <= buffer_m, 1, 0)
+    
+  } else {
+    
+    if (!is.null(buffer_m) && buffer_m > 0) {
+      x <- suppressWarnings(sf::st_buffer(x, dist = buffer_m))
+      x <- x[!sf::st_is_empty(x), , drop = FALSE]
+      if (nrow(x) == 0) return(empty_raster())
+    }
+    
+    r <- terra::rasterize(
+      x = terra::vect(x),
+      y = template,
+      field = 1,
+      background = 0,
+      touches = touches,
+      fun = "max"
+    )
+  }
+  
+  r <- crop_mask_to_boundary(r, boundary_tr)
+  names(r) <- "river_proximity"
+  
+  r
+}
+
+# Rasterize lakes
+process_lake_proximity <- function(x,
+                                   boundary_sf,
+                                   crs_wkt,
+                                   raster_res_m = 100,
+                                   buffer_m = 250,
+                                   simplify_tolerance_m = 10,
+                                   touches = TRUE,
+                                   use_raster_distance_buffer = TRUE,
+                                   out_name = "lake_proximity") {
+  
+  crs_target  <- sf::st_crs(crs_wkt)
+  boundary_tr <- sf::st_transform(boundary_sf, crs_target)
+  
+  template <- make_template_raster_m(
+    boundary_sf = boundary_tr,
+    res_m = raster_res_m,
+    crs_wkt = crs_wkt
   )
+  terra::values(template) <- 0
+  
+  empty_raster <- function() {
+    r <- template
+    terra::values(r) <- 0
+    names(r) <- out_name
+    r
+  }
+  
+  if (is.null(x) || nrow(x) == 0) {
+    return(empty_raster())
+  }
+  
+  old_s2 <- sf::sf_use_s2()
+  on.exit(sf::sf_use_s2(old_s2), add = TRUE)
+  sf::sf_use_s2(FALSE)
+  
+  x <- sf::st_transform(x, crs_target)
+  x <- suppressWarnings(sf::st_make_valid(x))
+  x <- suppressWarnings(sf::st_collection_extract(x, "POLYGON"))
+  x <- x[!sf::st_is_empty(x), , drop = FALSE]
+  
+  if (nrow(x) == 0) {
+    return(empty_raster())
+  }
+  
+  x <- suppressWarnings(sf::st_crop(x, sf::st_bbox(boundary_tr)))
+  x <- x[!sf::st_is_empty(x), , drop = FALSE]
+  
+  if (nrow(x) == 0) {
+    return(empty_raster())
+  }
+  
+  if (!is.null(simplify_tolerance_m) && simplify_tolerance_m > 0) {
+    x <- suppressWarnings(sf::st_simplify(
+      x,
+      dTolerance = simplify_tolerance_m,
+      preserveTopology = TRUE
+    ))
+    x <- x[!sf::st_is_empty(x), , drop = FALSE]
+  }
+  
+  if (nrow(x) == 0) {
+    return(empty_raster())
+  }
+  
+  if (use_raster_distance_buffer && buffer_m > 0) {
+    
+    r0 <- terra::rasterize(
+      x = terra::vect(x),
+      y = template,
+      field = 1,
+      background = NA,
+      touches = touches,
+      fun = "max"
+    )
+    
+    d <- terra::distance(r0)
+    r <- terra::ifel(d <= buffer_m, 1, 0)
+    
+  } else {
+    
+    if (!is.null(buffer_m) && buffer_m > 0) {
+      x <- suppressWarnings(sf::st_buffer(x, dist = buffer_m))
+      x <- x[!sf::st_is_empty(x), , drop = FALSE]
+      
+      if (nrow(x) == 0) {
+        return(empty_raster())
+      }
+    }
+    
+    r <- terra::rasterize(
+      x = terra::vect(x),
+      y = template,
+      field = 1,
+      background = 0,
+      touches = touches,
+      fun = "max"
+    )
+  }
+  
+  r <- crop_mask_to_boundary(r, boundary_tr)
+  names(r) <- out_name
+  
+  r
 }
 
 # Safe raster load: returns NULL if missing
@@ -439,7 +505,7 @@ collapse_insect_layers <- function(insect_rast) {
   nms <- names(insect_rast)
   
   # Helper: find a layer by any of several possible names
-
+  
   #' Pick the first existing file from a set of candidate paths
   #'
   #' Convenience helper for handling alternative filenames/locations.

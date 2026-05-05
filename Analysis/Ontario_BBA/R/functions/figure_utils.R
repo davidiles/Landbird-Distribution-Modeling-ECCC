@@ -182,7 +182,7 @@ add_base_map_layers <- function(p,
       data = bcr_sf,
       colour = "gray80",
       fill = NA,
-      linewidth = 0.3
+      linewidth = 0.15
     )
   }
   
@@ -199,7 +199,7 @@ add_base_map_layers <- function(p,
     data = study_boundary,
     colour = "gray80",
     fill = NA,
-    linewidth = 0.5,
+    linewidth = 0.15,
     show.legend = FALSE
   )
   
@@ -990,4 +990,446 @@ summarize_change_by_hex <- function(eta_draws_per_hex,
   hex_sf %>%
     dplyr::left_join(hex_summaries, by = "hex_id") %>%
     sf::st_as_sf()
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+make_relabund_map <- function(species_name,
+                              relabund_rast = NULL,
+                              zlim = NULL,
+                              layer = "mu_q50",
+                              prefix = c("OBBA2", "OBBA3"),
+                              study_boundary,
+                              bcr_sf = NULL,
+                              water_sf = NULL,
+                              water_fill = "#EDF7FB",
+                              sp_hex_grid = NULL,
+                              survey_colour = "#bdbdbd",
+                              detection_colour = "black",
+                              max_circle_diameter_km = 10,
+                              n_surveys_size_quantile = 0.90,
+                              title = NULL,
+                              subtitle = "Relative abundance") {
+  
+  prefix <- match.arg(prefix)
+  
+  stopifnot(inherits(study_boundary, "sf"))
+  
+  if (is.null(title)) {
+    title <- ifelse(prefix == "OBBA2", "Atlas 2", "Atlas 3")
+  }
+  
+  # ------------------------------------------------------------
+  # Determine CRS
+  # ------------------------------------------------------------
+  if (!is.null(relabund_rast)) {
+    plot_crs <- sf::st_crs(terra::crs(relabund_rast))
+  } else {
+    plot_crs <- sf::st_crs(study_boundary)
+  }
+  
+  if (is.na(plot_crs)) {
+    stop("study_boundary must have valid CRS if raster is NULL")
+  }
+  
+  study_boundary <- sf::st_transform(study_boundary, plot_crs)
+  if (!is.null(bcr_sf))   bcr_sf   <- sf::st_transform(bcr_sf, plot_crs)
+  if (!is.null(water_sf)) water_sf <- sf::st_transform(water_sf, plot_crs)
+  
+  # ------------------------------------------------------------
+  # Raster (optional)
+  # ------------------------------------------------------------
+  r_stars <- NULL
+  
+  if (!is.null(relabund_rast)) {
+    if (is.null(zlim)) stop("zlim required when raster present")
+    
+    if (length(zlim) == 1) zlim <- c(0, zlim)
+    
+    r_plot <- relabund_rast[[layer]]
+    names(r_plot) <- "relabund"
+    r_stars <- stars::st_as_stars(r_plot)
+  }
+  
+  q50_cols <- grDevices::colorRampPalette(c(
+    "#FEFEFE", "#FBF7E2", "#FCF8D0", "#EEF7C2", "#CEF2B0",
+    "#94E5A0", "#51C987", "#18A065", "#008C59", "#007F53", "#006344"
+  ))(10)
+  
+  # ------------------------------------------------------------
+  # Hex data → circle radii
+  # ------------------------------------------------------------
+  circle_df <- NULL
+  
+  if (!is.null(sp_hex_grid)) {
+    
+    required_cols <- c("Atlas", "n_surveys", "n_surveys_det")
+    missing_cols <- setdiff(required_cols, names(sp_hex_grid))
+    
+    if (length(missing_cols) > 0) {
+      stop("Missing columns: ", paste(missing_cols, collapse = ", "))
+    }
+    
+    sp_hex_grid <- sp_hex_grid %>%
+      sf::st_transform(plot_crs) %>%
+      dplyr::filter(
+        Atlas == prefix,
+        !is.na(n_surveys),
+        n_surveys > 0
+      ) %>%
+      dplyr::mutate(
+        n_surveys_det = dplyr::coalesce(n_surveys_det, 0),
+        n_surveys_det = pmin(n_surveys_det, n_surveys)
+      )
+    
+    if (nrow(sp_hex_grid) > 0) {
+      
+      n_max <- stats::quantile(
+        sp_hex_grid$n_surveys,
+        probs = n_surveys_size_quantile,
+        na.rm = TRUE
+      )
+      
+      if (!is.finite(n_max) || n_max <= 0) {
+        n_max <- max(sp_hex_grid$n_surveys, na.rm = TRUE)
+      }
+      
+      # convert km → CRS units
+      crs_units <- sf::st_crs(plot_crs)$units_gdal
+      km_to_units <- ifelse(grepl("metre", crs_units), 1000, 1)
+      
+      max_radius <- (max_circle_diameter_km / 2) * km_to_units
+      
+      circle_df <- sp_hex_grid %>%
+        dplyr::mutate(
+          n_surveys_plot = pmin(n_surveys, n_max),
+          n_det_plot     = pmin(n_surveys_det, n_max)
+        ) %>%
+        sf::st_centroid() %>%
+        dplyr::mutate(
+          x = sf::st_coordinates(.)[,1],
+          y = sf::st_coordinates(.)[,2],
+          
+          # area ∝ n  → radius ∝ sqrt(n)
+          r_gray  = sqrt(n_surveys_plot / n_max) * max_radius,
+          r_black = sqrt(n_det_plot     / n_max) * max_radius
+        ) %>%
+        sf::st_drop_geometry()
+    }
+  }
+  
+  bb <- map_bbox(study_boundary)
+  
+  # ------------------------------------------------------------
+  # Build plot
+  # ------------------------------------------------------------
+  p <- ggplot2::ggplot()
+  
+  if (!is.null(r_stars)) {
+    p <- p +
+      stars::geom_stars(data = r_stars) +
+      ggplot2::scale_fill_gradientn(
+        name = legend_title_map(species_name, title, subtitle, "Posterior median"),
+        colors = q50_cols,
+        na.value = "transparent",
+        limits = zlim
+      )
+  }
+  
+  p <- add_base_map_layers(
+    p = p,
+    study_boundary = study_boundary,
+    bcr_sf = bcr_sf,
+    water_sf = water_sf,
+    atlas_squares_centroids = NULL,
+    water_fill = water_fill
+  )
+  
+  # ------------------------------------------------------------
+  # Draw circles (key change)
+  # ------------------------------------------------------------
+  if (!is.null(circle_df) && nrow(circle_df) > 0) {
+    
+    p <- p +
+      ggforce::geom_circle(
+        data = circle_df,
+        ggplot2::aes(x0 = x, y0 = y, r = r_gray),
+        fill = survey_colour,
+        color = NA
+      ) +
+      ggforce::geom_circle(
+        data = dplyr::filter(circle_df, r_black > 0),
+        ggplot2::aes(x0 = x, y0 = y, r = r_black),
+        fill = detection_colour,
+        color = NA
+      )
+  }
+  
+  p <- add_map_annotations(p, study_boundary, bb)
+  
+  list(
+    sp_plot = p,
+    zlim = zlim
+  )
+}
+
+
+
+
+make_relabund_map <- function(species_name,
+                              relabund_rast = NULL,
+                              zlim = NULL,
+                              layer = "mu_q50",
+                              prefix = c("OBBA2", "OBBA3"),
+                              study_boundary,
+                              bcr_sf = NULL,
+                              water_sf = NULL,
+                              water_fill = "#EDF7FB",
+                              sp_hex_grid = NULL,
+                              survey_colour = "#bdbdbd",
+                              detection_colour = "black",
+                              survey_circle_diameter_km = 20,
+                              min_detection_diameter_km = 1,
+                              max_detection_diameter_km = 15,
+                              mean_count_scaling_max = NULL,
+                              survey_scaling_max = 20,
+                              alpha_min = 0.2,
+                              alpha_max = 1,
+                              title = NULL,
+                              subtitle = "Relative abundance") {
+  
+  prefix <- match.arg(prefix)
+  stopifnot(inherits(study_boundary, "sf"))
+  
+  if (survey_scaling_max <= 1) {
+    stop("survey_scaling_max must be greater than 1.")
+  }
+  
+  if (min_detection_diameter_km < 0) {
+    stop("min_detection_diameter_km must be >= 0.")
+  }
+  
+  if (max_detection_diameter_km <= 0) {
+    stop("max_detection_diameter_km must be > 0.")
+  }
+  
+  if (min_detection_diameter_km > max_detection_diameter_km) {
+    stop("min_detection_diameter_km must be <= max_detection_diameter_km.")
+  }
+  
+  if (alpha_min < 0 || alpha_min > 1 || alpha_max < 0 || alpha_max > 1) {
+    stop("alpha_min and alpha_max must both be between 0 and 1.")
+  }
+  
+  if (alpha_min > alpha_max) {
+    stop("alpha_min must be <= alpha_max.")
+  }
+  
+  if (is.null(title)) {
+    title <- ifelse(prefix == "OBBA2", "Atlas 2", "Atlas 3")
+  }
+  
+  # ------------------------------------------------------------
+  # Determine plotting CRS
+  # ------------------------------------------------------------
+  if (!is.null(relabund_rast)) {
+    stopifnot(inherits(relabund_rast, "SpatRaster"))
+    plot_crs <- sf::st_crs(terra::crs(relabund_rast))
+  } else {
+    plot_crs <- sf::st_crs(study_boundary)
+  }
+  
+  if (is.na(plot_crs)) {
+    stop("study_boundary must have a valid CRS if relabund_rast is NULL.")
+  }
+  
+  study_boundary <- sf::st_transform(study_boundary, plot_crs)
+  if (!is.null(bcr_sf))   bcr_sf   <- sf::st_transform(bcr_sf, plot_crs)
+  if (!is.null(water_sf)) water_sf <- sf::st_transform(water_sf, plot_crs)
+  
+  # ------------------------------------------------------------
+  # Optional raster
+  # ------------------------------------------------------------
+  r_stars <- NULL
+  
+  if (!is.null(relabund_rast)) {
+    if (is.null(zlim)) {
+      stop("zlim is required when relabund_rast is not NULL.")
+    }
+    
+    if (length(zlim) == 1) zlim <- c(0, zlim)
+    
+    if (!layer %in% names(relabund_rast)) {
+      stop("relabund_rast is missing layer: ", layer)
+    }
+    
+    r_plot <- relabund_rast[[layer]]
+    names(r_plot) <- "relabund"
+    r_stars <- stars::st_as_stars(r_plot)
+  }
+  
+  q50_cols <- grDevices::colorRampPalette(c(
+    "#FEFEFE", "#FBF7E2", "#FCF8D0", "#EEF7C2", "#CEF2B0",
+    "#94E5A0", "#51C987", "#18A065", "#008C59", "#007F53", "#006344"
+  ))(10)
+  
+  # ------------------------------------------------------------
+  # Optional raw-data circles
+  # ------------------------------------------------------------
+  circle_df <- NULL
+  
+  if (!is.null(sp_hex_grid)) {
+    stopifnot(inherits(sp_hex_grid, "sf"))
+    
+    required_cols <- c("Atlas", "n_surveys", "mean_count")
+    missing_cols <- setdiff(required_cols, names(sp_hex_grid))
+    
+    if (length(missing_cols) > 0) {
+      stop("sp_hex_grid is missing required column(s): ",
+           paste(missing_cols, collapse = ", "))
+    }
+    
+    sp_hex_grid <- sp_hex_grid %>%
+      sf::st_transform(plot_crs) %>%
+      dplyr::filter(
+        Atlas == prefix,
+        !is.na(n_surveys),
+        n_surveys > 0
+      ) %>%
+      dplyr::mutate(
+        mean_count = dplyr::coalesce(mean_count, 0)
+      )
+    
+    if (nrow(sp_hex_grid) > 0) {
+      crs_units <- sf::st_crs(plot_crs)$units_gdal
+      
+      km_to_units <- dplyr::case_when(
+        grepl("metre|meter", crs_units, ignore.case = TRUE) ~ 1000,
+        grepl("kilometre|kilometer", crs_units, ignore.case = TRUE) ~ 1,
+        TRUE ~ 1000
+      )
+      
+      survey_radius <- (survey_circle_diameter_km / 2) * km_to_units
+      min_detection_radius <- (min_detection_diameter_km / 2) * km_to_units
+      max_detection_radius <- (max_detection_diameter_km / 2) * km_to_units
+      
+      if (is.null(mean_count_scaling_max)) {
+        mean_count_scaling_max <- max(sp_hex_grid$mean_count, na.rm = TRUE)
+      }
+      
+      if (!is.finite(mean_count_scaling_max) || mean_count_scaling_max <= 0) {
+        mean_count_scaling_max <- 1
+      }
+      
+      circle_df <- sp_hex_grid %>%
+        sf::st_centroid() %>%
+        dplyr::mutate(
+          x = sf::st_coordinates(.)[, 1],
+          y = sf::st_coordinates(.)[, 2],
+          
+          survey_alpha = alpha_min +
+            (pmin(n_surveys, survey_scaling_max) / survey_scaling_max) *
+            (alpha_max - alpha_min),
+          
+          detection_alpha = pmax(survey_alpha, 0.4),
+          
+          r_survey = survey_radius,
+          
+          mean_count_scaled = pmin(mean_count, mean_count_scaling_max) /
+            mean_count_scaling_max,
+          
+          r_detection = dplyr::if_else(
+            mean_count > 0,
+            min_detection_radius +
+              sqrt(mean_count_scaled) *
+              (max_detection_radius - min_detection_radius),
+            0
+          )
+        ) %>%
+        sf::st_drop_geometry()
+    }
+  }
+  
+  # ------------------------------------------------------------
+  # Build plot
+  # ------------------------------------------------------------
+  bb <- map_bbox(study_boundary)
+  
+  p <- ggplot2::ggplot()
+  
+  if (!is.null(r_stars)) {
+    p <- p +
+      stars::geom_stars(data = r_stars) +
+      ggplot2::scale_fill_gradientn(
+        name = legend_title_map(species_name, title, subtitle, "Posterior median"),
+        colors = q50_cols,
+        na.value = "transparent",
+        limits = zlim
+      )
+  }
+  
+  p <- add_base_map_layers(
+    p = p,
+    study_boundary = study_boundary,
+    bcr_sf = bcr_sf,
+    water_sf = water_sf,
+    atlas_squares_centroids = NULL,
+    water_fill = water_fill
+  )
+  
+  if (!is.null(circle_df) && nrow(circle_df) > 0) {
+    p <- p +
+      ggforce::geom_circle(
+        data = circle_df,
+        ggplot2::aes(
+          x0 = x,
+          y0 = y,
+          r = r_survey,
+          alpha = survey_alpha
+        ),
+        fill = survey_colour,
+        color = NA
+      ) +
+      ggforce::geom_circle(
+        data = dplyr::filter(circle_df, mean_count > 0),
+        ggplot2::aes(
+          x0 = x,
+          y0 = y,
+          r = r_detection,
+          alpha = detection_alpha
+        ),
+        fill = detection_colour,
+        color = NA
+      ) +
+      ggplot2::scale_alpha_identity()
+  }
+  
+  p <- add_map_annotations(p, study_boundary, bb)
+  
+  p <- p +
+    ggplot2::theme(
+      panel.background = ggplot2::element_rect(fill = "white", colour = NA),
+      plot.background  = ggplot2::element_rect(fill = "white", colour = NA),
+      panel.grid       = ggplot2::element_blank()
+    )
+  
+  list(
+    sp_plot = p,
+    zlim = zlim
+  )
 }

@@ -56,7 +56,8 @@ boundary <- study_area$boundary %>%
 # Dissolve to a single geometry (helps portability if boundary has multiple features)
 boundary_geom <- boundary %>%
   st_union() %>%
-  st_make_valid()
+  st_make_valid() %>%
+  st_buffer(5000)
 
 # ------------------------------------------------------------
 # Build grid polygons
@@ -88,7 +89,7 @@ grid_pts   <- grid_pts   %>% mutate(pixel_id = row_number()) %>% select(pixel_id
 # Save
 # ------------------------------------------------------------
 
-out_path <- file.path(out_dir, "prediction_grid.rds")
+out_path <- file.path(out_dir, paste0("prediction_grid_",grid_cellsize_m,"_m.rds"))
 
 saveRDS(
   list(

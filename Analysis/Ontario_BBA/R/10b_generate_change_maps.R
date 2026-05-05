@@ -613,10 +613,10 @@ for (i in seq_len(length(pred_files))) {
   
   fig_path <- file.path(fig_dir, paste0(sp_file, "_chg.png"))
   
-  # if (file.exists(fig_path)) {
-  #   message("Skipping ", sp_english, ": change map already exists for this species")
-  #   next
-  # }
+  if (file.exists(fig_path)) {
+    message("Skipping ", sp_english, ": change map already exists for this species")
+    next
+  }
   
   # ----------------------------------------------------------
   # Safety checks

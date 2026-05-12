@@ -58,9 +58,9 @@ source(file.path(paths$functions, "inla_model_utils2.R"))
 # Config
 # ------------------------------------------------------------
 
-model_name <- "PC_ARU_CL_new"
-rerun_models <- FALSE
-rerun_predictions <- FALSE
+model_name <- "PC_ARU_CL"
+rerun_models <- TRUE
+rerun_predictions <- TRUE
 
 n_prediction_draws <- 500
 prediction_seed <- 123
@@ -74,6 +74,7 @@ if (!file.exists(in_file)) {
 
 out_dir <- paths$model_output
 dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(file.path(out_dir, paste0("models_", model_name)), recursive = TRUE, showWarnings = FALSE)
 dir.create(file.path(out_dir, paste0("predictions_", model_name)), recursive = TRUE, showWarnings = FALSE)
 dir.create(file.path(out_dir, paste0("summaries_", model_name)), recursive = TRUE, showWarnings = FALSE)
 dir.create(file.path(out_dir, paste0("data_used_", model_name)), recursive = TRUE, showWarnings = FALSE)
@@ -236,24 +237,31 @@ chunk_ids <- sort(unique(grid_OBBA2[[chunk_id_col]]))
 # ------------------------------------------------------------
 
 base_covars <- c(
-  "ForestNeedleleaf",
-  "ForestBroadleaf",
-  "ForestMixed",
-  "Wetland",
-  "Cropland",
+  "on_road",
+  "urban_3", 
   
-  "Urban",
+  "lc_1",
+  "lc_4",
+  "lc_5",
+  "lc_11", 
+  "lc_12",
+  "lc_14",
   
-  "On_Road",
-  "Grassland_BCR7_8",
-  "Grassland_BCR12_13",
-  "Shrubland_BCR13",
-  "Shrubland_BCR7_8_12",
+  "insect_broadleaf", 
+  "insect_needleleaf",
+  "lc_8S", "lc_8N",
+  "lc_9S", "lc_9N",
+  "lc_10S", "lc_10N",
   
-  "River_Sm",
-  "River_Lg",
-  "Lake_Lg",
-  "Lake_Sm"
+  "lc_17N",
+  "lc_17S",
+  
+  "on_river_7",
+  "on_river_8",
+  "on_river_12",
+  "on_river_13"
+  
+  
 )
 
 min_detections <- 250
@@ -274,45 +282,30 @@ species_run <- species_to_model %>%
   ) %>%
   arrange(abs(delta_squares_safe))
 
-# species_run <- species_run %>%
-#   subset(english_name %in%
-#            c(#"Belted Kingfisher"
-#              #"Winter Wren",
-#              # "Spotted Sandpiper",           # BAM makes different predictions in HBL
-#              # "Wilson's Warbler",            # eBird, BAM, and Atlas make different predictions in HBL
-#              # "Yellow-rumped Warbler",       # eBird and BAM make very different predictions in HBL
-#              # "Wilson's Snipe",              # Atlas and eBird make different predictions in HBL
-#              # "Solitary Sandpiper",          # Good example of eBird and Atlas showing different hotspot locations; BAM and eBird also make very different predictions
-#              # "Savannah Sparrow",            # Check for correspondence with eBird in revised Atlas model
-#              # "Philadelphia Vireo",          # BAM predicts some extreme hotspots in Northern Ontario
-#              # "Hermit Thrush",               # Atlas shows HBL as hotspot, BAM shows almost none, eBird intermediate
-#              # "Dark-eyed Junco",             # Atlas shows HBL as hotspot
-#              #"Connecticut Warbler",
-#              #"Black-and-white Warbler",
-#              #"Bobolink",
-#              #"Palm Warbler",
-#              #"Sandhill Crane",
-#              # "Bank Swallow",
-#              # "Eastern Meadlowlark",
-#              # "Northern Cardinal",
-#              # "Olive-sided Flycatcher",
-#              # "Dark-eyed Junco",
-#              # "Osprey",
-#              # "Rock Pigeon (Feral Pigeon)"
-#              # "Swainson's Thrush",
-#              # "American Crow",
-#              # "American Goldfinch",
-#              # "Bald Eagle",
-#              # "Boreal Chickadee",
-#              # "Common Yellowthroat"
-#              ))
-print(species_run)
 message("Species queued: ", nrow(species_run))
+
+species_run <- subset(species_run, english_name %in% c(
+  #"Black-and-white Warbler",
+  #"Blue-headed Vireo",
+  #"Common Yellowthroat",
+  #"Belted Kingfisher",
+  #"American Redstart",
+  "Olive-sided Flycatcher",
+  "Spotted Sandpiper",
+  "Swamp Sparrow",
+  "Yellow-rumped Warbler",
+  "White-throated Sparrow",
+  "Yellow-bellied Flycatcher",
+  "Ruby-crowned Kinglet",
+  "White-winged Crossbill",
+  "Greater Yellowlegs"
+  #"Winter Wren"
+))
 
 for (i in seq_len(nrow(species_run))) {
   
   # To choose a particular species manually, uncomment and edit:
-  # i <- which(species_run$english_name == "Belted Kingfisher")
+  # i <- which(species_run$english_name == "Olive-sided Flycatcher")
   
   sp_name <- species_run$english_name[i]
   sp_code <- as.character(species_run$species_id[i])
@@ -385,7 +378,7 @@ for (i in seq_len(nrow(species_run))) {
       DayOfYear <= end_doy
     ) %>%
     mutate(days_midpoint = DayOfYear - pred_doy)
-  
+
   
   # ------------------------------------------------------------
   # Error family triage
@@ -406,10 +399,9 @@ for (i in seq_len(nrow(species_run))) {
   prop_total_top1pct_nonzero <- sum(sort(y_pos, decreasing = TRUE)[seq_len(n_top)]) / sum(y_pos)
   
   error_family <- "poisson"
-  
-  # if (prop_total_top1pct_nonzero >= 0.10 || sum(y_pos > 15) > 10) {
-  #   error_family <- "nbinomial"
-  # }
+  if (prop_total_top1pct_nonzero >= 0.10 || sum(y_pos > 15) > 10) {
+    error_family <- "nbinomial"
+  }
   
   dat_for_review <- sp_dat %>%
     select(Date_Time, Survey_Type, count, Hours_Since_Sunrise, Atlas)
@@ -441,52 +433,19 @@ for (i in seq_len(nrow(species_run))) {
     select(covars_present) %>%
     apply(2,function(x)length(unique(x)))
   covars_present <- names(cov_sd)[which(cov_sd>0)]
-  cov_df_sp <- make_cov_df(covars_present, mean = 0, sd_linear = 0.5)
+  cov_df_sp <- make_cov_df(covars_present, mean = 0, sd_linear = 1)
   
   priors_list <- list(
-    prior_range_abund = c(150, 0.5), # 10% chance range is less than 150 km
-    prior_sigma_abund = c(0.5, 0.1),
-    prior_range_change = c(150, 0.5),
+    prior_range_abund = c(250, 0.5),
+    prior_sigma_abund = c(3, 0.1),
+    prior_range_change = c(250, 0.5),
     prior_sigma_change = c(0.1, 0.1),
     prior_HSS_range = c(3, 0.9),
     prior_HSS_sigma = c(3, 0.1),
     prior_DOY_range_global = c(7, 0.9),
     prior_DOY_sigma_global = c(3, 0.1),
-    kappa_pcprec_diff = c(log(2), 0.1)
+    kappa_pcprec_diff = c(1, 0.1)
   )
-  
-  # ------------------------------------------------------------
-  # Prepare mesh
-  # ------------------------------------------------------------
-  mesh_max_edge = c(30, 100)
-  mesh_cutoff   = 15
-  mesh_convex   = c(50, 200)
-  mesh_concave  = c(10, 200)
-  
-  hull <- fmesher::fm_extensions(
-    study_boundary,
-    convex  = mesh_convex,
-    concave = mesh_concave
-  )
-  
-  mesh_spatial <- fmesher::fm_mesh_2d_inla(
-    loc      = sf::st_as_sfc(sp_dat),
-    boundary = hull,
-    max.edge = mesh_max_edge,
-    cutoff   = mesh_cutoff,
-    crs      = sf::st_crs(sp_dat)
-  )
-  
-  plot(mesh_spatial)
-  
-  plot(
-    as(study_boundary, "Spatial"),
-    add = TRUE,
-    border = "red",
-    lwd = 2
-  )
-  
-  dim(mesh_spatial$loc)
   
   int_strategy <- 'eb' # "auto" # 
   strategy <- "simplified.laplace" # "laplace" # 
@@ -503,8 +462,10 @@ for (i in seq_len(nrow(species_run))) {
         sp_dat = sp_dat,
         study_boundary = study_boundary,
         covariates = cov_df_sp,
-        mesh_spatial = mesh_spatial,
-        
+        mesh_max_edge = c(80, 150),
+        mesh_cutoff   = 40,
+        mesh_convex   = c(100, 200),
+        mesh_concave  = c(50, 200),
         prior_range_abund = priors_list$prior_range_abund,
         prior_sigma_abund = priors_list$prior_sigma_abund,
         prior_range_change = priors_list$prior_range_change,
@@ -532,7 +493,8 @@ for (i in seq_len(nrow(species_run))) {
   
   end_model <- Sys.time()
   fit_minutes <- round(as.numeric(end_model - start_model, units = "mins"))
-
+  print(fit_minutes)
+  print(summary(mod))
   
   model_summaries[[sp_name]] <- list(
     sp_name = sp_name,
@@ -543,15 +505,6 @@ for (i in seq_len(nrow(species_run))) {
     summary_hyperpar = mod$summary.hyperpar
   )
   save_atomic(model_summaries, model_summaries_path)
-  
-  message(
-    "\n====================\n",
-    i, "/", nrow(species_run), ": ", sp_name,
-    " (species_id = ", sp_code, "); ",fit_minutes," min to fit model\n",
-    "===================="
-  )
-  
-  print(summary(mod))
   
   # ------------------------------------------------------------
   # Chunked predictions
@@ -640,11 +593,10 @@ for (i in seq_len(nrow(species_run))) {
       
       hex_draw_chunks[[chunk_k]] <- bind_rows(
         lapply(u_hex, function(hx) {
-          
           idx_hex <- which(hex_ids_chunk == hx)
           
-          mu2_hex <- colMeans(pred_chunk$mu2[idx_hex, , drop = FALSE])
-          mu3_hex <- colMeans(pred_chunk$mu3[idx_hex, , drop = FALSE])
+          mu2_hex <- colSums(pred_chunk$mu2[idx_hex, , drop = FALSE])
+          mu3_hex <- colSums(pred_chunk$mu3[idx_hex, , drop = FALSE])
           
           tibble(
             hex_id = hx,

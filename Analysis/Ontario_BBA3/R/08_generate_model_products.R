@@ -1,5 +1,22 @@
 # ============================================================
-# 8_generate_model_products.R
+# 08_generate_model_products.R
+#
+# Purpose
+#   Convert fitted model prediction RDS files into map-ready rasters and
+#   multi-page species assessment PDFs.
+#
+# Main outputs
+#   - model_output/rasters_<model_name>/<species>_a2.tif
+#   - model_output/rasters_<model_name>/<species>_a3.tif
+#   - model_output/rasters_<model_name>/<species>_chg.tif
+#   - model_output/figures_<model_name>/<species>.pdf
+#
+# Notes
+#   - This script preserves the prediction objects produced upstream.
+#   - Relative abundance means are water-corrected; CI widths are currently
+#     calculated from the uncorrected summaries, matching the original script.
+#   - CRS choices are inherited from the saved analysis-ready data and are not
+#     modified beyond aligning objects to the prediction-grid CRS.
 # ============================================================
 
 rm(list = ls())
@@ -14,82 +31,81 @@ suppressPackageStartupMessages({
 })
 
 source(here::here("R", "00_config_paths.R"))
-
-# helper-functions
 source(file.path(paths$functions, "model_product_utils.R"))
 
 # ------------------------------------------------------------
-# Config
+# Configuration and paths
 # ------------------------------------------------------------
 
 model_name <- "m2"
+plot_res <- 1001  # raster resolution in map units; meters in EPSG:3978
 
-# File paths
 in_data  <- file.path(paths$data_clean, "birds", "data_ready_for_analysis.rds")
 pred_dir <- file.path(paths$model_output, paste0("predictions_", model_name))
 rast_dir <- file.path(paths$model_output, paste0("rasters_", model_name))
 fig_dir  <- file.path(paths$model_output, paste0("figures_", model_name))
+png_dir  <- file.path(fig_dir, "PNGs")
+out_dir  <- paths$model_output
 
-dir.create(rast_dir, recursive = TRUE, showWarnings = FALSE)
-dir.create(fig_dir, recursive = TRUE, showWarnings = FALSE)
-out_dir <- paths$model_output
+model_summaries_path <- file.path(
+  out_dir,
+  paste0("summaries_", model_name),
+  "model_summaries.rds"
+)
 
-model_summaries_path  <- file.path(out_dir, paste0("summaries_", model_name), "model_summaries.rds")
-model_summaries <- readRDS(model_summaries_path)
-
-# Raster resolution in map units (meters in EPSG:3978)
-plot_res <- 1001
-
-# ------------------------------------------------------------
-# Load base data
-# ------------------------------------------------------------
+for (dir_i in c(rast_dir, fig_dir, png_dir)) {
+  dir.create(dir_i, recursive = TRUE, showWarnings = FALSE)
+}
 
 stopifnot(file.exists(in_data))
+stopifnot(file.exists(model_summaries_path))
+
+# ------------------------------------------------------------
+# Load analysis-ready data and model summaries
+# ------------------------------------------------------------
+
 dat <- readRDS(in_data)
+model_summaries <- readRDS(model_summaries_path)
 
-# raw data
-all_surveys <- dat$all_surveys
-counts      <- dat$counts
-
-# prediction grid / study area
 grid2 <- dat$grid_OBBA2 %>% na.omit()
 grid3 <- dat$grid_OBBA3 %>% na.omit()
 study_boundary <- dat$study_boundary %>% sf::st_as_sf()
-bcr_sf <- dat$bcr_sf
-
-# Ensure consistent CRS
-crs_use <- st_crs(grid2)
-study_boundary <- st_transform(study_boundary, crs_use)
-grid3 <- st_transform(grid3, crs_use)
-grid2 <- st_transform(grid2, crs_use)
-
-# Hexagon grid in which to summarize change estimates (25 km hexagons)
 hex_grid <- dat$hex_grid_25km
 
+# Align all map layers to the Atlas 2 prediction-grid CRS.
+crs_use <- sf::st_crs(grid2)
+study_boundary <- sf::st_transform(study_boundary, crs_use)
+grid2 <- sf::st_transform(grid2, crs_use)
+grid3 <- sf::st_transform(grid3, crs_use)
+
 # ------------------------------------------------------------
-# Create a "water_to_plot" object
-# Only plot waterbodies exceeding 25 km^2 in size on maps
+# Load or create water polygons used as map overlays
 # ------------------------------------------------------------
 
 in_water <- file.path(paths$data_clean, "spatial", "water_to_plot.rds")
-if (file.exists(in_water)){
+
+if (file.exists(in_water)) {
   water_to_plot <- readRDS(in_water)
-} else{
-  in_water_raw <- file.path(paths$data, "Spatial", "Ontario_Hydro_Network_(OHN)_-_Waterbody","Ontario_Hydro_Network_(OHN)_-_Waterbody.shp")
-  water_to_plot <- st_read(in_water, quiet = TRUE) %>%
-    st_make_valid() %>%
-    st_transform(crs_use) %>%
-    dplyr::mutate(area_m2 = as.numeric(sf::st_area(geometry))) 
+} else {
+  in_water_raw <- file.path(
+    paths$data,
+    "Spatial",
+    "Ontario_Hydro_Network_(OHN)_-_Waterbody",
+    "Ontario_Hydro_Network_(OHN)_-_Waterbody.shp"
+  )
   
-  water_to_plot <- water_to_plot %>%
-    filter(VERIFICATI == "Verified" & area_m2 >= (5000*5000)) %>%
-    st_intersection(study_boundary)
+  water_to_plot <- sf::st_read(in_water_raw, quiet = TRUE) %>%
+    sf::st_make_valid() %>%
+    sf::st_transform(crs_use) %>%
+    dplyr::mutate(area_m2 = as.numeric(sf::st_area(geometry))) %>%
+    dplyr::filter(VERIFICATI == "Verified", area_m2 >= (5000 * 5000)) %>%
+    sf::st_intersection(study_boundary)
   
-  saveRDS(water_to_plot,in_water)
+  saveRDS(water_to_plot, in_water)
 }
 
 # ------------------------------------------------------------
-# Loop through species
+# Generate raster and figure products for each species
 # ------------------------------------------------------------
 
 pred_files <- list.files(pred_dir, pattern = "\\.rds$", full.names = TRUE)
@@ -97,13 +113,9 @@ stopifnot(length(pred_files) > 0)
 
 message("Prediction files found: ", length(pred_files))
 
-for (i in seq_len(length(pred_files))) {
+for (i in seq_along(pred_files)) {
   
   preds <- readRDS(pred_files[i])
-  
-  # ----------------------------------------------------------
-  # Basic identifiers
-  # ----------------------------------------------------------
   
   sp_english <- preds$sp_name
   sp_file <- sp_english |>
@@ -115,96 +127,104 @@ for (i in seq_len(length(pred_files))) {
     dplyr::filter(english_name == sp_english) |>
     dplyr::pull(species_id)
   
-  # Paths to store outputs for this species
-  rast_path_a2 <- file.path(rast_dir, paste0(sp_file, "_a2.tif"))
-  rast_path_a3 <- file.path(rast_dir, paste0(sp_file, "_a3.tif"))
-  rast_path_chg     <- file.path(rast_dir, paste0(sp_file, "_chg.tif"))
-  fig_path <- file.path(fig_dir,paste0(sp_file,".png"))
-  dat_path   <- file.path(out_dir, paste0("data_used_", model_name), paste0(sp_file, "_1km.rds"))
-  
-  # ----------------------------------------------------------
-  # Load model fitted effects to aid interpretation
-  # ----------------------------------------------------------
+  if (length(sp_code) == 0) {
+    warning("No species_id found for ", sp_english, "; using NA in raster metadata.")
+    sp_code <- NA_character_
+  }
   
   sp_model_summary <- model_summaries[[sp_english]]
+  if (is.null(sp_model_summary)) {
+    warning("No model summary found for ", sp_english, ".")
+  }
   
-  # ----------------------------------------------------------
-  # Load data that was used for this species
-  # ----------------------------------------------------------
+  message("\nGenerating products for: ", sp_english)
   
+  # Species-specific output paths.
+  rast_path_a2  <- file.path(rast_dir, paste0(sp_file, "_a2.tif"))
+  rast_path_a3  <- file.path(rast_dir, paste0(sp_file, "_a3.tif"))
+  rast_path_chg <- file.path(rast_dir, paste0(sp_file, "_chg.tif"))
+  dat_path <- file.path(
+    out_dir,
+    paste0("data_used_", model_name),
+    paste0(sp_file, "_1km.rds")
+  )
+  
+  stopifnot(file.exists(dat_path))
   sp_dat <- readRDS(dat_path)
   
-  # ------------------------------------------------------------
-  # Create rasters
-  # ------------------------------------------------------------
-  message("Generating rasters for: ", sp_english)
+  # ----------------------------------------------------------
+  # Raster products: Atlas 2, Atlas 3, and absolute change
+  # ----------------------------------------------------------
   
-  # ---- Atlas 2 relative abundance
-  a2 <- grid2 %>% 
-    mutate(mu_mean = preds$OBBA2_Corrected_for_Water$OBBA2_mean,
-           CI_95_width = preds$OBBA2$OBBA2_upper - preds$OBBA2$OBBA2_lower)
+  a2 <- grid2 %>%
+    dplyr::mutate(
+      mu_mean = preds$OBBA2_Corrected_for_Water$OBBA2_mean,
+      CI_95_width = preds$OBBA2_Corrected_for_Water$OBBA2_upper - preds$OBBA2_Corrected_for_Water$OBBA2_lower
+    )
   
-  vars_to_rasterize <- c("mu_mean","CI_95_width")
-  r2 = rasterize_sf(a2,vars_to_rasterize,res = plot_res,
-                    metadata = c(
-                      species_name = sp_english,
-                      species_id   = sp_code,
-                      species_filename = sp_file,
-                      model_name        = model_name,
-                      units        = "Expected count (Atlas 2)"
-                    ))
+  r2 <- rasterize_sf(
+    grid_sf = a2,
+    field = c("mu_mean", "CI_95_width"),
+    res = plot_res,
+    metadata = c(
+      species_name = sp_english,
+      species_id = sp_code,
+      species_filename = sp_file,
+      model_name = model_name,
+      units = "Expected count (Atlas 2)"
+    )
+  )
   
-  writeRaster(r2,
-              filename = rast_path_a2,
-              overwrite = TRUE)
+  terra::writeRaster(r2, filename = rast_path_a2, overwrite = TRUE)
   
+  a3 <- grid3 %>%
+    dplyr::mutate(
+      mu_mean = preds$OBBA3_Corrected_for_Water$OBBA3_mean,
+      CI_95_width = preds$OBBA3_Corrected_for_Water$OBBA3_upper - preds$OBBA3_Corrected_for_Water$OBBA3_lower
+    )
   
-  # ---- Atlas 3 relative abundance
-  a3 <- grid3 %>% 
-    mutate(mu_mean = preds$OBBA3_Corrected_for_Water$OBBA3_mean,
-           CI_95_width = preds$OBBA3$OBBA3_upper - preds$OBBA3$OBBA3_lower)
+  r3 <- rasterize_sf(
+    grid_sf = a3,
+    field = c("mu_mean", "CI_95_width"),
+    res = plot_res,
+    metadata = c(
+      species_name = sp_english,
+      species_id = sp_code,
+      species_filename = sp_file,
+      model_name = model_name,
+      units = "Expected count (Atlas 3)"
+    )
+  )
   
-  vars_to_rasterize <- c("mu_mean","CI_95_width")
-  r3 = rasterize_sf(a3,vars_to_rasterize,res = plot_res,
-                    metadata = c(
-                      species_name = sp_english,
-                      species_id   = sp_code,
-                      species_filename = sp_file,
-                      model_name        = model_name,
-                      units        = "Expected count (Atlas 3)"
-                    ))
+  terra::writeRaster(r3, filename = rast_path_a3, overwrite = TRUE)
   
-  writeRaster(r3,
-              filename = rast_path_a3,
-              overwrite = TRUE)
+  chg_sf <- grid3 %>%
+    dplyr::mutate(
+      chg_mean = preds$abs_change_Corrected_for_Water$abs_change_mean,
+      CI_95_width = preds$abs_change$abs_change_upper - preds$abs_change$abs_change_lower
+    )
   
-  # ---- Change from Atlas 2 to Atlas 3
-  chg_sf <- grid3 %>% 
-    mutate(chg_mean = preds$abs_change_Corrected_for_Water$abs_change_mean,
-           CI_95_width = preds$abs_change$abs_change_upper - preds$abs_change$abs_change_lower)
+  rchg <- rasterize_sf(
+    grid_sf = chg_sf,
+    field = c("chg_mean", "CI_95_width"),
+    res = plot_res,
+    metadata = c(
+      species_name = sp_english,
+      species_id = sp_code,
+      species_filename = sp_file,
+      model_name = model_name,
+      units = "Change in expected counts (Atlas 2 to Atlas 3)"
+    )
+  )
   
-  vars_to_rasterize <- c("chg_mean","CI_95_width")
-  rchg = rasterize_sf(chg_sf,vars_to_rasterize,res = plot_res,
-                      metadata = c(
-                        species_name = sp_english,
-                        species_id   = sp_code,
-                        species_filename = sp_file,
-                        model_name        = model_name,
-                        units        = "Change in expected counts (Atlas 2 to Atlas 3)"
-                      ))
+  terra::writeRaster(rchg, filename = rast_path_chg, overwrite = TRUE)
   
-  writeRaster(rchg,
-              filename = rast_path_chg,
-              overwrite = TRUE)
+  # ----------------------------------------------------------
+  # Relative abundance maps
+  # ----------------------------------------------------------
   
-  # ------------------------------------------------------------
-  # Create maps of relative abundance, change, and PObs
-  # ------------------------------------------------------------
+  rast_absent_limit <- 1 / 150
   
-  # Clamps rasters to desired upper and lower limits
-  # By default: considered "absent" if rarer than 1 detection every 250 point counts
-  #             - this could be adjusted separately for each species
-  rast_absent_limit <- 1/250
   rasters_prepared <- prepare_relative_abundance_rasters(
     Atlas2 = r2,
     Atlas3 = r3,
@@ -216,30 +236,29 @@ for (i in seq_len(length(pred_files))) {
     species_name = sp_english,
     atlas_label = "Atlas 2",
     rast = rasters_prepared$rasters$Atlas2,
-    zlim = rasters_prepared$zlim,
-    zbreaks = rasters_prepared$zbreaks,
     region = study_boundary,
     water = water_to_plot,
     water_fill = "white",
-    transform = "identity"
+    transform = "identity",
+    zlim = rasters_prepared$zlim,
+    zbreaks = rasters_prepared$zbreaks
   )
   
   Relabund_Map_Atlas3 <- make_relabund_map(
     species_name = sp_english,
     atlas_label = "Atlas 3",
     rast = rasters_prepared$rasters$Atlas3,
-    zlim = rasters_prepared$zlim,
-    zbreaks = rasters_prepared$zbreaks,
     region = study_boundary,
     water = water_to_plot,
     water_fill = "white",
-    transform = "identity"
+    transform = "identity",
+    zlim = rasters_prepared$zlim,
+    zbreaks = rasters_prepared$zbreaks
   )
-
-
-  # ------------------------------------------------------------
-  # Create change map
-  # ------------------------------------------------------------
+  
+  # ----------------------------------------------------------
+  # Hex-level change map
+  # ----------------------------------------------------------
   
   prov_change <- summarize_polygon_hex_draw_change(
     hex_draws = preds$hex_draws_Corrected_for_Water,
@@ -249,8 +268,8 @@ for (i in seq_len(length(pred_files))) {
   ) |>
     dplyr::mutate(
       pct_change_median = 100 * prop_change_median,
-      pct_change_qlow   = 100 * prop_change_qlow,
-      pct_change_qhigh  = 100 * prop_change_qhigh
+      pct_change_qlow = 100 * prop_change_qlow,
+      pct_change_qhigh = 100 * prop_change_qhigh
     )
   
   hex_change_sf <- summarize_hex_draw_change(
@@ -271,75 +290,64 @@ for (i in seq_len(length(pred_files))) {
     water_fill = "gray97"
   )
   
-  # ------------------------------------------------------------
-  # Model Assessment Map Atlas 2
-  # ------------------------------------------------------------
+  # ----------------------------------------------------------
+  # Model-assessment panels for each atlas period
+  # ----------------------------------------------------------
   
   r2_clamped <- r2$mu_mean
-  r2_clamped[r2_clamped<rast_absent_limit] <- 0
+  r2_clamped[r2_clamped < rast_absent_limit] <- 0
   
   A2_dat_to_plot <- sp_dat$sp_dat %>%
-    filter(Survey_Type %in% c("Point_Count","ARU")) %>%
-    subset(Atlas == "OBBA2") %>%
-    mutate(count_per_effort = count)
+    dplyr::filter(Survey_Type %in% c("Point_Count", "ARU"), Atlas == "OBBA2") %>%
+    dplyr::mutate(count_per_effort = count)
   
   A2_assessment <- assess_region(
-    region     = study_boundary,
-    sp_dat     = A2_dat_to_plot,
-    rast       = r2_clamped,
+    region = study_boundary,
+    sp_dat = A2_dat_to_plot,
+    rast = r2_clamped,
     n_hexagons = 2000,
-    water      = NULL,  # Do not plot water at this scale
+    water = NULL,
     rast_max_q = 0.99,
-    transform  = "identity",
-    title      = ,
-    model_source = "",
-    data_source  = ""
+    transform = "identity",
+    title = NULL,
+    model_source = "Atlas 2 Predictions",
+    data_source = "Atlas 2 Point Counts + ARUs"
   )
-  
-  # ------------------------------------------------------------
-  # Model Assessment Map Atlas 3
-  # ------------------------------------------------------------
   
   r3_clamped <- r3$mu_mean
-  r3_clamped[r3_clamped<rast_absent_limit] <- 0
+  r3_clamped[r3_clamped < rast_absent_limit] <- 0
   
   A3_dat_to_plot <- sp_dat$sp_dat %>%
-    filter(Survey_Type %in% c("Point_Count","ARU")) %>%
-    subset(Atlas == "OBBA3") %>%
-    mutate(count_per_effort = count)
+    dplyr::filter(Survey_Type %in% c("Point_Count", "ARU"), Atlas == "OBBA3") %>%
+    dplyr::mutate(count_per_effort = count)
   
   A3_assessment <- assess_region(
-    region     = study_boundary,
-    sp_dat     = A3_dat_to_plot,
-    rast       = r3_clamped,
+    region = study_boundary,
+    sp_dat = A3_dat_to_plot,
+    rast = r3_clamped,
     n_hexagons = 2000,
-    water      = NULL,  # Do not plot water at this scale
+    water = NULL,
     rast_max_q = 0.99,
-    transform  = "identity",
-    title      = ,
-    model_source = "",
-    data_source  = ""
+    transform = "identity",
+    title = NULL,
+    model_source = "Atlas 3 Predictions",
+    data_source = "Atlas 3 Point Counts + ARUs"
   )
   
-  # ------------------------------------------------------------
-  # Save outputs as a multi-page PDF for each species
-  # ------------------------------------------------------------
+  # ----------------------------------------------------------
+  # Save one multi-page PDF per species
+  # ----------------------------------------------------------
   
-  page1_png <- file.path(fig_dir, "PNGs",paste0(sp_file, "_page1.png"))
-  page2_png <- file.path(fig_dir, "PNGs",paste0(sp_file, "_page2.png"))
-  page3_png <- file.path(fig_dir, "PNGs",paste0(sp_file, "_page3.png"))
-  
+  page1_png <- file.path(png_dir, paste0(sp_file, "_page1.png"))
+  page2_png <- file.path(png_dir, paste0(sp_file, "_page2.png"))
+  page3_png <- file.path(png_dir, paste0(sp_file, "_page3.png"))
   pdf_path  <- file.path(fig_dir, paste0(sp_file, ".pdf"))
   
-  # ---- Relative Abundance and Change Maps
   page1 <-
     Relabund_Map_Atlas2 +
     Relabund_Map_Atlas3 +
     Hex_Change_Map +
-    patchwork::plot_layout(
-      ncol = 3,
-      widths = c(1, 1, 1)
-    )
+    patchwork::plot_layout(ncol = 3, widths = c(1, 1, 1))
   
   ragg::agg_png(
     filename = page1_png,
@@ -352,9 +360,6 @@ for (i in seq_len(length(pred_files))) {
   print(page1)
   grDevices::dev.off()
   
-  # ---- Atlas 2 assessment figures
-  page2 <- A2_assessment
-  
   ragg::agg_png(
     filename = page2_png,
     width = 24,
@@ -363,11 +368,8 @@ for (i in seq_len(length(pred_files))) {
     res = 300,
     background = "white"
   )
-  print(page2)
+  print(A2_assessment$plot_combined)
   grDevices::dev.off()
-  
-  # ---- Atlas 3 assessment figures
-  page3 <- A3_assessment
   
   ragg::agg_png(
     filename = page3_png,
@@ -377,12 +379,11 @@ for (i in seq_len(length(pred_files))) {
     res = 300,
     background = "white"
   )
-  print(page3)
+  print(A3_assessment$plot_combined)
   grDevices::dev.off()
   
-  # ---- Combine into multi-page PDF
   imgs <- magick::image_read(c(page1_png, page2_png, page3_png))
-  
   magick::image_write(imgs, path = pdf_path, format = "pdf")
-  
 }
+
+message("08_generate_model_products.R complete")

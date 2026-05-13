@@ -181,6 +181,28 @@ fit_inla_multi_atlas <- function(
   sp_dat$Atlas3_c            <- ensure_numeric(sp_dat$Atlas3_c)
   sp_dat$BCR_idx             <- ensure_numeric(sp_dat$BCR_idx)
   
+  hull <- fmesher::fm_extensions(
+    study_boundary,
+    convex = c(50, 200),
+    concave = c(10, 200)
+  )
+  
+  mesh_abund <- fmesher::fm_mesh_2d_inla(
+    loc = sf::st_as_sfc(sp_dat),
+    boundary = hull,
+    max.edge = c(40, 100),
+    cutoff = 40,
+    crs = sf::st_crs(sp_dat)
+  )
+  
+  mesh_chg <- fmesher::fm_mesh_2d_inla(
+    loc = sf::st_as_sfc(sp_dat),
+    boundary = hull,
+    max.edge = c(40, 100),
+    cutoff = 40,
+    crs = sf::st_crs(sp_dat)
+  )
+  
   # Shared abundance field
   matern_mean <- INLA::inla.spde2.pcmatern(
     mesh = mesh_abund,

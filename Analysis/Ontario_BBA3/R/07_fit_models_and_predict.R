@@ -76,8 +76,8 @@ priors_list <- list(
 
 # INLA settings. These are relatively fast defaults; use fuller Laplace settings
 # if convergence or approximation quality becomes a concern.
-int_strategy <- "eb"
-strategy <- "simplified.laplace"
+int_strategy <- "ccd" # eb
+strategy <- "laplace" # simplified.laplace
 
 # ------------------------------------------------------------
 # Input and output locations
@@ -293,7 +293,7 @@ for (i in seq_len(nrow(species_run))) {
   hss_pred <- data.frame(
     Hours_Since_Sunrise = seq(
       min(sp_dat$Hours_Since_Sunrise) + 0.5,
-      max(sp_dat$Hours_Since_Sunrise) - 0.5,
+      max(sp_dat$Hours_Since_Sunrise) - 3,
       length.out = 100
     ) %>%
       round(2)
@@ -370,36 +370,6 @@ for (i in seq_len(nrow(species_run))) {
   
   # Fixed-effect priors: mean 0, SD 0.5 on the log scale.
   cov_df_sp <- make_cov_df(covars_present, mean = 0, sd_linear = 0.5)
-  
-  # ----------------------------------------------------------
-  # Build spatial meshes
-  # ----------------------------------------------------------
-  # Candidate for utility function:
-  #   make_multi_atlas_meshes(sp_dat, study_boundary, ...)
-  # Keep the distance values unchanged because the current workflow uses
-  # kilometre-based CRS/mesh definitions here.
-  
-  hull <- fmesher::fm_extensions(
-    study_boundary,
-    convex = c(50, 200),
-    concave = c(10, 200)
-  )
-  
-  mesh_abund <- fmesher::fm_mesh_2d_inla(
-    loc = sf::st_as_sfc(sp_dat),
-    boundary = hull,
-    max.edge = c(40, 100),
-    cutoff = 40,
-    crs = sf::st_crs(sp_dat)
-  )
-  
-  mesh_chg <- fmesher::fm_mesh_2d_inla(
-    loc = sf::st_as_sfc(sp_dat),
-    boundary = hull,
-    max.edge = c(40, 100),
-    cutoff = 40,
-    crs = sf::st_crs(sp_dat)
-  )
   
   # ----------------------------------------------------------
   # Fit or load model

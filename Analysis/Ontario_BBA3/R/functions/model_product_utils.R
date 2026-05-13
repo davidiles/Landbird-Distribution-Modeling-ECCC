@@ -1,4 +1,34 @@
-# Rasterize an sf grid
+# ============================================================
+# model_product_utils.R
+#
+# Purpose
+#   Utility functions for generating model products from fitted
+#   OBBA abundance/change models. Functions cover rasterization,
+#   relative-abundance maps, hex-level change summaries, and
+#   model-assessment panels comparing predictions with observations.
+#
+# Documentation style
+#   Function comments are intentionally plain comments rather than
+#   ROxygen comments, because this script is sourced directly rather
+#   than built as an R package.
+# ============================================================
+
+# Rasterize fields from an sf grid to a terra SpatRaster.
+#
+# Purpose:
+#   Converts one or more numeric columns in an sf prediction grid into raster
+#   layers at a specified resolution. This is used to create map-ready raster
+#   products from 1-km prediction grids. Metadata tags are attached to the
+#   returned raster.
+#
+# Arguments:
+#   grid_sf  - sf object containing polygon or point/grid-cell geometries.
+#   field    - character vector of column names to rasterize.
+#   res      - raster resolution in the units of grid_sf.
+#   metadata - named character vector of metadata tags to attach.
+#
+# Returns:
+#   A terra SpatRaster with one layer per requested field.
 rasterize_sf <- function(grid_sf, field, res,metadata) {
   stopifnot(inherits(grid_sf, "sf"))
   stopifnot(field %in% names(grid_sf))
@@ -16,6 +46,22 @@ rasterize_sf <- function(grid_sf, field, res,metadata) {
 # Relative abundance maps
 # ------------------------------------------------------------
 
+# Prepare multiple relative-abundance rasters for side-by-side plotting.
+#
+# Purpose:
+#   Applies a shared absence threshold and a shared upper colour-scale limit
+#   across one or more rasters, so Atlas 2 and Atlas 3 maps use comparable
+#   legends. Low values are treated as absent, and high values are clamped at
+#   a common quantile-based maximum.
+#
+# Arguments:
+#   ...                 - named terra SpatRaster objects.
+#   rast_absent_limit   - values at or below this threshold are set to NA.
+#   rast_max_quantile   - quantile used to estimate the upper plotting limit.
+#
+# Returns:
+#   A list containing processed rasters, shared z limits, legend breaks, and
+#   original per-raster upper quantiles.
 prepare_relative_abundance_rasters <- function(...,
                                                rast_absent_limit = 1/250,
                                                rast_max_quantile = 0.99) {
@@ -86,7 +132,7 @@ prepare_relative_abundance_rasters <- function(...,
 }
 
 
-#' Create map of posterior mean relative abundance for one atlas period
+# Create map of posterior mean relative abundance for one atlas period
 make_relabund_map <- function(species_name,
                               atlas_label,
                               rast,
@@ -758,63 +804,62 @@ make_hex_abs_change_map <- function(species_name,
 }
 
 
-#' Assess model predictions against survey observations at any spatial scale
-#'
-#' Orchestrates the full workflow:
-#'   1. Accept a pre-built hexagon grid (or build one if `n_hexagons` is
-#'      supplied and `hex_grid` is NULL).
-#'   2. Summarise survey observations and raster predictions per hexagon
-#'      (`summarize_hex`).
-#'   3. Compute region-wide validation statistics (`compute_region_stats`).
-#'   4. Build a three-panel patchwork figure:
-#'      - Panel A: raw raster of model predictions (`plot_raster_gg`).
-#'      - Panel B: hex-filled by mean predicted abundance, circles by observed
-#'        mean count (`plot_hex_pred_obs`).
-#'      - Panel C: honeycomb effort/detection map (`plot_honeycomb`).
-#'
-#' When looping over many species for the same region, build the hex grid once
-#' with `make_hex_grid()` and pass it via `hex_grid` to avoid rebuilding it on
-#' every iteration.
-#'
-#' @param region          `sf` polygon defining the study area extent. Used for
-#'   plotting and, when `hex_grid` is NULL, for building the grid.
-#' @param sp_dat          `sf` data frame with a `count_per_effort` column.
-#' @param rast            `SpatRaster` of model predictions. Absent cells should
-#'   be 0 or NA; both are treated as zero when computing hex means, and rendered
-#'   as transparent in all map panels.
-#' @param hex_grid        Pre-built hexagon grid (`sf` output of
-#'   `make_hex_grid()`). When supplied, `n_hexagons` is ignored and no grid is
-#'   built internally. Pass `NULL` (default) to build the grid from `region`
-#'   and `n_hexagons`.
-#' @param n_hexagons      Target number of hexagons. Only used when `hex_grid`
-#'   is NULL. Default `1000`.
-#' @param water           Optional `processed_water` object (from
-#'                        `process_water()`). Pass `NULL` to omit water.
-#' @param rast_max_q      Quantile (0-1) used to cap the colour scale upper end
-#'   and clip outlier pixel values before extraction. Default `0.99`.
-#' @param transform       Colour scale transform: `"identity"`, `"sqrt"`,
-#'                        `"log"`, etc.
-#' @param pred_presence_threshold  `pred_mean` values strictly above this are
-#'   classified as model-predicted present in `hex_summary` and used for P/A
-#'   statistics. Default `0`.
-#' @param title           Optional character string added as a patchwork
-#'                        annotation title above the three panels.
-#' @param model_source    Optional character string identifying the model source
-#'                        (e.g. `"BAM"`, `"Atlas"`). Displayed in the subtitle
-#'                        when either `model_source` or `data_source` is
-#'                        non-NULL.
-#' @param data_source     Optional character string identifying the survey data
-#'                        source (e.g. `"BAM"`, `"Atlas"`). Displayed in the
-#'                        subtitle alongside `model_source`.
-#'
-#' @return A named list:
-#'   \describe{
-#'     \item{`plot_combined`}{A `patchwork` ggplot (three panels).}
-#'     \item{`hex_summary`}{`sf` data frame with one row per hexagon
-#'       containing columns from `summarize_hex()`.}
-#'     \item{`region_stats`}{One-row `data.frame` from `compute_region_stats()`.}
-#'   }
-#' @export
+# Assess model predictions against survey observations at any spatial scale
+#
+# Orchestrates the full workflow:
+#   1. Accept a pre-built hexagon grid (or build one if `n_hexagons` is
+#      supplied and `hex_grid` is NULL).
+#   2. Summarise survey observations and raster predictions per hexagon
+#      (`summarize_hex`).
+#   3. Compute region-wide validation statistics (`compute_region_stats`).
+#   4. Build a three-panel patchwork figure:
+#      - Panel A: raw raster of model predictions (`plot_raster_gg`).
+#      - Panel B: hex-filled by mean predicted abundance, circles by observed
+#        mean count (`plot_hex_pred_obs`).
+#      - Panel C: honeycomb effort/detection map (`plot_honeycomb`).
+#
+# When looping over many species for the same region, build the hex grid once
+# with `make_hex_grid()` and pass it via `hex_grid` to avoid rebuilding it on
+# every iteration.
+#
+# Argument: region          `sf` polygon defining the study area extent. Used for
+#   plotting and, when `hex_grid` is NULL, for building the grid.
+# Argument: sp_dat          `sf` data frame with a `count_per_effort` column.
+# Argument: rast            `SpatRaster` of model predictions. Absent cells should
+#   be 0 or NA; both are treated as zero when computing hex means, and rendered
+#   as transparent in all map panels.
+# Argument: hex_grid        Pre-built hexagon grid (`sf` output of
+#   `make_hex_grid()`). When supplied, `n_hexagons` is ignored and no grid is
+#   built internally. Pass `NULL` (default) to build the grid from `region`
+#   and `n_hexagons`.
+# Argument: n_hexagons      Target number of hexagons. Only used when `hex_grid`
+#   is NULL. Default `1000`.
+# Argument: water           Optional `processed_water` object (from
+#                        `process_water()`). Pass `NULL` to omit water.
+# Argument: rast_max_q      Quantile (0-1) used to cap the colour scale upper end
+#   and clip outlier pixel values before extraction. Default `0.99`.
+# Argument: transform       Colour scale transform: `"identity"`, `"sqrt"`,
+#                        `"log"`, etc.
+# Argument: pred_presence_threshold  `pred_mean` values strictly above this are
+#   classified as model-predicted present in `hex_summary` and used for P/A
+#   statistics. Default `0`.
+# Argument: title           Optional character string added as a patchwork
+#                        annotation title above the three panels.
+# Argument: model_source    Optional character string identifying the model source
+#                        (e.g. `"BAM"`, `"Atlas"`). Displayed in the subtitle
+#                        when either `model_source` or `data_source` is
+#                        non-NULL.
+# Argument: data_source     Optional character string identifying the survey data
+#                        source (e.g. `"BAM"`, `"Atlas"`). Displayed in the
+#                        subtitle alongside `model_source`.
+#
+# Returns: A named list:
+#   \describe{
+#     \item{`plot_combined`}{A `patchwork` ggplot (three panels).}
+#     \item{`hex_summary`}{`sf` data frame with one row per hexagon
+#       containing columns from `summarize_hex()`.}
+#     \item{`region_stats`}{One-row `data.frame` from `compute_region_stats()`.}
+#   }
 assess_region <- function(region,
                           sp_dat,
                           rast,
@@ -931,17 +976,16 @@ assess_region <- function(region,
   )
 }
 
-#' Create a hexagon grid over a study area
-#'
-#' Tiles the study area with regular hexagons so that the total number of
-#' hexagons that *intersect* the boundary is approximately `n_hexagons`.
-#' Internally uses EPSG:3978 (Canada Albers) when the input is geographic, then
-#' reprojects back to the original CRS before returning.
-#'
-#' @param study_area  An `sf` object defining the region of interest.
-#' @param n_hexagons  Target number of hexagons inside the study area (default 200).
-#' @return An `sf` object with columns `hex_id` (integer) and `geometry`.
-#' @export
+# Create a hexagon grid over a study area
+#
+# Tiles the study area with regular hexagons so that the total number of
+# hexagons that *intersect* the boundary is approximately `n_hexagons`.
+# Internally uses EPSG:3978 (Canada Albers) when the input is geographic, then
+# reprojects back to the original CRS before returning.
+#
+# Argument: study_area  An `sf` object defining the region of interest.
+# Argument: n_hexagons  Target number of hexagons inside the study area (default 200).
+# Returns: An `sf` object with columns `hex_id` (integer) and `geometry`.
 make_hex_grid <- function(study_area, n_hexagons = 200) {
   
   stopifnot(inherits(study_area, "sf"))
@@ -992,29 +1036,28 @@ make_hex_grid <- function(study_area, n_hexagons = 200) {
   hex_sf
 }
 
-#' Combine observed-survey and model-prediction summaries at the hexagon level
-#'
-#' A convenience wrapper that runs `summarize_surveys_by_hex()` and
-#' `extract_hex_predictions()` in sequence and merges both sets of columns onto
-#' the hex grid. Also adds a `pred_detected` binary column (TRUE when
-#' `pred_mean` strictly exceeds `pred_presence_threshold`).
-#'
-#' Absent pixels (0 or NA) in the raster are included in the hex mean
-#' denominator, so `pred_mean` reflects true spatial average abundance across
-#' the whole hexagon area (see `extract_hex_predictions()` for details).
-#'
-#' @param dat                    An `sf` object with a `count_per_effort` column.
-#' @param hex_grid               Output of `make_hex_grid()`.
-#' @param rast                   A `SpatRaster` of model predictions.
-#' @param rast_max_q             Upper quantile cap passed to
-#'   `extract_hex_predictions()`. Default `0.99`.
-#' @param pred_presence_threshold `pred_mean` values strictly above this are
-#'   classified as model-predicted present. Default `0` (any positive mean
-#'   abundance counts as presence).
-#' @return An `sf` object (one row per hexagon) with columns:
-#'   `hex_id`, `n_surveys`, `mean_count_per_effort`, `obs_detected`,
-#'   `pred_mean`, `pred_detected`, `geometry`.
-#' @export
+# Combine observed-survey and model-prediction summaries at the hexagon level
+#
+# A convenience wrapper that runs `summarize_surveys_by_hex()` and
+# `extract_hex_predictions()` in sequence and merges both sets of columns onto
+# the hex grid. Also adds a `pred_detected` binary column (TRUE when
+# `pred_mean` strictly exceeds `pred_presence_threshold`).
+#
+# Absent pixels (0 or NA) in the raster are included in the hex mean
+# denominator, so `pred_mean` reflects true spatial average abundance across
+# the whole hexagon area (see `extract_hex_predictions()` for details).
+#
+# Argument: dat                    An `sf` object with a `count_per_effort` column.
+# Argument: hex_grid               Output of `make_hex_grid()`.
+# Argument: rast                   A `SpatRaster` of model predictions.
+# Argument: rast_max_q             Upper quantile cap passed to
+#   `extract_hex_predictions()`. Default `0.99`.
+# Argument: pred_presence_threshold `pred_mean` values strictly above this are
+#   classified as model-predicted present. Default `0` (any positive mean
+#   abundance counts as presence).
+# Returns: An `sf` object (one row per hexagon) with columns:
+#   `hex_id`, `n_surveys`, `mean_count_per_effort`, `obs_detected`,
+#   `pred_mean`, `pred_detected`, `geometry`.
 summarize_hex <- function(dat,
                           hex_grid,
                           rast,
@@ -1035,21 +1078,20 @@ summarize_hex <- function(dat,
     )
 }
 
-#' Summarise point-count / ARU surveys by hexagon
-#'
-#' Spatially joins survey points to hexagons and computes, for each hexagon:
-#' the number of surveys, the mean count-per-effort, and a binary
-#' presence/absence flag.
-#'
-#' @param dat      An `sf` object with a `count_per_effort` numeric column.
-#' @param hex_grid An `sf` hexagon grid (output of `make_hex_grid()`).
-#' @return The full hex grid with added columns:
-#'   \describe{
-#'     \item{`n_surveys`}{Number of survey visits (0 for unsurveyed hexagons).}
-#'     \item{`mean_count_per_effort`}{Mean count per effort (NA for unsurveyed).}
-#'     \item{`obs_detected`}{Logical: TRUE if any survey detected the species.}
-#'   }
-#' @export
+# Summarise point-count / ARU surveys by hexagon
+#
+# Spatially joins survey points to hexagons and computes, for each hexagon:
+# the number of surveys, the mean count-per-effort, and a binary
+# presence/absence flag.
+#
+# Argument: dat      An `sf` object with a `count_per_effort` numeric column.
+# Argument: hex_grid An `sf` hexagon grid (output of `make_hex_grid()`).
+# Returns: The full hex grid with added columns:
+#   \describe{
+#     \item{`n_surveys`}{Number of survey visits (0 for unsurveyed hexagons).}
+#     \item{`mean_count_per_effort`}{Mean count per effort (NA for unsurveyed).}
+#     \item{`obs_detected`}{Logical: TRUE if any survey detected the species.}
+#   }
 summarize_surveys_by_hex <- function(dat, hex_grid) {
   
   stopifnot(inherits(dat, "sf"))
@@ -1093,27 +1135,26 @@ summarize_surveys_by_hex <- function(dat, hex_grid) {
     )
 }
 
-#' Extract raster model predictions into each hexagon
-#'
-#' Computes the mean predicted abundance within each hexagon, treating absent
-#' pixels (0 or NA in the input raster) as zero so that partial occupancy is
-#' correctly reflected in the hex mean. For example, if 50 % of pixels in a
-#' hexagon are absent (0/NA) and the remaining 50 % have a predicted value of
-#' 1, the returned `pred_mean` will be 0.5.
-#'
-#' The upper-quantile cap (`rast_max_q`) is applied to non-zero pixels before
-#' extraction so that extreme outliers do not distort hex means, but absent
-#' pixels are never excluded from the denominator.
-#'
-#' @param hex_grid     An `sf` hexagon grid (output of `make_hex_grid()`).
-#' @param rast         A `SpatRaster` of model predictions. Absent cells should
-#'   be encoded as 0 or NA; both are treated as zero during averaging.
-#' @param rast_max_q   Upper quantile used to cap non-zero pixel values before
-#'   extraction. Default `0.99`.
-#' @return The hex grid with an added column `pred_mean` (mean predicted
-#'   relative abundance within the hexagon, inclusive of absent pixels; NA only
-#'   where the hexagon falls entirely outside the raster extent).
-#' @export
+# Extract raster model predictions into each hexagon
+#
+# Computes the mean predicted abundance within each hexagon, treating absent
+# pixels (0 or NA in the input raster) as zero so that partial occupancy is
+# correctly reflected in the hex mean. For example, if 50 % of pixels in a
+# hexagon are absent (0/NA) and the remaining 50 % have a predicted value of
+# 1, the returned `pred_mean` will be 0.5.
+#
+# The upper-quantile cap (`rast_max_q`) is applied to non-zero pixels before
+# extraction so that extreme outliers do not distort hex means, but absent
+# pixels are never excluded from the denominator.
+#
+# Argument: hex_grid     An `sf` hexagon grid (output of `make_hex_grid()`).
+# Argument: rast         A `SpatRaster` of model predictions. Absent cells should
+#   be encoded as 0 or NA; both are treated as zero during averaging.
+# Argument: rast_max_q   Upper quantile used to cap non-zero pixel values before
+#   extraction. Default `0.99`.
+# Returns: The hex grid with an added column `pred_mean` (mean predicted
+#   relative abundance within the hexagon, inclusive of absent pixels; NA only
+#   where the hexagon falls entirely outside the raster extent).
 extract_hex_predictions <- function(hex_grid,
                                     rast,
                                     rast_max_q = 0.99) {
@@ -1156,43 +1197,42 @@ extract_hex_predictions <- function(hex_grid,
     )
 }
 
-#' Compute region-wide model-validation statistics
-#'
-#' Takes a hex-level summary (output of `summarize_hex()`) and computes
-#' summary statistics across all hexagons that were actually surveyed.
-#'
-#' **Statistics returned**
-#' | Name | Description |
-#' |------|-------------|
-#' | `n_hex_surveyed` | Hexagons with >=1 survey |
-#' | `n_hex_detected` | Hexagons where species was detected |
-#' | `prop_hex_detected` | Detection rate (detected / surveyed) |
-#' | `cor_obs_pred` | Pearson r between mean observed count and mean predicted abundance (unweighted) |
-#' | `cor_obs_pred_wtd` | Pearson r weighted by number of surveys per hexagon |
-#' | `pa_agreement` | Proportion of surveyed hexagons where observed P/A matches predicted P/A |
-#' | `pa_sensitivity` | True-positive rate: model predicted present when observed present |
-#' | `pa_specificity` | True-negative rate: model predicted absent when observed absent |
-#' | `n_surveys_total` | Total individual survey visits across region |
-#' | `mean_surveys_per_hex` | Average surveys per surveyed hexagon |
-#' | `prop_det_in_pred_absent` | Of hexagons where species was detected, proportion where mean model prediction was at or below `absence_threshold` |
-#' | `absence_threshold` | The threshold value used to define model-predicted absence (echoed from input) |
-#' | `prop_absent_in_pred_high` | Of hexagons where model predicted high abundance (>= `high_abundance_threshold`), proportion where species was not detected |
-#' | `high_abundance_threshold` | The threshold used to define high predicted abundance; either user-supplied or the 75th percentile of non-zero `pred_mean` values (echoed from input) |
-#'
-#' @param hex_summary       Output of `summarize_hex()` (or equivalent `sf` with
-#'   columns `n_surveys`, `mean_count_per_effort`, `obs_detected`,
-#'   `pred_mean`, `pred_detected`).
-#' @param absence_threshold      Numeric scalar. Hexagons with `pred_mean` at
-#'   or below this value (or with no raster coverage, i.e. `pred_mean` is NA)
-#'   are considered model-predicted absent when computing
-#'   `prop_det_in_pred_absent`. Default `0`.
-#' @param high_abundance_threshold  Numeric scalar or `NULL`. Hexagons with
-#'   `pred_mean` at or above this value are considered high-abundance when
-#'   computing `prop_absent_in_pred_high`. When `NULL` (default), the threshold
-#'   is set automatically to the 75th percentile of non-zero `pred_mean` values
-#'   across surveyed hexagons.
-#' @return A one-row `data.frame` of region-wide statistics.
-#' @export
+# Compute region-wide model-validation statistics
+#
+# Takes a hex-level summary (output of `summarize_hex()`) and computes
+# summary statistics across all hexagons that were actually surveyed.
+#
+# **Statistics returned**
+# | Name | Description |
+# |------|-------------|
+# | `n_hex_surveyed` | Hexagons with >=1 survey |
+# | `n_hex_detected` | Hexagons where species was detected |
+# | `prop_hex_detected` | Detection rate (detected / surveyed) |
+# | `cor_obs_pred` | Pearson r between mean observed count and mean predicted abundance (unweighted) |
+# | `cor_obs_pred_wtd` | Pearson r weighted by number of surveys per hexagon |
+# | `pa_agreement` | Proportion of surveyed hexagons where observed P/A matches predicted P/A |
+# | `pa_sensitivity` | True-positive rate: model predicted present when observed present |
+# | `pa_specificity` | True-negative rate: model predicted absent when observed absent |
+# | `n_surveys_total` | Total individual survey visits across region |
+# | `mean_surveys_per_hex` | Average surveys per surveyed hexagon |
+# | `prop_det_in_pred_absent` | Of hexagons where species was detected, proportion where mean model prediction was at or below `absence_threshold` |
+# | `absence_threshold` | The threshold value used to define model-predicted absence (echoed from input) |
+# | `prop_absent_in_pred_high` | Of hexagons where model predicted high abundance (>= `high_abundance_threshold`), proportion where species was not detected |
+# | `high_abundance_threshold` | The threshold used to define high predicted abundance; either user-supplied or the 75th percentile of non-zero `pred_mean` values (echoed from input) |
+#
+# Argument: hex_summary       Output of `summarize_hex()` (or equivalent `sf` with
+#   columns `n_surveys`, `mean_count_per_effort`, `obs_detected`,
+#   `pred_mean`, `pred_detected`).
+# Argument: absence_threshold      Numeric scalar. Hexagons with `pred_mean` at
+#   or below this value (or with no raster coverage, i.e. `pred_mean` is NA)
+#   are considered model-predicted absent when computing
+#   `prop_det_in_pred_absent`. Default `0`.
+# Argument: high_abundance_threshold  Numeric scalar or `NULL`. Hexagons with
+#   `pred_mean` at or above this value are considered high-abundance when
+#   computing `prop_absent_in_pred_high`. When `NULL` (default), the threshold
+#   is set automatically to the 75th percentile of non-zero `pred_mean` values
+#   across surveyed hexagons.
+# Returns: A one-row `data.frame` of region-wide statistics.
 compute_region_stats <- function(hex_summary,
                                  absence_threshold       = 1e-4,
                                  high_abundance_threshold = NULL) {
@@ -1321,23 +1361,22 @@ compute_region_stats <- function(hex_summary,
 
 # -- Panel A: raw raster -------------------------------------------------------
 
-#' Plot model-predicted relative abundance as a raster layer
-#'
-#' Pixels with a value of 0 or NA are rendered as transparent (absent).
-#' All non-zero pixels are mapped onto the colour ramp, with the upper end
-#' capped at the `rast_max_q` quantile to prevent outliers from compressing
-#' the scale.
-#'
-#' @param rast         A `SpatRaster`. Absent cells should be 0 or NA.
-#' @param study_area   `sf` polygon defining the region boundary.
-#' @param water        Optional `processed_water` object.
-#' @param rast_max_q   Quantile (0-1) used to cap the upper end of the colour
-#'   scale. Default `0.99`.
-#' @param palette      Character vector of colours (auto if NULL).
-#' @param water_fill   Fill colour for water polygons.
-#' @param transform    Scale transform: `"identity"`, `"sqrt"`, `"log"`, etc.
-#' @return A `ggplot` object.
-#' @export
+# Plot model-predicted relative abundance as a raster layer
+#
+# Pixels with a value of 0 or NA are rendered as transparent (absent).
+# All non-zero pixels are mapped onto the colour ramp, with the upper end
+# capped at the `rast_max_q` quantile to prevent outliers from compressing
+# the scale.
+#
+# Argument: rast         A `SpatRaster`. Absent cells should be 0 or NA.
+# Argument: study_area   `sf` polygon defining the region boundary.
+# Argument: water        Optional `processed_water` object.
+# Argument: rast_max_q   Quantile (0-1) used to cap the upper end of the colour
+#   scale. Default `0.99`.
+# Argument: palette      Character vector of colours (auto if NULL).
+# Argument: water_fill   Fill colour for water polygons.
+# Argument: transform    Scale transform: `"identity"`, `"sqrt"`, `"log"`, etc.
+# Returns: A `ggplot` object.
 plot_raster_gg <- function(rast,
                            study_area,
                            water      = NULL,
@@ -1432,29 +1471,28 @@ plot_raster_gg <- function(rast,
 
 # -- Panel B: hex predicted vs. observed ---------------------------------------
 
-#' Plot observed mean counts over hexagon-averaged model predictions
-#'
-#' Fills each surveyed hexagon by mean predicted relative abundance and overlays
-#' circles scaled by observed mean count per effort. Hexagons with a
-#' `pred_mean` of 0 or NA are rendered as transparent (absent); all others are
-#' mapped onto the colour ramp. The raster is used only to derive the upper cap
-#' for the shared colour scale (`rast_max_q`).
-#'
-#' @param hex_summary          Output of `summarize_hex()`. Must contain
-#'   `pred_mean`, `n_surveys`, and `mean_count_per_effort`.
-#' @param rast                 A `SpatRaster` used to compute the colour scale
-#'   upper limit. Not re-extracted here.
-#' @param study_area           `sf` polygon.
-#' @param water                Optional `processed_water` object.
-#' @param rast_max_q           Quantile (0-1) used to cap the colour scale
-#'   upper end. Default `0.99`.
-#' @param max_count_per_effort Upper bound for observed circle scaling (auto).
-#' @param palette              Fill palette; default matches `plot_raster_gg()`.
-#' @param circle_fill          Fill colour for observed-count circles.
-#' @param water_fill           Fill colour for water polygons.
-#' @param transform            Fill scale transform.
-#' @return A list: `plot` (ggplot), `hex_summary` (sf), `corr_unweighted` (dbl).
-#' @export
+# Plot observed mean counts over hexagon-averaged model predictions
+#
+# Fills each surveyed hexagon by mean predicted relative abundance and overlays
+# circles scaled by observed mean count per effort. Hexagons with a
+# `pred_mean` of 0 or NA are rendered as transparent (absent); all others are
+# mapped onto the colour ramp. The raster is used only to derive the upper cap
+# for the shared colour scale (`rast_max_q`).
+#
+# Argument: hex_summary          Output of `summarize_hex()`. Must contain
+#   `pred_mean`, `n_surveys`, and `mean_count_per_effort`.
+# Argument: rast                 A `SpatRaster` used to compute the colour scale
+#   upper limit. Not re-extracted here.
+# Argument: study_area           `sf` polygon.
+# Argument: water                Optional `processed_water` object.
+# Argument: rast_max_q           Quantile (0-1) used to cap the colour scale
+#   upper end. Default `0.99`.
+# Argument: max_count_per_effort Upper bound for observed circle scaling (auto).
+# Argument: palette              Fill palette; default matches `plot_raster_gg()`.
+# Argument: circle_fill          Fill colour for observed-count circles.
+# Argument: water_fill           Fill colour for water polygons.
+# Argument: transform            Fill scale transform.
+# Returns: A list: `plot` (ggplot), `hex_summary` (sf), `corr_unweighted` (dbl).
 plot_hex_pred_obs <- function(hex_summary,
                               rast,
                               study_area,
@@ -1645,23 +1683,22 @@ plot_hex_pred_obs <- function(hex_summary,
 
 # -- Panel C: honeycomb effort/detection map -----------------------------------
 
-#' Plot a honeycomb survey-effort / detection map
-#'
-#' Fills hexagons by survey effort (number of visits) and overlays circles
-#' scaled by observed mean count per effort.
-#'
-#' @param hex_summary          Output of `summarize_hex()` (or
-#'   `summarize_surveys_by_hex()`).
-#' @param study_area           `sf` polygon.
-#' @param water                Optional `processed_water` object.
-#' @param max_surveys          Upper bound for effort colour classes (auto).
-#' @param max_count_per_effort Upper bound for circle scaling (auto).
-#' @param alpha_min,alpha_max  Range of hex fill transparency.
-#' @param hex_fill             Fill colour for hexagons.
-#' @param circle_fill          Fill colour for detection circles.
-#' @param water_fill           Fill colour for water polygons.
-#' @return A `ggplot` object.
-#' @export
+# Plot a honeycomb survey-effort / detection map
+#
+# Fills hexagons by survey effort (number of visits) and overlays circles
+# scaled by observed mean count per effort.
+#
+# Argument: hex_summary          Output of `summarize_hex()` (or
+#   `summarize_surveys_by_hex()`).
+# Argument: study_area           `sf` polygon.
+# Argument: water                Optional `processed_water` object.
+# Argument: max_surveys          Upper bound for effort colour classes (auto).
+# Argument: max_count_per_effort Upper bound for circle scaling (auto).
+# Argument: alpha_min,alpha_max  Range of hex fill transparency.
+# Argument: hex_fill             Fill colour for hexagons.
+# Argument: circle_fill          Fill colour for detection circles.
+# Argument: water_fill           Fill colour for water polygons.
+# Returns: A `ggplot` object.
 plot_honeycomb <- function(hex_summary,
                            study_area,
                            water                = NULL,
@@ -1825,8 +1862,7 @@ plot_honeycomb <- function(hex_summary,
 
 # -- Internal: effort-class breaks and alpha scale ----------------------------
 
-#' Build effort-class breaks and alpha scale for the honeycomb plot
-#' @keywords internal
+# Build effort-class breaks and alpha scale for the honeycomb plot
 make_effort_classes <- function(max_surveys, alpha_min, alpha_max) {
   
   max_surveys <- ceiling(max_surveys)

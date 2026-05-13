@@ -337,14 +337,19 @@ counts_long <- counts_f %>%
 
 # ------------------------------------------------------------------------------
 # Load and complete breeding safe-date windows
-# Median level-1 safe dates within each Biol_Region
+# Median level-1 and 2 safe dates within each Biol_Region
 # NOTE: SOME SPECIES HAVE SAFE DATES THAT SPAN ACROSS JAN 1; THIS IS CURRENTLY NOT SUPPORTED
 #       - by default it only uses safe dates up to Sep 1
 # ------------------------------------------------------------------------------
 
+# User controls
+safe_levels <- c(1, 2)
+min_safe_doy <- doy_min   
+max_safe_doy <- doy_max 
+
 Biol_Regions_df <- Biol_Regions_ON %>%
   as.data.frame() %>%
-  dplyr::select(Biol_Region,ECOZONE_NA)
+  dplyr::select(Biol_Region, ECOZONE_NA)
 
 safe_dates <- readxl::read_xlsx(safe_date_path) %>%
   dplyr::rename(
@@ -354,9 +359,23 @@ safe_dates <- readxl::read_xlsx(safe_date_path) %>%
     end_doy     = `end_dt (julian)`
   )
 
-species_fallbacks <- safe_dates %>%
-  dplyr::filter(level == 1) %>%
+# Collapse selected levels to one window per species x region.
+safe_date_windows <- safe_dates %>%
+  dplyr::filter(level %in% safe_levels) %>%
   dplyr::filter(start_doy < 240) %>%
+  dplyr::group_by(sp_english, Biol_Region) %>%
+  dplyr::summarise(
+    start_doy = min(start_doy, na.rm = TRUE),
+    end_doy   = max(end_doy, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  dplyr::mutate(
+    start_doy = pmax(start_doy, min_safe_doy),
+    end_doy   = pmin(end_doy, max_safe_doy)
+  ) %>%
+  dplyr::filter(start_doy < end_doy)
+
+species_fallbacks <- safe_date_windows %>%
   dplyr::group_by(sp_english) %>%
   dplyr::summarise(
     species_latest_start_doy = max(start_doy, na.rm = TRUE),
@@ -364,9 +383,7 @@ species_fallbacks <- safe_dates %>%
     .groups = "drop"
   )
 
-region_medians <- safe_dates %>%
-  dplyr::filter(level == 1) %>%
-  dplyr::filter(start_doy < 240) %>%
+region_medians <- safe_date_windows %>%
   dplyr::group_by(Biol_Region) %>%
   dplyr::summarise(
     median_start_doy = median(start_doy, na.rm = TRUE),
@@ -374,25 +391,15 @@ region_medians <- safe_dates %>%
     .groups = "drop"
   )
 
-overall_median_start <- median(
-  safe_dates$start_doy[safe_dates$level == 1 & safe_dates$start_doy < 240],
-  na.rm = TRUE
-)
-
-overall_median_end <- median(
-  safe_dates$end_doy[safe_dates$level == 1 & safe_dates$start_doy < 240],
-  na.rm = TRUE
-)
+overall_median_start <- median(safe_date_windows$start_doy, na.rm = TRUE)
+overall_median_end   <- median(safe_date_windows$end_doy, na.rm = TRUE)
 
 all_sp_regions <- safe_dates %>%
   dplyr::distinct(sp_english, Biol_Region)
 
 safe_dates_breeding <- all_sp_regions %>%
   dplyr::left_join(
-    safe_dates %>%
-      dplyr::filter(level == 1) %>%
-      dplyr::filter(start_doy < 240) %>%
-      dplyr::select(sp_english, Biol_Region, start_doy, end_doy),
+    safe_date_windows,
     by = c("sp_english", "Biol_Region")
   ) %>%
   dplyr::left_join(species_fallbacks, by = "sp_english") %>%
@@ -409,11 +416,11 @@ safe_dates_breeding <- all_sp_regions %>%
       species_earliest_end_doy,
       median_end_doy,
       overall_median_end
-    )
+    ),
+    midpoint = (start_doy + end_doy) / 2
   ) %>%
-  dplyr::select(sp_english, Biol_Region, start_doy, end_doy) %>%
-  mutate(midpoint = (start_doy + end_doy) / 2) %>%
-  full_join(Biol_Regions_df)
+  dplyr::select(sp_english, Biol_Region, start_doy, end_doy, midpoint) %>%
+  dplyr::full_join(Biol_Regions_df, by = "Biol_Region")
 
 # ------------------------------------------------------------------------------
 # Classify surveys by safe-date status
@@ -534,41 +541,41 @@ saveRDS(
 # Save covariate raster stacks later use if desired
 # ------------------------------------------------------------------------------
 
-rast_dir  <- file.path(paths$data_clean, "spatial")
-rast_path_a2 <- file.path(rast_dir, "atlas2_cov_rasterstack.tif")
-rast_path_a3 <- file.path(rast_dir, "atlas3_cov_rasterstack.tif")
-
-figure_utils_path <- file.path(paths$functions, "figure_utils.R")
-source(figure_utils_path)
-
-r2 <- rasterize_sf(
-  grid_OBBA2,
-  covars_to_rasterize,
-  res = 1001,
-  metadata = c(description = c("Covariates at 1 km resolution"))
-)
-writeRaster(r2, filename = rast_path_a2, overwrite = TRUE)
-
-r3 <- rasterize_sf(
-  grid_OBBA3,
-  covars_to_rasterize,
-  res = 1001,
-  metadata = c(description = c("Covariates at 1 km resolution"))
-)
-writeRaster(r3, filename = rast_path_a3, overwrite = TRUE)
-
-dir.create(file.path(rast_dir,"A2_rasters"), recursive = TRUE, showWarnings = FALSE)
-terra::writeRaster(
-  r2,
-  filename = file.path(rast_dir,"A2_rasters", paste0(names(r2), ".tif")),
-  overwrite = TRUE
-)
-
-dir.create(file.path(rast_dir,"A3_rasters"), recursive = TRUE, showWarnings = FALSE)
-terra::writeRaster(
-  r3,
-  filename = file.path(rast_dir,"A3_rasters", paste0(names(r3), ".tif")),
-  overwrite = TRUE
-)
+# rast_dir  <- file.path(paths$data_clean, "spatial")
+# rast_path_a2 <- file.path(rast_dir, "atlas2_cov_rasterstack.tif")
+# rast_path_a3 <- file.path(rast_dir, "atlas3_cov_rasterstack.tif")
+# 
+# figure_utils_path <- file.path(paths$functions, "figure_utils.R")
+# source(figure_utils_path)
+# 
+# r2 <- rasterize_sf(
+#   grid_OBBA2,
+#   covars_to_rasterize,
+#   res = 1001,
+#   metadata = c(description = c("Covariates at 1 km resolution"))
+# )
+# writeRaster(r2, filename = rast_path_a2, overwrite = TRUE)
+# 
+# r3 <- rasterize_sf(
+#   grid_OBBA3,
+#   covars_to_rasterize,
+#   res = 1001,
+#   metadata = c(description = c("Covariates at 1 km resolution"))
+# )
+# writeRaster(r3, filename = rast_path_a3, overwrite = TRUE)
+# 
+# dir.create(file.path(rast_dir,"A2_rasters"), recursive = TRUE, showWarnings = FALSE)
+# terra::writeRaster(
+#   r2,
+#   filename = file.path(rast_dir,"A2_rasters", paste0(names(r2), ".tif")),
+#   overwrite = TRUE
+# )
+# 
+# dir.create(file.path(rast_dir,"A3_rasters"), recursive = TRUE, showWarnings = FALSE)
+# terra::writeRaster(
+#   r3,
+#   filename = file.path(rast_dir,"A3_rasters", paste0(names(r3), ".tif")),
+#   overwrite = TRUE
+# )
 
 message("06_filter_and_finalize_surveys.R complete")

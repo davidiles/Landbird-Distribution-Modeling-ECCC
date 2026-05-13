@@ -1,23 +1,6 @@
 # ============================================================
 # 05_extract_covariates.R
-#
-# Purpose:
-#   1) Compute covariates on the prediction grid for OBBA2 and OBBA3
-#      from processed rasters (EPSG:3978), summarizing native-resolution
-#      rasters onto the harmonized grid (step 05).
-#   2) Attach covariates to survey points by nearest grid centroid
-#      (OBBA2 surveys -> OBBA2 grid covs; OBBA3 surveys -> OBBA3 grid covs).
-#
-# Inputs:
-#   - data_clean/spatial/study_area.rds
-#   - data_clean/surveys/surveys_raw.rds
-#   - data_clean/surveys/count_matrix_raw.rds
-#   - data_clean/metadata/species_list.rds
-#   - data_clean/spatial/*.tif (from 04_*)
-#   - data_clean/spatial/prediction_grid.rds
-#
-# Outputs:
-#   - data_clean/birds/analysis_data_covariates.rds
+# Extracts covariate values for grid cells and survey locations
 # ============================================================
 
 rm(list = ls())
@@ -37,11 +20,7 @@ source(here::here("R", "00_config_paths.R"))
 # Load utilities
 # ------------------------------------------------------------
 
-spatial_utils_path <- file.path(paths$functions, "spatial_utils.R")
-covariate_processing_utils_path <- file.path(paths$functions, "covariate_processing_utils.R")
-
-source(spatial_utils_path)
-source(covariate_processing_utils_path)
+source(file.path(paths$functions, "covariate_processing_utils.R"))
 
 # Ensure output directory exists
 birds_dir <- file.path(paths$data_clean, "birds")

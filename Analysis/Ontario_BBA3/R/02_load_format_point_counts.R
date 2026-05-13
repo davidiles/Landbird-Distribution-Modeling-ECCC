@@ -40,28 +40,10 @@ source(here::here("R", "00_config_paths.R"))
 # ------------------------------------------------------------
 # Load utilities and study area
 # ------------------------------------------------------------
-spatial_utils_path <- file.path(paths$functions, "spatial_utils.R")
-survey_processing_utils_path <- file.path(paths$functions, "survey_processing_utils.R")
-
-source(spatial_utils_path)
-source(survey_processing_utils_path)
+source(file.path(paths$functions, "survey_processing_utils.R"))
 
 study_area <- readRDS(file.path(paths$data_clean, "spatial","study_area.rds"))
 crs_aea_km <- study_area$crs
-
-# ------------------------------------------------------------
-# Helper: build POSIXct datetime from date + fractional hours
-# ------------------------------------------------------------
-
-make_datetime_from_frac_hours <- function(date_ymd, frac_hours, tz = "UTC") {
-  # date_ymd: Date
-  # frac_hours: numeric, e.g., 13.5 means 13:30
-  stopifnot(inherits(date_ymd, "Date"))
-  
-  # Convert to seconds (avoid minute==60 edge cases)
-  secs <- round(frac_hours * 3600)
-  as.POSIXct(date_ymd, tz = tz) + secs
-}
 
 # ------------------------------------------------------------
 # Species list (NatureCounts canonical)
@@ -99,6 +81,8 @@ NC_OBBA3_PC_raw <- read.table(
     ),
     Project_Name = "OBBA3",
     Data_Source = "NatureCounts",
+    
+    # Custom function to infer survey type based on Comments in NatureCounts fields
     Survey_Type = infer_survey_type_OBBA3(
       Remarks, Remarks2, EffortMeasurement1, SurveyAreaIdentifier
     ),
@@ -174,7 +158,7 @@ NC_OBBA3_CL <- NC_OBBA3_CL %>%
 n1 = length(unique(NC_OBBA3_CL_raw$SamplingEventIdentifier ))
 n2 = length(unique(NC_OBBA3_CL$SamplingEventIdentifier ))
 
-n2/n1 # 14% of checklists retained
+n2/n1 # ~14% of checklists retained
 
 # ------------------------------------------------------------
 # Load and process Atlas 2 point counts
@@ -239,6 +223,8 @@ NC_long <- bind_rows(NC_OBBA3_PC, NC_OBBA2_PC) %>%
     Longitude = round(Longitude, 5),
     Survey_Duration_Minutes = round(DurationInHours * 60),
     Max_Distance_Metres = Inf,
+    
+    # Custom function to make survey ID
     survey_id = make_survey_id(Project_Name, Latitude, Longitude, Date_Time, Survey_Type)
   )
 
@@ -337,6 +323,7 @@ survey_info <- NC_long %>%
 # Construct survey × species count matrix
 # ------------------------------------------------------------
 
+# Custom function
 count_matrix <- build_count_matrix(
   NC_long,
   survey_id_col = "survey_id",
@@ -348,6 +335,7 @@ count_matrix <- build_count_matrix(
 # Time zone and hours since sunrise (can be slow)
 # ------------------------------------------------------------
 
+# Custom function
 survey_info <- add_hours_since_sunrise(survey_info)
 
 # ------------------------------------------------------------

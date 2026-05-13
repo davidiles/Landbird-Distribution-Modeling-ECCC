@@ -7,30 +7,22 @@ rm(list = ls())
 suppressPackageStartupMessages({
   library(sf)
   library(dplyr)
-  library(stringr)
-  library(purrr)
   library(ggplot2)
-  library(units)
-  library(igraph)
-  library(here)
-  library(RColorBrewer)
-  library(viridis)
-  library(tidyr)
-  library(ggrastr)
+  library(terra)
+  library(patchwork)
+  library(magick)
 })
 
 source(here::here("R", "00_config_paths.R"))
 
 # helper-functions
-# source(file.path(paths$functions, "inla_model_utils2.R"))
 source(file.path(paths$functions, "model_product_utils.R"))
-source(file.path(paths$functions, "model_assessment_utils.R"))
 
 # ------------------------------------------------------------
 # Config
 # ------------------------------------------------------------
 
-model_name <- "m1"
+model_name <- "m2"
 
 # File paths
 in_data  <- file.path(paths$data_clean, "birds", "data_ready_for_analysis.rds")
@@ -149,7 +141,7 @@ for (i in seq_len(length(pred_files))) {
   
   # ---- Atlas 2 relative abundance
   a2 <- grid2 %>% 
-    mutate(mu_mean = preds$OBBA2$OBBA2_q50,
+    mutate(mu_mean = preds$OBBA2_Corrected_for_Water$OBBA2_mean,
            CI_95_width = preds$OBBA2$OBBA2_upper - preds$OBBA2$OBBA2_lower)
   
   vars_to_rasterize <- c("mu_mean","CI_95_width")
@@ -169,7 +161,7 @@ for (i in seq_len(length(pred_files))) {
   
   # ---- Atlas 3 relative abundance
   a3 <- grid3 %>% 
-    mutate(mu_mean = preds$OBBA3$OBBA3_q50,
+    mutate(mu_mean = preds$OBBA3_Corrected_for_Water$OBBA3_mean,
            CI_95_width = preds$OBBA3$OBBA3_upper - preds$OBBA3$OBBA3_lower)
   
   vars_to_rasterize <- c("mu_mean","CI_95_width")
@@ -188,7 +180,7 @@ for (i in seq_len(length(pred_files))) {
   
   # ---- Change from Atlas 2 to Atlas 3
   chg_sf <- grid3 %>% 
-    mutate(chg_mean = preds$abs_change$abs_change_mean,
+    mutate(chg_mean = preds$abs_change_Corrected_for_Water$abs_change_mean,
            CI_95_width = preds$abs_change$abs_change_upper - preds$abs_change$abs_change_lower)
   
   vars_to_rasterize <- c("chg_mean","CI_95_width")
@@ -250,7 +242,7 @@ for (i in seq_len(length(pred_files))) {
   # ------------------------------------------------------------
   
   prov_change <- summarize_polygon_hex_draw_change(
-    hex_draws = preds$hex_draws,
+    hex_draws = preds$hex_draws_Corrected_for_Water,
     hex_grid = hex_grid,
     polygon = study_boundary,
     ci_level = 0.90
@@ -263,7 +255,7 @@ for (i in seq_len(length(pred_files))) {
   
   hex_change_sf <- summarize_hex_draw_change(
     hex_grid = hex_grid,
-    hex_draws = preds$hex_draws,
+    hex_draws = preds$hex_draws_Corrected_for_Water,
     ci_level = 0.90
   ) |>
     classify_min_supported_change()
@@ -276,30 +268,25 @@ for (i in seq_len(length(pred_files))) {
     ci_level = 0.90,
     zlim = rasters_prepared$zlim,
     water = water_to_plot,
-    water_fill = "white"
+    water_fill = "gray97"
   )
   
   # ------------------------------------------------------------
-  # Create "model assessment" maps
+  # Model Assessment Map Atlas 2
   # ------------------------------------------------------------
-  
-  # Average abundance predictions for model assessment figures
-  r3_clamped <- r3$mu_mean
-  r3_clamped[r3_clamped<rast_absent_limit] <- 0
   
   r2_clamped <- r2$mu_mean
   r2_clamped[r2_clamped<rast_absent_limit] <- 0
   
-  r_mean <- (r3_clamped + r2_clamped)/2
-  
-  dat_to_plot <- sp_dat$sp_dat %>%
+  A2_dat_to_plot <- sp_dat$sp_dat %>%
     filter(Survey_Type %in% c("Point_Count","ARU")) %>%
+    subset(Atlas == "OBBA2") %>%
     mutate(count_per_effort = count)
   
-  model_assessment_figures <- assess_region(
+  A2_assessment <- assess_region(
     region     = study_boundary,
-    sp_dat     = dat_to_plot,
-    rast       = r_mean,
+    sp_dat     = A2_dat_to_plot,
+    rast       = r2_clamped,
     n_hexagons = 2000,
     water      = NULL,  # Do not plot water at this scale
     rast_max_q = 0.99,
@@ -309,6 +296,30 @@ for (i in seq_len(length(pred_files))) {
     data_source  = ""
   )
   
+  # ------------------------------------------------------------
+  # Model Assessment Map Atlas 3
+  # ------------------------------------------------------------
+  
+  r3_clamped <- r3$mu_mean
+  r3_clamped[r3_clamped<rast_absent_limit] <- 0
+  
+  A3_dat_to_plot <- sp_dat$sp_dat %>%
+    filter(Survey_Type %in% c("Point_Count","ARU")) %>%
+    subset(Atlas == "OBBA3") %>%
+    mutate(count_per_effort = count)
+  
+  A3_assessment <- assess_region(
+    region     = study_boundary,
+    sp_dat     = A3_dat_to_plot,
+    rast       = r3_clamped,
+    n_hexagons = 2000,
+    water      = NULL,  # Do not plot water at this scale
+    rast_max_q = 0.99,
+    transform  = "identity",
+    title      = ,
+    model_source = "",
+    data_source  = ""
+  )
   
   # ------------------------------------------------------------
   # Save outputs as a multi-page PDF for each species
@@ -316,8 +327,11 @@ for (i in seq_len(length(pred_files))) {
   
   page1_png <- file.path(fig_dir, "PNGs",paste0(sp_file, "_page1.png"))
   page2_png <- file.path(fig_dir, "PNGs",paste0(sp_file, "_page2.png"))
+  page3_png <- file.path(fig_dir, "PNGs",paste0(sp_file, "_page3.png"))
+  
   pdf_path  <- file.path(fig_dir, paste0(sp_file, ".pdf"))
   
+  # ---- Relative Abundance and Change Maps
   page1 <-
     Relabund_Map_Atlas2 +
     Relabund_Map_Atlas3 +
@@ -338,8 +352,8 @@ for (i in seq_len(length(pred_files))) {
   print(page1)
   grDevices::dev.off()
   
-  # Model Assessment figures:
-  page2 <- model_assessment_figures
+  # ---- Atlas 2 assessment figures
+  page2 <- A2_assessment
   
   ragg::agg_png(
     filename = page2_png,
@@ -352,107 +366,23 @@ for (i in seq_len(length(pred_files))) {
   print(page2)
   grDevices::dev.off()
   
-  imgs <- magick::image_read(c(page1_png, page2_png))
+  # ---- Atlas 3 assessment figures
+  page3 <- A3_assessment
+  
+  ragg::agg_png(
+    filename = page3_png,
+    width = 24,
+    height = 8,
+    units = "in",
+    res = 300,
+    background = "white"
+  )
+  print(page3)
+  grDevices::dev.off()
+  
+  # ---- Combine into multi-page PDF
+  imgs <- magick::image_read(c(page1_png, page2_png, page3_png))
   
   magick::image_write(imgs, path = pdf_path, format = "pdf")
   
 }
-
-# # ------------------------------------------------------------
-# # Generate figures
-# # ------------------------------------------------------------
-# 
-# for (i in seq_len(length(pred_files))) {
-#   
-#   preds <- readRDS(pred_files[i])
-#   
-#   # ----------------------------------------------------------
-#   # Basic identifiers
-#   # ----------------------------------------------------------
-#   sp_english <- preds$sp_name
-#   sp_file <- sp_english |>
-#     stringr::str_to_lower() |>
-#     stringr::str_replace_all("[^a-z0-9]+", "_") |>
-#     stringr::str_replace_all("^_|_$", "")
-#   
-#   sp_code <- dat$species_to_model |>
-#     dplyr::filter(english_name == sp_english) |>
-#     dplyr::pull(species_id)
-#   
-#   rast_path_a2 <- file.path(rast_dir, paste0(sp_file, "_a2.tif"))
-#   rast_path_a3 <- file.path(rast_dir, paste0(sp_file, "_a3.tif"))
-#   rast_path_chg     <- file.path(rast_dir, paste0(sp_file, "_chg.tif"))
-#   fig_path <- file.path(fig_dir,paste0(sp_file,".png"))
-#   
-#   r2 <- rast(rast_path_a2)
-#   r3 <- rast(rast_path_a3)
-#   rchg <- rast(rast_path_chg)
-#   
-#   
-#   # if (file.exists(fig_path)) {
-#   #   message("Skipping ", sp_english, ": figures already exist for this species")
-#   #   next
-#   # }
-#   
-#   message("Generating figures for ",sp_english)
-#   
-#   # ----------------------------------------------------------
-#   # Generate simple raster plots
-#   # ----------------------------------------------------------
-#   
-#   zmax <- c(values(r2$mu_mean), values(r3$mu_mean)) %>%quantile(0.99, na.rm = TRUE)
-#   
-#   png(fig_path, width = 12, height = 4, units = "in", res = 600)
-#   par(mfrow = c(1, 3))
-#   par(mar = c(0, 0, 0, 0))
-#   
-#   # -------------------------
-#   # abundance maps
-#   # -------------------------
-#   
-#   # cap values at zmax for plotting
-#   r2_plot <- clamp(r2$mu_mean, lower = 0, upper = zmax)
-#   r3_plot <- clamp(r3$mu_mean, lower = 0, upper = zmax)
-#   
-#   # continuous-looking palette
-#   colramp_abund <- colorRampPalette(c("gray98", RColorBrewer::brewer.pal(7, "Greens")))(200)
-#   
-#   plot(
-#     r2_plot,
-#     col = colramp_abund,
-#     colNA = "gray95",
-#     main = paste0(sp_english, " - Atlas 2")
-#   )
-#   plot(vect(study_boundary), add = TRUE)
-#   
-#   plot(
-#     r3_plot,
-#     col = colramp_abund,
-#     colNA = "gray95",
-#     main = paste0(sp_english, " - Atlas 3")
-#   )
-#   plot(vect(study_boundary), add = TRUE)
-#   
-#   # -------------------------
-#   # change map
-#   # -------------------------
-#   
-#   # cap change between -zmax and +zmax
-#   rchg_plot <- clamp(rchg$chg_mean, lower = -zmax, upper = zmax)
-#   
-#   cols_chg_base <- (RColorBrewer::brewer.pal(11, "RdBu"))
-#   cols_chg_base[6] <- "white"
-#   colramp_chg <- colorRampPalette(cols_chg_base)(201)
-#   
-#   plot(
-#     rchg_plot,
-#     col = colramp_chg,
-#     colNA = "gray95",
-#     main = paste0(sp_english, " - Change"),
-#     range = c(-zmax,zmax)
-#   )
-#   plot(vect(study_boundary), add = TRUE)
-#   
-#   dev.off()
-#   
-# }

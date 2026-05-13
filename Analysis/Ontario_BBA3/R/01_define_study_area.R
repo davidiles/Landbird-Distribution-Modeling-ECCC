@@ -33,9 +33,7 @@ source(here::here("R", "00_config_paths.R"))
 # Load spatial utility functions
 # ------------------------------------------------------------
 
-spatial_utils_path <- file.path(paths$functions, "spatial_utils.R")
-source(spatial_utils_path)
-
+source(file.path(paths$functions, "spatial_utils.R"))
 crs_aea_km <- get_aea_km_crs()
 
 # ------------------------------------------------------------

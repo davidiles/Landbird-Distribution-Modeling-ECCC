@@ -23,7 +23,6 @@ suppressPackageStartupMessages({
 })
 
 source(here::here("R", "00_config_paths.R"))
-source(file.path(paths$functions, "spatial_utils.R"))
 source(file.path(paths$functions, "covariate_processing_utils.R"))
 
 out_spatial_dir <- file.path(paths$data_clean, "spatial")
@@ -73,40 +72,7 @@ template_30m <- terra::rast(
 message(sprintf("Template raster: %d rows x %d cols  (%.0f m resolution)",
                 nrow(template_30m), ncol(template_30m), RES_KM * 1000))
 
-# ------------------------------------------------------------
-# Helper: simplify → buffer → rasterize → save GeoTiff
-# ------------------------------------------------------------
-# sf_obj        : sf object (lines or polygons)
-# buffer_dist_km: buffer radius in km (matches CRS units)
-# out_path      : full .tif path, or NULL to skip writing
-# label         : used in progress messages
-# Returns        : SpatRaster (INT1U, 0/1)
 
-buf_rasterize_save <- function(sf_obj, buffer_dist_km, out_path, label,
-                               template     = template_30m,
-                               simplify_tol = SIMPLIFY_KM) {
-  
-  message(sprintf("[%s] %d features | simplify %.0f m | buffer %.0f m | rasterizing...",
-                  label, nrow(sf_obj), simplify_tol * 1000, buffer_dist_km * 1000))
-  
-  v <- sf_obj %>%
-    sf::st_simplify(preserveTopology = TRUE, dTolerance = simplify_tol) %>%
-    sf::st_make_valid() %>%
-    sf::st_buffer(dist = buffer_dist_km) %>%
-    sf::st_make_valid() %>%
-    terra::vect()
-  
-  r <- terra::rasterize(v, template, field = 1L,
-                        background = 0L, touches = TRUE)
-  
-  if (!is.null(out_path)) {
-    terra::writeRaster(r, out_path, datatype = "INT1U",
-                       overwrite = TRUE, gdal = GTIFF_OPTS)
-    message(sprintf("[%s] Saved -> %s", label, basename(out_path)))
-  }
-  
-  invisible(r)
-}
 
 # ------------------------------------------------------------
 # Roads  (buffer = 125 m)

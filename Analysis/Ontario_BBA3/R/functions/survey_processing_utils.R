@@ -1,206 +1,21 @@
-# Create numeric survey_id for each survey
+# ============================================================
+# survey_processing_utils.R
+#
+# Utility functions for standardizing survey metadata, building count tables,
+# adding time covariates, thinning duplicate surveys, and creating spatial
+# aggregation lookups.
+# ============================================================
 
-#' Construct a stable survey identifier
-#'
-#' Builds a deterministic ID string from key survey attributes (atlas,
-#' location, date/time, survey type, and optional identifiers). This is used
-#' to:
-#' - link records across tables,
-#' - deduplicate repeated entries, and
-#' - keep joins stable across reruns.
-#'
-#' @param project_name Atlas/project label (e.g., "OBBA2", "OBBA3").
-#' @param lat Latitude.
-#' @param lon Longitude.
-#' @param date_time Survey datetime (character/POSIXct).
-#' @param survey_type Survey type label.
-#' @param square_id Optional atlas square identifier.
-#' @param point_id Optional point identifier within square.
-#' @return Character vector of survey IDs.
-make_survey_id <- function(project_name, lat, lon, date_time, survey_type,
-                           digits = 6) {
-  
-  lat_r <- round(as.numeric(lat), digits)
-  lon_r <- round(as.numeric(lon), digits)
-  
-  paste(
-    project_name,
-    lat_r,
-    lon_r,
-    date_time,
-    survey_type,
-    sep = "_"
-  )
-}
-
-# Build a matrix (n_survey x n_species) of counts of individuals from each species for each survey
-
-#' Build an observation-level count matrix from long-format detections
-#'
-#' Converts detection records (one row per species observation) into a
-#' matrix-like wide representation with one row per survey and one column
-#' per species, plus survey metadata. This is a common intermediate format
-#' for modelling and for computing per-survey summaries.
-#'
-#' @param det_long Long-format detection table.
-#' @param species_col Column name with species identifier.
-#' @param count_col Column name with counts.
-#' @param survey_id_col Column name identifying surveys.
-#' @param keep_survey_cols Survey-level metadata columns to keep.
-#' @return A list with count matrix and metadata (see function body).
-build_count_matrix <- function(
-    long_data,
-    survey_id_col,
-    species_col,
-    count_col
-) {
-  sp_ids <- sort(unique(long_data[[species_col]]))
-  survey_ids <- sort(unique(long_data[[survey_id_col]]))
-  
-  mat <- matrix(
-    0,
-    nrow = length(survey_ids),
-    ncol = length(sp_ids),
-    dimnames = list(survey_ids, sp_ids)
-  )
-  
-  summary <- long_data %>%
-    group_by(
-      .data[[survey_id_col]],
-      .data[[species_col]]
-    ) %>%
-    summarise(
-      total_count = sum(.data[[count_col]]),
-      .groups = "drop"
-    )
-  
-  row_idx <- match(summary[[survey_id_col]], rownames(mat))
-  col_idx <- match(summary[[species_col]], colnames(mat))
-  valid <- !is.na(row_idx) & !is.na(col_idx)
-  
-  mat[cbind(row_idx[valid], col_idx[valid])] <- summary$total_count[valid]
-  
-  mat[, colSums(mat) > 0, drop = FALSE]
-}
-
-# Calculate hours since sunrise for each survey, based on date_time and geographic location
-
-#' Add hours-since-sunrise (HSS) covariate to surveys
-#'
-#' Computes the time difference between the survey start and local sunrise
-#' on the same date, producing a key detectability covariate used in the
-#' modelling scripts. The function also typically standardizes datetime
-#' parsing and may add auxiliary time fields.
-#'
-#' @param surveys_sf Survey `sf` object with date/time and coordinates.
-#' @param coord_digits Digits used to round coordinates when needed (for joins/caching).
-#' @return `surveys_sf` with an added `Hours_Since_Sunrise` (or similar) column.
-add_hours_since_sunrise <- function(surveys_sf, coord_digits = 6) {
-  stopifnot(inherits(surveys_sf, "sf"))
-  stopifnot("Date_Time" %in% names(surveys_sf))
-  stopifnot(all(c("Latitude", "Longitude") %in% names(surveys_sf)))
-  
-  # Work in WGS84 for tz lookup / suncalc
-  wgs84 <- sf::st_transform(surveys_sf, 4326)
-  tz <- lutz::tz_lookup(wgs84, method = "fast")
-  
-  df <- surveys_sf %>%
-    sf::st_drop_geometry() %>%
-    mutate(
-      timezone = tz,
-      date = as.Date(Date_Time),
-      # Round coords to stabilize joins (optional but recommended)
-      lat_key = round(as.numeric(Latitude), coord_digits),
-      lon_key = round(as.numeric(Longitude), coord_digits)
-    )
-  
-  # Build unique query table (stable keys)
-  unique_q <- df %>%
-    distinct(lat_key, lon_key, date, timezone)
-  
-  # Compute sunrise for each unique combination
-  sunrise <- purrr::pmap_dfr(unique_q, function(lat_key, lon_key, date, timezone) {
-    suncalc::getSunlightTimes(
-      date = date,
-      lat  = lat_key,
-      lon  = lon_key,
-      keep = "sunrise",
-      tz   = timezone
-    ) %>%
-      transmute(
-        lat_key = lat_key,
-        lon_key = lon_key,
-        date = date,
-        timezone = timezone,
-        sunrise = sunrise
-      )
-  })
-  
-  # Enforce uniqueness to prevent join fan-out
-  sunrise <- sunrise %>%
-    distinct(lat_key, lon_key, date, timezone, .keep_all = TRUE)
-  
-  # Join back and compute hours since sunrise
-  df2 <- df %>%
-    left_join(sunrise, by = c("lat_key", "lon_key", "date", "timezone")) %>%
-    mutate(
-      Hours_Since_Sunrise = as.numeric(difftime(
-        lubridate::force_tz(Date_Time, timezone),
-        lubridate::force_tz(sunrise, timezone),
-        units = "hours"
-      ))
-    )
-  
-  # Assert row count unchanged
-  if (nrow(df2) != nrow(df)) {
-    stop("Row count changed during sunrise join; sunrise keys are not unique.")
-  }
-  
-  surveys_sf$Hours_Since_Sunrise <- df2$Hours_Since_Sunrise
-  surveys_sf$timezone <- df2$timezone
-  surveys_sf
-}
-
-#' Infer OBBA3 survey type from metadata fields
-#'
-#' OBBA3 records can come from ARUs, point counts, canoe routes, etc.
-#' This helper parses relevant text/fields and returns a standardized
-#' survey type label used downstream (e.g., "ARU" vs "Point_Count").
-#'
-#' @param Remarks Free-text remarks field.
-#' @param Remarks2 Secondary remarks field.
-#' @param EffortMeasurement1 Effort measurement field (often encodes protocol).
-#' @param SurveyAreaIdentifier Field that can encode ARU deployment context.
-#' @return Character vector of inferred survey types.
+# Infer standardized OBBA3 survey type labels from metadata and free-text fields.
 infer_survey_type_OBBA3 <- function(Remarks, Remarks2, EffortMeasurement1, SurveyAreaIdentifier) {
-  # Returns one of: "ARU", "Point_Count", "Special", "SWIFT"
-  # ARU keywords anywhere override everything else.
-  # Encoding-safe: repairs invalid multibyte strings before tolower().
   
-  #' Coerce to character safely
-  #'
-  #' Small helper to ensure fields used in string logic are character vectors.
-  #'
-  #' @param x Input vector.
-  #' @return Character vector.
   to_chr <- function(x) {
     x <- as.character(x)
     x[is.na(x)] <- ""
     x
   }
   
-  # Fix/normalize encoding (replace invalid bytes rather than erroring)
-
-  #' Fix common text encoding issues in imported data
-  #'
-  #' Handles invalid UTF-8 sequences and common Windows-1252 artifacts so
-  #' string matching and CSV writing behave predictably.
-  #'
-  #' @param x Character vector.
-  #' @return Cleaned character vector.
   fix_enc <- function(x) {
-    # Try to convert to UTF-8; any invalid sequences become ""
-    # If you prefer to keep something, you can set sub = "?" instead of ""
     iconv(x, from = "", to = "UTF-8", sub = "")
   }
   
@@ -240,38 +55,145 @@ infer_survey_type_OBBA3 <- function(Remarks, Remarks2, EffortMeasurement1, Surve
   out[em1_trim %in% c("IN_PERSON")]              <- "Point_Count"
   out[em1_trim %in% c("ARU_SM4", "ARU_UNKNOWN")] <- "ARU"
   
-  # Override by keyword scan
   out[is_aru] <- "ARU"
   
   out
 }
 
-#' Convert a count matrix into a tidy (long) counts table
-#'
-#' Takes the wide count matrix and returns a long table with one row per
-#' (survey × species) non-zero entry (or all entries, depending on the
-#' implementation). Useful for joining predictions, summarizing totals,
-#' and plotting.
-#'
-#' @param count_matrix Wide matrix/data.frame of counts.
-#' @param obs_idx_name Name of the observation index column to create/keep.
-#' @return A tibble in long format.
+# Convert a Date plus fractional hour value into a POSIXct datetime.
+make_datetime_from_frac_hours <- function(date_ymd, frac_hours, tz = "UTC") {
+  stopifnot(inherits(date_ymd, "Date"))
+  
+  secs <- round(frac_hours * 3600)
+  as.POSIXct(date_ymd, tz = tz) + secs
+}
+
+# Create a deterministic survey ID from project, location, datetime, and survey type.
+make_survey_id <- function(project_name, lat, lon, date_time, survey_type,
+                           digits = 6) {
+  
+  lat_r <- round(as.numeric(lat), digits)
+  lon_r <- round(as.numeric(lon), digits)
+  
+  paste(
+    project_name,
+    lat_r,
+    lon_r,
+    date_time,
+    survey_type,
+    sep = "_"
+  )
+}
+
+# Convert long-format detections into a survey-by-species count matrix.
+build_count_matrix <- function(
+    long_data,
+    survey_id_col,
+    species_col,
+    count_col
+) {
+  sp_ids <- sort(unique(long_data[[species_col]]))
+  survey_ids <- sort(unique(long_data[[survey_id_col]]))
+  
+  mat <- matrix(
+    0,
+    nrow = length(survey_ids),
+    ncol = length(sp_ids),
+    dimnames = list(survey_ids, sp_ids)
+  )
+  
+  summary <- long_data %>%
+    group_by(
+      .data[[survey_id_col]],
+      .data[[species_col]]
+    ) %>%
+    summarise(
+      total_count = sum(.data[[count_col]]),
+      .groups = "drop"
+    )
+  
+  row_idx <- match(summary[[survey_id_col]], rownames(mat))
+  col_idx <- match(summary[[species_col]], colnames(mat))
+  valid <- !is.na(row_idx) & !is.na(col_idx)
+  
+  mat[cbind(row_idx[valid], col_idx[valid])] <- summary$total_count[valid]
+  
+  mat[, colSums(mat) > 0, drop = FALSE]
+}
+
+# Convert a count matrix to a tibble with a stable observation index.
 as_counts_tbl <- function(count_matrix, obs_idx_name = "obs_idx") {
-  # count_matrix is expected to have rows aligned to all_surveys_with_covs
-  # Convert to tibble and add obs_idx so we can subset by obs_idx safely.
   if (inherits(count_matrix, "matrix")) count_matrix <- as.data.frame(count_matrix)
   counts <- as_tibble(count_matrix)
   counts <- counts %>% mutate(!!obs_idx_name := row_number(), .before = 1)
   counts
 }
 
-# For selecting a single survey per site
+# Add timezone and hours-since-sunrise fields to survey records.
+add_hours_since_sunrise <- function(surveys_sf, coord_digits = 6) {
+  stopifnot(inherits(surveys_sf, "sf"))
+  stopifnot("Date_Time" %in% names(surveys_sf))
+  stopifnot(all(c("Latitude", "Longitude") %in% names(surveys_sf)))
+  
+  wgs84 <- sf::st_transform(surveys_sf, 4326)
+  tz <- lutz::tz_lookup(wgs84, method = "fast")
+  
+  df <- surveys_sf %>%
+    sf::st_drop_geometry() %>%
+    mutate(
+      timezone = tz,
+      date = as.Date(Date_Time),
+      lat_key = round(as.numeric(Latitude), coord_digits),
+      lon_key = round(as.numeric(Longitude), coord_digits)
+    )
+  
+  unique_q <- df %>%
+    distinct(lat_key, lon_key, date, timezone)
+  
+  sunrise <- purrr::pmap_dfr(unique_q, function(lat_key, lon_key, date, timezone) {
+    suncalc::getSunlightTimes(
+      date = date,
+      lat  = lat_key,
+      lon  = lon_key,
+      keep = "sunrise",
+      tz   = timezone
+    ) %>%
+      transmute(
+        lat_key = lat_key,
+        lon_key = lon_key,
+        date = date,
+        timezone = timezone,
+        sunrise = sunrise
+      )
+  })
+  
+  sunrise <- sunrise %>%
+    distinct(lat_key, lon_key, date, timezone, .keep_all = TRUE)
+  
+  df2 <- df %>%
+    left_join(sunrise, by = c("lat_key", "lon_key", "date", "timezone")) %>%
+    mutate(
+      Hours_Since_Sunrise = as.numeric(difftime(
+        lubridate::force_tz(Date_Time, timezone),
+        lubridate::force_tz(sunrise, timezone),
+        units = "hours"
+      ))
+    )
+  
+  if (nrow(df2) != nrow(df)) {
+    stop("Row count changed during sunrise join; sunrise keys are not unique.")
+  }
+  
+  surveys_sf$Hours_Since_Sunrise <- df2$Hours_Since_Sunrise
+  surveys_sf$timezone <- df2$timezone
+  surveys_sf
+}
 
+# Select one survey per rounded location-year, optionally closest to a target day-of-year.
 dedupe_by_location <- function(surveys_sf, digits = 5, target_doy = NULL, date_col = "date") {
   
   xy <- st_coordinates(surveys_sf)
   
-  # Compute day of year for each survey
   surveys_sf <- surveys_sf %>%
     mutate(
       .x     = round(xy[, 1], digits = digits),
@@ -280,7 +202,6 @@ dedupe_by_location <- function(surveys_sf, digits = 5, target_doy = NULL, date_c
       .doy   = lubridate::yday(.data[[date_col]])
     )
   
-  # Determine selection strategy
   if (!is.null(target_doy)) {
     surveys_sf <- surveys_sf %>%
       mutate(.doy_dist = abs(.doy - target_doy))
@@ -300,48 +221,68 @@ dedupe_by_location <- function(surveys_sf, digits = 5, target_doy = NULL, date_c
     select(-starts_with("."))
 }
 
-# Standardizing covariates
+# Create a hexagon grid over the study boundary and keep overlapping cells.
+make_hex_grid <- function(study_boundary, width_km = 25, seed = 123) {
+  
+  set.seed(seed)
+  
+  hex <- sf::st_make_grid(
+    study_boundary,
+    cellsize = width_km ,
+    square = FALSE
+  )
+  
+  hex_sf <- sf::st_sf(
+    hex_id = seq_along(hex),
+    geometry = hex
+  )
+  
+  hex_sf <- hex_sf[sf::st_intersects(hex_sf, study_boundary, sparse = FALSE), , drop = FALSE]
+  
+  hex_sf
+}
 
-#' Standardize (z-score) covariates using grid statistics
-#'
-#' For comparability between Atlas 2 and 3, this helper standardizes a set
-#' of covariates using reference means/SDs computed from the prediction
-#' grids (grid2/grid3). This avoids differences caused purely by different
-#' covariate scaling choices.
-#'
-#' @param surveys_sf Survey data with extracted covariates.
-#' @param grid2 Prediction grid for Atlas 2.
-#' @param grid3 Prediction grid for Atlas 3.
-#' @param covars_for_stats Covariates used to compute mean/SD.
-#' @param covars_to_standardize Covariates to z-score.
-#' @return Updated `surveys_sf` with standardized covariate columns.
-standardize_covars <- function(surveys_sf, grid2, grid3, covars_for_stats, covars_to_standardize) {
-  present_stats <- intersect(covars_for_stats, names(surveys_sf))
-  present_std   <- intersect(covars_to_standardize, names(surveys_sf))
+# Build a reusable pixel-to-polygon lookup for posterior aggregation.
+build_pixel_polygon_index <- function(grid_sf,
+                                      polygons_sf,
+                                      poly_id_col,
+                                      join = c("within", "intersects")) {
+  join <- match.arg(join)
   
-  if (length(present_std) == 0) {
-    return(list(surveys = surveys_sf, grid2 = grid2, grid3 = grid3, stats = NULL))
+  stopifnot(inherits(grid_sf, "sf"))
+  stopifnot(inherits(polygons_sf, "sf"))
+  stopifnot(poly_id_col %in% names(polygons_sf))
+  
+  if (sf::st_crs(grid_sf) != sf::st_crs(polygons_sf)) {
+    polygons_sf <- sf::st_transform(polygons_sf, sf::st_crs(grid_sf))
   }
   
-  stats <- surveys_sf %>%
-    st_drop_geometry() %>%
-    select(all_of(present_stats)) %>%
-    summarise(across(
-      everything(),
-      list(mean = \(x) mean(x, na.rm = TRUE),
-           sd   = \(x) sd(x, na.rm = TRUE))
-    ))
+  polygons_sf <- polygons_sf[sf::st_intersects(polygons_sf, sf::st_union(sf::st_geometry(grid_sf)),
+                                               sparse = FALSE), , drop = FALSE]
   
-  for (col in present_std) {
-    mu <- stats[[paste0(col, "_mean")]]
-    sd <- stats[[paste0(col, "_sd")]]
-    
-    if (is.na(sd) || sd == 0) next
-    
-    surveys_sf[[col]] <- (surveys_sf[[col]] - mu) / sd
-    if (col %in% names(grid2)) grid2[[col]] <- (grid2[[col]] - mu) / sd
-    if (col %in% names(grid3)) grid3[[col]] <- (grid3[[col]] - mu) / sd
-  }
+  pix_sf <- sf::st_sf(pixel_id = seq_len(nrow(grid_sf)),
+                      geometry = sf::st_geometry(grid_sf))
   
-  list(surveys = surveys_sf, grid2 = grid2, grid3 = grid3, stats = stats)
+  join_fun <- switch(
+    join,
+    within     = sf::st_within,
+    intersects = sf::st_intersects
+  )
+  
+  pix_joined <- sf::st_join(
+    pix_sf,
+    polygons_sf[, poly_id_col, drop = FALSE],
+    join = join_fun,
+    left = TRUE
+  )
+  
+  pix_poly_id <- pix_joined[[poly_id_col]]
+  poly_ids <- sort(unique(pix_poly_id[!is.na(pix_poly_id)]))
+  
+  list(
+    pix_poly_id = pix_poly_id,
+    poly_ids = poly_ids,
+    polygons_sf = polygons_sf,
+    crs = sf::st_crs(grid_sf)
+  )
 }

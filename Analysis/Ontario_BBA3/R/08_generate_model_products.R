@@ -28,6 +28,7 @@ suppressPackageStartupMessages({
   library(terra)
   library(patchwork)
   library(magick)
+  library(viridis)
 })
 
 source(here::here("R", "00_config_paths.R"))
@@ -223,37 +224,50 @@ for (i in seq_along(pred_files)) {
   # Relative abundance maps
   # ----------------------------------------------------------
   
-  rast_absent_limit <- 1 / 150
+  # Assume the species is effectively absent if model predicts expected count less than 1 per 150 point counts
+  relabund_absent_limit <- 1 / 150
   
-  rasters_prepared <- prepare_relative_abundance_rasters(
+  rasters_relabund_prepared <- prepare_relative_abundance_rasters(
     Atlas2 = r2,
     Atlas3 = r3,
-    rast_absent_limit = rast_absent_limit,
+    rast_absent_limit = relabund_absent_limit,
     rast_max_quantile = 0.99
   )
   
-  Relabund_Map_Atlas2 <- make_relabund_map(
+  
+  colpal_relabund <- grDevices::colorRampPalette(c(
+    "#FBF7E2", "#FCF8D0", "#EEF7C2", "#CEF2B0",
+    "#94E5A0", "#51C987", "#18A065", "#008C59",
+    "#007F53", "#006344"
+  ))(100)
+  
+  
+  Relabund_Map_Atlas2 <- make_map(
     species_name = sp_english,
-    atlas_label = "Atlas 2",
-    rast = rasters_prepared$rasters$Atlas2,
+    subtitle = "Relative Abundance - Atlas 2",
+    legend_title = "Expected count\nper 5-min\npoint count",
+    rast = rasters_relabund_prepared$rasters$Atlas2,
     region = study_boundary,
     water = water_to_plot,
+    colpal = colpal_relabund,
     water_fill = "white",
-    transform = "identity",
-    zlim = rasters_prepared$zlim,
-    zbreaks = rasters_prepared$zbreaks
+    transform = "sqrt",
+    zlim = rasters_relabund_prepared$zlim,
+    zbreaks = rasters_relabund_prepared$zbreaks
   )
   
-  Relabund_Map_Atlas3 <- make_relabund_map(
+  Relabund_Map_Atlas3 <- make_map(
     species_name = sp_english,
-    atlas_label = "Atlas 3",
-    rast = rasters_prepared$rasters$Atlas3,
+    subtitle = "Relative Abundance - Atlas 3",
+    legend_title = "Expected count\nper 5-min\npoint count",
+    rast = rasters_relabund_prepared$rasters$Atlas3,
     region = study_boundary,
     water = water_to_plot,
+    colpal = colpal_relabund,
     water_fill = "white",
-    transform = "identity",
-    zlim = rasters_prepared$zlim,
-    zbreaks = rasters_prepared$zbreaks
+    transform = "sqrt",
+    zlim = rasters_relabund_prepared$zlim,
+    zbreaks = rasters_relabund_prepared$zbreaks
   )
   
   # ----------------------------------------------------------
@@ -285,9 +299,55 @@ for (i in seq_along(pred_files)) {
     region = study_boundary,
     prov_change = prov_change,
     ci_level = 0.90,
-    zlim = rasters_prepared$zlim,
+    zlim = rasters_relabund_prepared$zlim,
     water = water_to_plot,
     water_fill = "gray97"
+  )
+  
+  # ----------------------------------------------------------
+  # PObs Maps
+  # ----------------------------------------------------------
+  
+  pobs2 <- 1-exp(-r2)
+  pobs3 <- 1-exp(-r2)
+  
+  pobs_absent_limit <- 1/250
+  
+  rasters_pobs_prepared <- prepare_relative_abundance_rasters(
+    Atlas2 = pobs2,
+    Atlas3 = pobs3,
+    rast_absent_limit = pobs_absent_limit,
+    rast_max_quantile = 0.99
+  )
+  
+  colpal_pobs <- viridis::mako(100, direction = -1) 
+  
+  pobs_Map_Atlas2 <- make_map(
+    species_name = sp_english,
+    subtitle = "Probability of Observation - Atlas 2",
+    legend_title = "P(Obs)\nper 5-min\npoint count",
+    rast = rasters_pobs_prepared$rasters$Atlas2,
+    region = study_boundary,
+    water = water_to_plot,
+    colpal = colpal_pobs,
+    water_fill = "white",
+    transform = "identity",
+    zlim = c(0,1),
+    zbreaks = rasters_pobs_prepared$zbreaks
+  )
+  
+  pobs_Map_Atlas3 <- make_map(
+    species_name = sp_english,
+    subtitle = "Probability of Observation - Atlas 3",
+    legend_title = "P(Obs)\nper 5-min\npoint count",
+    rast = rasters_pobs_prepared$rasters$Atlas3,
+    region = study_boundary,
+    water = water_to_plot,
+    colpal = colpal_pobs,
+    water_fill = "white",
+    transform = "identity",
+    zlim = c(0,1),
+    zbreaks = rasters_pobs_prepared$zbreaks
   )
   
   # ----------------------------------------------------------
@@ -295,7 +355,7 @@ for (i in seq_along(pred_files)) {
   # ----------------------------------------------------------
   
   r2_clamped <- r2$mu_mean
-  r2_clamped[r2_clamped < rast_absent_limit] <- 0
+  r2_clamped[r2_clamped < relabund_absent_limit] <- 0
   
   A2_dat_to_plot <- sp_dat$sp_dat %>%
     dplyr::filter(Survey_Type %in% c("Point_Count", "ARU"), Atlas == "OBBA2") %>%
@@ -315,7 +375,7 @@ for (i in seq_along(pred_files)) {
   )
   
   r3_clamped <- r3$mu_mean
-  r3_clamped[r3_clamped < rast_absent_limit] <- 0
+  r3_clamped[r3_clamped < relabund_absent_limit] <- 0
   
   A3_dat_to_plot <- sp_dat$sp_dat %>%
     dplyr::filter(Survey_Type %in% c("Point_Count", "ARU"), Atlas == "OBBA3") %>%
@@ -341,8 +401,10 @@ for (i in seq_along(pred_files)) {
   page1_png <- file.path(png_dir, paste0(sp_file, "_page1.png"))
   page2_png <- file.path(png_dir, paste0(sp_file, "_page2.png"))
   page3_png <- file.path(png_dir, paste0(sp_file, "_page3.png"))
+  page4_png <- file.path(png_dir, paste0(sp_file, "_page4.png"))
   pdf_path  <- file.path(fig_dir, paste0(sp_file, ".pdf"))
   
+  # --- Page 1: relative abundance and change maps
   page1 <-
     Relabund_Map_Atlas2 +
     Relabund_Map_Atlas3 +
@@ -360,8 +422,26 @@ for (i in seq_along(pred_files)) {
   print(page1)
   grDevices::dev.off()
   
+  # --- Page 2: PObs maps
+  page2 <-
+    pobs_Map_Atlas2 +
+    pobs_Map_Atlas3 +
+    patchwork::plot_layout(ncol = 2, widths = c(1, 1))
+  
   ragg::agg_png(
     filename = page2_png,
+    width = 24,
+    height = 8,
+    units = "in",
+    res = 300,
+    background = "white"
+  )
+  print(page2)
+  grDevices::dev.off()
+  
+  # --- Page 3: Model assessment figures for Atlas 2
+  ragg::agg_png(
+    filename = page3_png,
     width = 24,
     height = 8,
     units = "in",
@@ -371,8 +451,9 @@ for (i in seq_along(pred_files)) {
   print(A2_assessment$plot_combined)
   grDevices::dev.off()
   
+  # --- Page 4: Model assessment figures for Atlas 3
   ragg::agg_png(
-    filename = page3_png,
+    filename = page4_png,
     width = 24,
     height = 8,
     units = "in",
@@ -382,7 +463,7 @@ for (i in seq_along(pred_files)) {
   print(A3_assessment$plot_combined)
   grDevices::dev.off()
   
-  imgs <- magick::image_read(c(page1_png, page2_png, page3_png))
+  imgs <- magick::image_read(c(page1_png, page2_png, page3_png, page4_png))
   magick::image_write(imgs, path = pdf_path, format = "pdf")
 }
 

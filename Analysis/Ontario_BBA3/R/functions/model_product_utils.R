@@ -132,9 +132,10 @@ prepare_relative_abundance_rasters <- function(...,
 }
 
 
-# Create map of posterior mean relative abundance for one atlas period
-make_relabund_map <- function(species_name,
-                              atlas_label,
+# Create map of posterior mean relative abundance (or PObs) for one atlas period
+make_map <- function(species_name,
+                              subtitle,
+                              legend_title = "Expected count\nper 5-min\npoint count",
                               rast,
                               region,
                               water      = NULL,
@@ -174,7 +175,7 @@ make_relabund_map <- function(species_name,
   title_text <- paste0(
     "<span style='font-size:18pt;'><b>", species_name, "</b></span><br><br>",
     "<span style='font-size:14pt;'>",
-    "Relative Abundance - ", atlas_label,
+    subtitle,
     "</span>"
   )
   
@@ -219,7 +220,7 @@ make_relabund_map <- function(species_name,
       colours  = colpal,
       na.value = "transparent",
       trans    = "identity",
-      name     = "Expected count\nper 5-min\npoint count",
+      name     =  legend_title,
       oob      = scales::squish,
       guide    = ggplot2::guide_colourbar(
         ticks.linewidth = 0.5,

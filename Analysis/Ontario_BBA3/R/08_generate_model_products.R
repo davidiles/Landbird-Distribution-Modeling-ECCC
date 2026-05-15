@@ -38,7 +38,7 @@ source(file.path(paths$functions, "model_product_utils.R"))
 # Configuration and paths
 # ------------------------------------------------------------
 
-model_name <- "m2"
+model_name <- "model_CLeffort"
 plot_res <- 1001  # raster resolution in map units; meters in EPSG:3978
 
 in_data  <- file.path(paths$data_clean, "birds", "data_ready_for_analysis.rds")
@@ -106,6 +106,15 @@ if (file.exists(in_water)) {
 }
 
 # ------------------------------------------------------------
+# Load atlas regions for summarizing relative abundance and change estimates
+# ------------------------------------------------------------
+
+atlas_regions <- st_read(file.path(paths$data, "Spatial", "Ontario_Atlas_biol_regions", "Atlas_biol_regions.shp")) %>%
+  st_transform(st_crs(study_boundary)) %>%
+  arrange(Biol_Regio)
+
+
+# ------------------------------------------------------------
 # Generate raster and figure products for each species
 # ------------------------------------------------------------
 
@@ -123,6 +132,12 @@ for (i in seq_along(pred_files)) {
     stringr::str_to_lower() |>
     stringr::str_replace_all("[^a-z0-9]+", "_") |>
     stringr::str_replace_all("^_|_$", "")
+  
+  pdf_path  <- file.path(fig_dir, paste0(sp_file, ".pdf"))
+  if (file.exists(pdf_path)){
+    message("Outputs already prepared for ", sp_english,"; skipping")
+    next
+  }
   
   sp_code <- dat$species_to_model |>
     dplyr::filter(english_name == sp_english) |>
@@ -225,7 +240,7 @@ for (i in seq_along(pred_files)) {
   # ----------------------------------------------------------
   
   # Assume the species is effectively absent if model predicts expected count less than 1 per 150 point counts
-  relabund_absent_limit <- 1 / 150
+  relabund_absent_limit <- 1 / 250
   
   rasters_relabund_prepared <- prepare_relative_abundance_rasters(
     Atlas2 = r2,
@@ -311,7 +326,7 @@ for (i in seq_along(pred_files)) {
   pobs2 <- 1-exp(-r2)
   pobs3 <- 1-exp(-r2)
   
-  pobs_absent_limit <- 1/250
+  pobs_absent_limit <- relabund_absent_limit
   
   rasters_pobs_prepared <- prepare_relative_abundance_rasters(
     Atlas2 = pobs2,
@@ -349,6 +364,34 @@ for (i in seq_along(pred_files)) {
     zlim = c(0,1),
     zbreaks = rasters_pobs_prepared$zbreaks
   )
+  
+  # ----------------------------------------------------------
+  # Estimates of change within each atlas region
+  # ----------------------------------------------------------
+  regional_estimates <- data.frame()
+  
+  for (j in 1:nrow(atlas_regions)){
+    
+    a_reg <- atlas_regions[j,]
+    
+    reg_est <- summarize_polygon_hex_draw_change(
+      hex_draws = preds$hex_draws_Corrected_for_Water,
+      hex_grid = hex_grid,
+      polygon = a_reg,
+      ci_level = 0.90
+    ) |>
+      dplyr::mutate(
+        pct_change_median = 100 * prop_change_median,
+        pct_change_qlow = 100 * prop_change_qlow,
+        pct_change_qhigh = 100 * prop_change_qhigh
+      ) %>%
+      mutate(Region_Number = a_reg$Biol_Regio,
+             Region_Name = a_reg$ECOZONE_NA) %>%
+      relocate(Region_Name,Region_Number)
+    
+    regional_estimates <- bind_rows(regional_estimates,reg_est)
+  }
+  
   
   # ----------------------------------------------------------
   # Model-assessment panels for each atlas period
@@ -402,7 +445,6 @@ for (i in seq_along(pred_files)) {
   page2_png <- file.path(png_dir, paste0(sp_file, "_page2.png"))
   page3_png <- file.path(png_dir, paste0(sp_file, "_page3.png"))
   page4_png <- file.path(png_dir, paste0(sp_file, "_page4.png"))
-  pdf_path  <- file.path(fig_dir, paste0(sp_file, ".pdf"))
   
   # --- Page 1: relative abundance and change maps
   page1 <-

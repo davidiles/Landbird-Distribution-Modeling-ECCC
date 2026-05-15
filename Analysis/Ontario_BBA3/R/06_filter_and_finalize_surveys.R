@@ -110,6 +110,7 @@ if (length(missing_cols) > 0) {
 # ------------------------------------------------------------------------------
 
 surveys_f <- all_surveys %>%
+  mutate(walking_speed_metres_per_min = Distance_Traveled_m/Survey_Duration_Minutes) %>%
   filter(
     round(Survey_Duration_Minutes) >= min_duration & round(Survey_Duration_Minutes) <= max_duration,
     Hours_Since_Sunrise >= hss_min,
@@ -118,7 +119,10 @@ surveys_f <- all_surveys %>%
     DayOfYear <= doy_max,
     Survey_Type %in% c("Point_Count","ARU","Breeding Bird Atlas","Linear transect"),
     
-    !(Survey_Type == "Breeding Bird Atlas" & Distance_Traveled_m > 0)
+    !(Survey_Type == "Breeding Bird Atlas" & Distance_Traveled_m > 0),
+    !(Survey_Type == "Linear transect" & Distance_Traveled_m == 0),
+    !(Survey_Type == "Linear transect" & walking_speed_metres_per_min > 50)
+    
   ) %>%
   arrange(obs_idx) %>%
   

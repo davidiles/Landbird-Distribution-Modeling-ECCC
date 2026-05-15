@@ -94,181 +94,187 @@ fit_inla_multi_atlas <- function(
     covariates,
     timeout_min = 15,
     
-    # Mesh
-    mesh_abund,
-    mesh_chg,
+    # Spatial SPDE priors
+    prior_range_abund  = c(200, 0.1),
+    prior_sigma_abund  = c(3,   0.1),
+    prior_range_change = c(200, 0.1),
+    prior_sigma_change = c(0.1, 0.1),
     
-    # SPDE priors
-    prior_range_abund  = c(200, 0.1),   # 10% chance range < 200 km
-    prior_sigma_abund  = c(3,   0.1),   # 10% chance SD > 3
-    prior_range_change = c(200, 0.1),   # 10% chance range < 200 km
-    prior_sigma_change = c(0.1, 0.1),   # 10% chance SD > 0.1
-    
-    # Priors for HSS effect
+    # 1-D SPDE priors
     prior_HSS_range = c(5, 0.9),
     prior_HSS_sigma = c(3, 0.1),
     
-    # Priors for DOY effect
     prior_DOY_range_global = c(7, 0.9),
     prior_DOY_sigma_global = c(3, 0.1),
     
-    # atlas square iid effect
-    kappa_pcprec_diff = c(1, 0.1),      # 10% chance SD > 1
+    # Atlas-square iid prior
+    kappa_pcprec_diff = c(1, 0.1),
     
-    # likelihood
+    # Likelihood
     family = c("poisson", "nbinomial"),
     
-    # NB PC prior config (only used if family = "nbinomial")
-    nb_pc_target_prob      = 0.5,
-    nb_pc_threshold_theta  = 5,
+    # Negative-binomial PC prior settings
+    nb_pc_target_prob     = 0.5,
+    nb_pc_threshold_theta = 5,
     
     # inlabru / INLA options
-    inla_mode = "experimental",
-    int_strategy = int_strategy,
-    strategy = strategy,
+    inla_mode    = "experimental",
+    int_strategy = "eb",
+    strategy     = "simplified.laplace",
     bru_verbose  = 4,
     waic         = FALSE,
     cpo          = FALSE,
     retry        = 0
 ) {
   
+  # ------------------------------------------------------------
+  # 1. Validate inputs
+  # ------------------------------------------------------------
+  
   family <- match.arg(family)
   
-  stopifnot(is.data.frame(sp_dat) || inherits(sp_dat, "sf"))
-  stopifnot(inherits(study_boundary, "sf"))
+  if (!inherits(sp_dat, "sf")) {
+    stop("sp_dat must be an sf object with a geometry column.")
+  }
   
-  # ---- Required columns
+  if (!inherits(study_boundary, "sf")) {
+    stop("study_boundary must be an sf object.")
+  }
+  
   required_cols <- c(
     "count",
     "Atlas3",
     "Atlas3_c",
     "Hours_Since_Sunrise",
     "days_midpoint",
-    "BCR_idx",
+    "ARU",
+    "SC",
+    "LT",
+    "square_atlas",
     "geometry"
   )
+  
   missing_cols <- setdiff(required_cols, names(sp_dat))
   if (length(missing_cols) > 0) {
-    stop("sp_dat is missing required columns: ", paste(missing_cols, collapse = ", "))
+    stop(
+      "sp_dat is missing required columns: ",
+      paste(missing_cols, collapse = ", ")
+    )
   }
   
-  # covariates must include at least these columns
   if (!is.data.frame(covariates)) {
-    stop("covariates must be a data.frame")
+    stop("covariates must be a data.frame.")
   }
   
   needed_cov_cols <- c("covariate", "beta", "model", "mean", "prec")
   cov_missing <- setdiff(needed_cov_cols, names(covariates))
+  
   if (length(cov_missing) > 0) {
-    stop("covariates is missing columns: ", paste(cov_missing, collapse = ", "))
+    stop(
+      "covariates is missing required columns: ",
+      paste(cov_missing, collapse = ", ")
+    )
   }
   
-  # ---- Timeout (seconds)
+  # ------------------------------------------------------------
+  # 2. Set INLA options and align CRS
+  # ------------------------------------------------------------
+  
   INLA::inla.setOption(inla.timeout = 60 * timeout_min)
-  
-  # ---- Geometry / CRS checks
-  if (!inherits(sp_dat, "sf")) {
-    stop("sp_dat must be an sf object with a geometry column.")
-  }
   
   if (sf::st_crs(sp_dat) != sf::st_crs(study_boundary)) {
     study_boundary <- sf::st_transform(study_boundary, sf::st_crs(sp_dat))
   }
   
-  # ---- Ensure required variables are numeric
+  # ------------------------------------------------------------
+  # 3. Ensure model variables have expected types
+  # ------------------------------------------------------------
+  
   sp_dat$Hours_Since_Sunrise <- ensure_numeric(sp_dat$Hours_Since_Sunrise)
   sp_dat$days_midpoint       <- ensure_numeric(sp_dat$days_midpoint)
   sp_dat$Atlas3_c            <- ensure_numeric(sp_dat$Atlas3_c)
-  sp_dat$BCR_idx             <- ensure_numeric(sp_dat$BCR_idx)
+  sp_dat$ARU                 <- ensure_numeric(sp_dat$ARU)
+  sp_dat$SC                  <- ensure_numeric(sp_dat$SC)
+  sp_dat$LT                  <- ensure_numeric(sp_dat$LT)
+  
+  # ------------------------------------------------------------
+  # 4. Build spatial meshes internally
+  # ------------------------------------------------------------
   
   hull <- fmesher::fm_extensions(
     study_boundary,
-    convex = c(50, 200),
+    convex  = c(50, 200),
     concave = c(10, 200)
   )
   
   mesh_abund <- fmesher::fm_mesh_2d_inla(
-    loc = sf::st_as_sfc(sp_dat),
+    loc      = sf::st_as_sfc(sp_dat),
     boundary = hull,
     max.edge = c(40, 100),
-    cutoff = 40,
-    crs = sf::st_crs(sp_dat)
+    cutoff   = 40,
+    crs      = sf::st_crs(sp_dat)
   )
   
   mesh_chg <- fmesher::fm_mesh_2d_inla(
-    loc = sf::st_as_sfc(sp_dat),
+    loc      = sf::st_as_sfc(sp_dat),
     boundary = hull,
     max.edge = c(40, 100),
-    cutoff = 40,
-    crs = sf::st_crs(sp_dat)
+    cutoff   = 40,
+    crs      = sf::st_crs(sp_dat)
   )
   
-  # Shared abundance field
+  # ------------------------------------------------------------
+  # 5. Build spatial SPDE models
+  # ------------------------------------------------------------
+  
   matern_mean <- INLA::inla.spde2.pcmatern(
-    mesh = mesh_abund,
+    mesh        = mesh_abund,
     prior.range = prior_range_abund,
     prior.sigma = prior_sigma_abund,
-    constr = TRUE
+    constr      = TRUE
   )
   
-  # Change field (Atlas 3 - Atlas 2 on log scale, centered coding)
   matern_diff <- INLA::inla.spde2.pcmatern(
-    mesh = mesh_chg,
+    mesh        = mesh_chg,
     prior.range = prior_range_change,
     prior.sigma = prior_sigma_change,
-    constr = TRUE
+    constr      = TRUE
   )
   
   # ------------------------------------------------------------
-  # 1D smooths
+  # 6. Build 1-D SPDE smoothers for detectability corrections
   # ------------------------------------------------------------
   
-  # Hours since sunrise
   HSS_range <- range(sp_dat$Hours_Since_Sunrise, na.rm = TRUE)
-  HSS_meshpoints <- seq(HSS_range[1] - 1, HSS_range[2] + 1, length.out = 41)
-  HSS_mesh1D <- INLA::inla.mesh.1d(HSS_meshpoints, boundary = "free")
+  
+  HSS_mesh1D <- INLA::inla.mesh.1d(
+    loc = seq(HSS_range[1] - 1, HSS_range[2] + 1, length.out = 11),
+    boundary = "free"
+  )
   
   HSS_spde <- INLA::inla.spde2.pcmatern(
-    mesh = HSS_mesh1D,
+    mesh        = HSS_mesh1D,
     prior.range = prior_HSS_range,
     prior.sigma = prior_HSS_sigma,
-    constr = TRUE
+    constr      = TRUE
   )
   
-  # Day of year
   DOY_range <- range(sp_dat$days_midpoint, na.rm = TRUE)
-  DOY_meshpoints <- seq(DOY_range[1] - 5, DOY_range[2] + 5, length.out = 41)
-  DOY_mesh1D <- INLA::inla.mesh.1d(DOY_meshpoints, boundary = "free")
+  
+  DOY_mesh1D <- INLA::inla.mesh.1d(
+    loc = seq(DOY_range[1] - 5, DOY_range[2] + 5, length.out = 15),
+    boundary = "free"
+  )
   
   DOY_spde_global <- INLA::inla.spde2.pcmatern(
-    mesh = DOY_mesh1D,
+    mesh        = DOY_mesh1D,
     prior.range = prior_DOY_range_global,
     prior.sigma = prior_DOY_sigma_global,
-    constr = TRUE
+    constr      = TRUE
   )
   
-  # 1-D SPDE corrections for survey duration (stationary and linear transect checklists)
-  CL_range <- range(sp_dat$duration_rescaled, na.rm = TRUE)
-  CL_meshpoints <- seq(CL_range[1] - 1, CL_range[2] + 1, length.out = 7)
-  CL_mesh1D <- INLA::inla.mesh.1d(CL_meshpoints, boundary = "free")
-  
-  # stationary counts
-  SC_duration_spde <- INLA::inla.spde2.pcmatern(
-    mesh = CL_mesh1D,
-    prior.range = c(3,0.1),   # 10% chance range is less than 3 min
-    prior.sigma = c(0.1,0.1), # 10% chance SD is larger than 0.1
-    constr = TRUE
-  )
-  
-  # linear transects
-  LT_duration_spde <- INLA::inla.spde2.pcmatern(
-    mesh = CL_mesh1D,
-    prior.range = c(3,0.1),   # 10% chance range is less than 3 min
-    prior.sigma = c(0.1,0.1), # 10% chance SD is larger than 0.1
-    constr = TRUE
-  )
   # ------------------------------------------------------------
-  # IID atlas-square effect prior
+  # 7. Define iid atlas-square prior
   # ------------------------------------------------------------
   
   pc_prec_diff <- list(
@@ -277,161 +283,178 @@ fit_inla_multi_atlas <- function(
   )
   
   # ------------------------------------------------------------
-  # Covariate components
+  # 8. Build covariate components and formula terms
   # ------------------------------------------------------------
   
   covariates <- covariates %>%
     dplyr::mutate(
-      components = paste0(
+      component = paste0(
         "Beta", beta, "_", covariate,
         '(1, model="', model,
         '", mean.linear=', mean,
         ", prec.linear=", prec,
         ")"
       ),
-      formula = paste0(
+      term = paste0(
         "Beta", beta, "_", covariate,
-        "*I(", covariate, "^", beta, ")"
+        " * I(", covariate, "^", beta, ")"
       )
     )
   
   covar_components_str <- if (nrow(covariates) > 0) {
-    paste(covariates$components, collapse = " + ")
+    paste(covariates$component, collapse = " + ")
   } else {
     ""
   }
   
   covar_terms_str <- if (nrow(covariates) > 0) {
-    paste(covariates$formula, collapse = " + ")
+    paste(covariates$term, collapse = " + ")
   } else {
     ""
   }
   
   # ------------------------------------------------------------
-  # Model components
+  # 9. Define inlabru components
   # ------------------------------------------------------------
-  # SC_duration(main = duration_rescaled, model = SC_duration_spde) +
-  # LT_duration(main = duration_rescaled, model = LT_duration_spde) +
   
   components_str <- paste0(
-    "~ Intercept(1) +
-
-       # Atlas effects
-       effect_Atlas3(1, model='linear', mean.linear=0, prec.linear=1/((log(1.5)/2)^2)) +
-
-       # Survey type effects
-       effect_ARU(1, model='linear', mean.linear=0, prec.linear=1/((log(1.25)/2)^2)) +
-       effect_SC(1,model='linear',mean.linear = 0,prec.linear=1/((log(1.5)/2)^2)) +
-       effect_LT(1,model='linear',mean.linear = 0,prec.linear=1/((log(1.5)/2)^2)) +
-
-       # Spatial fields
-       spde_mean(main = geometry, model = matern_mean) +
-       spde_diff(main = geometry, model = matern_diff) +
-
-       # Detectability smoothers
-       HSS_global(main = Hours_Since_Sunrise, model = HSS_spde) +
-       DOY_global(main = days_midpoint, model = DOY_spde_global) +
-
-       # Atlas square iid effect
-       kappa_diff(square_atlas, model='iid', constr=TRUE,
-                  hyper=list(prec=pc_prec_diff))",
-    if (nchar(covar_components_str) > 0) paste0(" + ", covar_components_str) else ""
+    "~ Intercept(1) + ",
+    
+    "effect_Atlas3(
+       1,
+       model = 'linear',
+       mean.linear = 0,
+       prec.linear = 1 / ((log(1.5) / 2)^2)
+     ) + ",
+    
+    "effect_ARU(
+       1,
+       model = 'linear',
+       mean.linear = 0,
+       prec.linear = 1 / ((log(1.25) / 2)^2)
+     ) + ",
+    
+    "effect_SC(
+       1,
+       model = 'linear',
+       mean.linear = 0,
+       prec.linear = 1 / ((log(1.5) / 2)^2)
+     ) + ",
+    
+    "effect_LT(
+       1,
+       model = 'linear',
+       mean.linear = 0,
+       prec.linear = 1 / ((log(1.5) / 2)^2)
+     ) + ",
+    
+    "spde_mean(main = geometry, model = matern_mean) + ",
+    "spde_diff(main = geometry, model = matern_diff) + ",
+    
+    "HSS_global(main = Hours_Since_Sunrise, model = HSS_spde) + ",
+    "DOY_global(main = days_midpoint, model = DOY_spde_global) + ",
+    
+    "kappa_diff(
+       square_atlas,
+       model = 'iid',
+       constr = TRUE,
+       hyper = list(prec = pc_prec_diff)
+     )",
+    
+    if (nchar(covar_components_str) > 0) {
+      paste0(" + ", covar_components_str)
+    } else {
+      ""
+    }
   )
   
   model_components <- stats::as.formula(components_str)
   
   # ------------------------------------------------------------
-  # Linear predictor / likelihood formula
+  # 10. Define linear predictor
   # ------------------------------------------------------------
-  #SC * SC_duration +
-  #LT * LT_duration +
   
-  base_formula_str <- paste0(
+  formula_str <- paste0(
     "count ~
       Intercept +
       HSS_global +
       DOY_global +
 
       ARU * effect_ARU +
-
-      SC * effect_SC +
-      LT * effect_LT +
+      SC  * effect_SC +
+      LT  * effect_LT +
 
       kappa_diff +
       spde_mean +
+
       Atlas3_c * spde_diff +
       Atlas3_c * effect_Atlas3",
-    if (nchar(covar_terms_str) > 0) paste0(" + ", covar_terms_str) else ""
+    
+    if (nchar(covar_terms_str) > 0) {
+      paste0(" + ", covar_terms_str)
+    } else {
+      ""
+    }
   )
   
-  model_formula <- stats::as.formula(base_formula_str)
+  model_formula <- stats::as.formula(formula_str)
   
   # ------------------------------------------------------------
-  # Likelihood builder
+  # 11. Build likelihood
   # ------------------------------------------------------------
   
-  make_like <- function(data_subset) {
-    if (family == "poisson") {
-      inlabru::like(
-        family  = "poisson",
-        formula = model_formula,
-        data    = data_subset
-      )
-    } else {
-      lambda <- calibrate_pc_lambda(
-        target_prob     = nb_pc_target_prob,
-        threshold_theta = nb_pc_threshold_theta
-      )
-      
-      inlabru::like(
-        family  = "nbinomial",
-        formula = model_formula,
-        data    = data_subset,
-        control.family = list(
-          hyper = list(
-            theta = list(
-              prior = "pc.gamma",
-              param = c(lambda)
-            )
+  if (family == "poisson") {
+    
+    lik <- inlabru::like(
+      family  = "poisson",
+      formula = model_formula,
+      data    = sp_dat
+    )
+    
+  } else {
+    
+    lambda <- calibrate_pc_lambda(
+      target_prob     = nb_pc_target_prob,
+      threshold_theta = nb_pc_threshold_theta
+    )
+    
+    lik <- inlabru::like(
+      family  = "nbinomial",
+      formula = model_formula,
+      data    = sp_dat,
+      control.family = list(
+        hyper = list(
+          theta = list(
+            prior = "pc.gamma",
+            param = c(lambda)
           )
         )
       )
-    }
+    )
   }
   
   # ------------------------------------------------------------
-  # Split into point counts and ARU
-  # ------------------------------------------------------------
-  
-  dat_pc  <- sp_dat %>% dplyr::filter(ARU == 0)
-  dat_aru <- sp_dat %>% dplyr::filter(ARU == 1)
-  
-  likes <- list()
-  if (nrow(dat_pc) > 0) {
-    likes <- c(likes, list(make_like(dat_pc)))
-  }
-  if (nrow(dat_aru) > 0) {
-    likes <- c(likes, list(make_like(dat_aru)))
-  }
-  
-  if (length(likes) == 0) {
-    stop("No data rows for ARU == 0 or ARU == 1 after filtering; cannot fit model.")
-  }
-  
-  # ------------------------------------------------------------
-  # bru / INLA options
+  # 12. Set inlabru / INLA options
   # ------------------------------------------------------------
   
   bru_opts <- list(
     inla.mode = inla_mode,
+    
+    control.inla = list(
+      int.strategy = int_strategy,
+      strategy     = strategy
+    ),
+    
     control.compute = list(
-      waic   = waic,
-      cpo    = cpo),
+      waic = waic,
+      cpo  = cpo
+    ),
+    
     bru_verbose = bru_verbose
   )
   
   # ------------------------------------------------------------
-  # Fit with optional retries
+  # 13. Fit model, with optional retries
   # ------------------------------------------------------------
   
   attempt <- 0
@@ -439,16 +462,14 @@ fit_inla_multi_atlas <- function(
   fit <- NULL
   
   while (attempt <= retry) {
+    
     attempt <- attempt + 1
     
     fit <- try(
-      do.call(
-        inlabru::bru,
-        c(
-          list(components = model_components),
-          likes,
-          list(options = bru_opts)
-        )
+      inlabru::bru(
+        components = model_components,
+        lik,
+        options = bru_opts
       ),
       silent = TRUE
     )
@@ -688,6 +709,60 @@ make_hex_draws <- function(g2, mu2, mu3) {
   )
 }
 
+# ------------------------------------------------------------
+# PC prior lambda calibration for inla.pc.rgamma
+# (Useful if you want a PC prior on NB "size"/theta)
+# ------------------------------------------------------------
+
+#' Calibrate lambda for a PC prior via Monte Carlo tail probability
+#'
+#' Some PC priors are parameterized via a rate/scale (lambda) chosen so that
+#' `P(theta > threshold) = target_prob`. This helper finds lambda by root finding
+#' using a Monte Carlo approximation to the tail probability.
+#'
+#' @param target_prob Desired tail probability.
+#' @param threshold_theta Threshold defining the tail event.
+#' @param n_mc Number of Monte Carlo draws used to approximate the probability.
+#' @param lower,upper Search bounds for lambda.
+#' @return Calibrated lambda value.
+calibrate_pc_lambda <- function(target_prob,
+                                threshold_theta,
+                                n_mc = 20000,
+                                lower = 1e-6,
+                                upper = 20,
+                                tol = 1e-3) {
+  stopifnot(is.numeric(target_prob), length(target_prob) == 1, target_prob > 0, target_prob < 1)
+  stopifnot(is.numeric(threshold_theta), length(threshold_theta) == 1, threshold_theta > 0)
+
+  #' Monte Carlo estimate of PC prior tail probability
+  #'
+  #' Internal helper used by `calibrate_pc_lambda()`; estimates
+  #' `P(theta > threshold)` for a given lambda by simulation.
+  #'
+  #' @param lambda Candidate lambda.
+  #' @param n Number of draws.
+  #' @param threshold Threshold for tail event.
+  #' @return Estimated probability.
+  pc_tail_prob <- function(lambda, n = n_mc, threshold = threshold_theta) {
+    samp <- INLA::inla.pc.rgamma(n = n, lambda = lambda)
+    mean(samp > threshold)
+  }
+
+  #' Root function for PC lambda calibration
+  #'
+  #' Returns `pc_tail_prob(lambda) - target_prob` so `uniroot()` can solve
+  #' for the lambda where the tail probability matches the target.
+  #'
+  #' @param lambda Candidate lambda.
+  #' @return Signed difference from target probability.
+  f_for_root <- function(lambda) pc_tail_prob(lambda) - target_prob
+
+  sol <- try(uniroot(f_for_root, lower = lower, upper = upper, tol = tol), silent = TRUE)
+  if (inherits(sol, "try-error")) {
+    stop("Could not find lambda in the specified interval. Try increasing `upper` or `n_mc`.")
+  }
+  sol$root
+}
 # ============================================================
 # Archived commented-out functions
 #
@@ -1200,60 +1275,7 @@ make_hex_draws <- function(g2, mu2, mu3) {
 #'   fit
 #' }
 #' 
-#' # ------------------------------------------------------------
-#' # PC prior lambda calibration for inla.pc.rgamma
-#' # (Useful if you want a PC prior on NB "size"/theta)
-#' # ------------------------------------------------------------
-#' 
-#' #' Calibrate lambda for a PC prior via Monte Carlo tail probability
-#' #'
-#' #' Some PC priors are parameterized via a rate/scale (lambda) chosen so that
-#' #' `P(theta > threshold) = target_prob`. This helper finds lambda by root finding
-#' #' using a Monte Carlo approximation to the tail probability.
-#' #'
-#' #' @param target_prob Desired tail probability.
-#' #' @param threshold_theta Threshold defining the tail event.
-#' #' @param n_mc Number of Monte Carlo draws used to approximate the probability.
-#' #' @param lower,upper Search bounds for lambda.
-#' #' @return Calibrated lambda value.
-#' calibrate_pc_lambda <- function(target_prob,
-#'                                 threshold_theta,
-#'                                 n_mc = 20000,
-#'                                 lower = 1e-6,
-#'                                 upper = 20,
-#'                                 tol = 1e-3) {
-#'   stopifnot(is.numeric(target_prob), length(target_prob) == 1, target_prob > 0, target_prob < 1)
-#'   stopifnot(is.numeric(threshold_theta), length(threshold_theta) == 1, threshold_theta > 0)
-#'   
-#'   #' Monte Carlo estimate of PC prior tail probability
-#'   #'
-#'   #' Internal helper used by `calibrate_pc_lambda()`; estimates
-#'   #' `P(theta > threshold)` for a given lambda by simulation.
-#'   #'
-#'   #' @param lambda Candidate lambda.
-#'   #' @param n Number of draws.
-#'   #' @param threshold Threshold for tail event.
-#'   #' @return Estimated probability.
-#'   pc_tail_prob <- function(lambda, n = n_mc, threshold = threshold_theta) {
-#'     samp <- INLA::inla.pc.rgamma(n = n, lambda = lambda)
-#'     mean(samp > threshold)
-#'   }
-#'   
-#'   #' Root function for PC lambda calibration
-#'   #'
-#'   #' Returns `pc_tail_prob(lambda) - target_prob` so `uniroot()` can solve
-#'   #' for the lambda where the tail probability matches the target.
-#'   #'
-#'   #' @param lambda Candidate lambda.
-#'   #' @return Signed difference from target probability.
-#'   f_for_root <- function(lambda) pc_tail_prob(lambda) - target_prob
-#'   
-#'   sol <- try(uniroot(f_for_root, lower = lower, upper = upper, tol = tol), silent = TRUE)
-#'   if (inherits(sol, "try-error")) {
-#'     stop("Could not find lambda in the specified interval. Try increasing `upper` or `n_mc`.")
-#'   }
-#'   sol$root
-#' }
+
 #' 
 #' # ------------------------------------------------------------
 #' # Posterior summaries (row-wise) for n_row x n_draw matrices

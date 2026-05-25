@@ -38,7 +38,7 @@ source(file.path(paths$functions, "model_product_utils.R"))
 # Configuration and paths
 # ------------------------------------------------------------
 
-model_name <- "model_CLeffort"
+model_name <- "PC_ARU_only"
 plot_res <- 1001  # raster resolution in map units; meters in EPSG:3978
 
 in_data  <- file.path(paths$data_clean, "birds", "data_ready_for_analysis.rds")
@@ -174,13 +174,13 @@ for (i in seq_along(pred_files)) {
   
   a2 <- grid2 %>%
     dplyr::mutate(
-      mu_mean = preds$OBBA2_Corrected_for_Water$OBBA2_mean,
+      mu_q50 = preds$OBBA2_Corrected_for_Water$OBBA2_q50,
       CI_95_width = preds$OBBA2_Corrected_for_Water$OBBA2_upper - preds$OBBA2_Corrected_for_Water$OBBA2_lower
     )
   
   r2 <- rasterize_sf(
     grid_sf = a2,
-    field = c("mu_mean", "CI_95_width"),
+    field = c("mu_q50", "CI_95_width"),
     res = plot_res,
     metadata = c(
       species_name = sp_english,
@@ -195,13 +195,13 @@ for (i in seq_along(pred_files)) {
   
   a3 <- grid3 %>%
     dplyr::mutate(
-      mu_mean = preds$OBBA3_Corrected_for_Water$OBBA3_mean,
+      mu_q50 = preds$OBBA3_Corrected_for_Water$OBBA3_q50,
       CI_95_width = preds$OBBA3_Corrected_for_Water$OBBA3_upper - preds$OBBA3_Corrected_for_Water$OBBA3_lower
     )
   
   r3 <- rasterize_sf(
     grid_sf = a3,
-    field = c("mu_mean", "CI_95_width"),
+    field = c("mu_q50", "CI_95_width"),
     res = plot_res,
     metadata = c(
       species_name = sp_english,
@@ -216,13 +216,13 @@ for (i in seq_along(pred_files)) {
   
   chg_sf <- grid3 %>%
     dplyr::mutate(
-      chg_mean = preds$abs_change_Corrected_for_Water$abs_change_mean,
+      chg_q50 = preds$abs_change_Corrected_for_Water$abs_change_q50,
       CI_95_width = preds$abs_change$abs_change_upper - preds$abs_change$abs_change_lower
     )
   
   rchg <- rasterize_sf(
     grid_sf = chg_sf,
-    field = c("chg_mean", "CI_95_width"),
+    field = c("chg_q50", "CI_95_width"),
     res = plot_res,
     metadata = c(
       species_name = sp_english,
@@ -239,8 +239,8 @@ for (i in seq_along(pred_files)) {
   # Relative abundance maps
   # ----------------------------------------------------------
   
-  # Assume the species is effectively absent if model predicts expected count less than 1 per 150 point counts
-  relabund_absent_limit <- 1 / 250
+  # Assume the species is effectively absent if model predicts expected count less than 1 per 200 point counts
+  relabund_absent_limit <- 1 / 200
   
   rasters_relabund_prepared <- prepare_relative_abundance_rasters(
     Atlas2 = r2,
@@ -348,7 +348,7 @@ for (i in seq_along(pred_files)) {
     water_fill = "white",
     transform = "identity",
     zlim = c(0,1),
-    zbreaks = rasters_pobs_prepared$zbreaks
+    zbreaks = seq(0,1,length.out = 5)
   )
   
   pobs_Map_Atlas3 <- make_map(
@@ -362,7 +362,7 @@ for (i in seq_along(pred_files)) {
     water_fill = "white",
     transform = "identity",
     zlim = c(0,1),
-    zbreaks = rasters_pobs_prepared$zbreaks
+    zbreaks = seq(0,1,length.out = 5)
   )
   
   # ----------------------------------------------------------
@@ -397,7 +397,7 @@ for (i in seq_along(pred_files)) {
   # Model-assessment panels for each atlas period
   # ----------------------------------------------------------
   
-  r2_clamped <- r2$mu_mean
+  r2_clamped <- r2$mu_q50
   r2_clamped[r2_clamped < relabund_absent_limit] <- 0
   
   A2_dat_to_plot <- sp_dat$sp_dat %>%
@@ -417,7 +417,7 @@ for (i in seq_along(pred_files)) {
     data_source = "Atlas 2 Point Counts + ARUs"
   )
   
-  r3_clamped <- r3$mu_mean
+  r3_clamped <- r3$mu_q50
   r3_clamped[r3_clamped < relabund_absent_limit] <- 0
   
   A3_dat_to_plot <- sp_dat$sp_dat %>%

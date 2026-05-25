@@ -42,31 +42,280 @@ rasterize_sf <- function(grid_sf, field, res,metadata) {
   r
 }
 
+
+# ------------------------------------------------------------
+# Shared plotting-scale helpers
+# ------------------------------------------------------------
+
+# Resolve a positive upper plotting/extraction limit from either an explicit
+# maximum or a quantile of positive finite values.
+#
+# Purpose:
+#   Several model-assessment panels need to use identical scaling across atlas
+#   periods. This helper centralizes the logic so a user can either supply an
+#   explicit maximum, such as 1.5 expected birds per 5-min point count, or ask
+#   for a quantile-based maximum, such as the 0.99 quantile.
+#
+# Arguments:
+#   x              Numeric vector of values used to derive the limit.
+#   max_value      Optional explicit positive maximum. If supplied, this takes
+#                  precedence over max_q.
+#   max_q          Quantile used when max_value is NULL.
+#   default        Fallback value when x has no positive finite values.
+#   argument_name  Name used in error messages.
+#
+# Returns:
+#   A single positive numeric value.
+resolve_positive_max <- function(x,
+                                 max_value = NULL,
+                                 max_q = 0.99,
+                                 default = 1,
+                                 argument_name = "max_value") {
+  
+  if (!is.null(max_value)) {
+    if (!is.numeric(max_value) || length(max_value) != 1 ||
+        !is.finite(max_value) || max_value <= 0) {
+      stop(argument_name, " must be NULL or a single positive finite number.")
+    }
+    return(as.numeric(max_value))
+  }
+  
+  if (!is.numeric(max_q) || length(max_q) != 1 ||
+      !is.finite(max_q) || max_q <= 0 || max_q > 1) {
+    stop("max_q must be a single finite number in (0, 1].")
+  }
+  
+  vals <- x[is.finite(x) & x > 0]
+  if (length(vals) == 0) return(default)
+  
+  out <- as.numeric(stats::quantile(vals, probs = max_q, na.rm = TRUE))
+  if (!is.finite(out) || out <= 0) default else out
+}
+
+# Resolve an upper relative-abundance limit from a terra SpatRaster.
+#
+# Argument: rast       SpatRaster of model predictions.
+# Argument: rast_max   Optional explicit upper limit for prediction scaling.
+# Argument: rast_max_q Quantile used when rast_max is NULL.
+# Returns: A single positive numeric value.
+resolve_rast_max <- function(rast,
+                             rast_max = NULL,
+                             rast_max_q = 0.99) {
+  stopifnot(inherits(rast, "SpatRaster"))
+  
+  resolve_positive_max(
+    x             = terra::values(rast),
+    max_value     = rast_max,
+    max_q         = rast_max_q,
+    default       = 1,
+    argument_name = "rast_max"
+  )
+}
+
+# Compute shared scale limits for model-assessment panels.
+#
+# Purpose:
+#   When producing assessment panels for multiple atlas periods, this helper can
+#   be run after creating `hex_summary` objects. The returned values can then
+#   be supplied to
+#   each call to `assess_region()` so all panels use identical scaling.
+#
+# Arguments:
+#   hex_summaries        One or more `sf` objects returned by `summarize_hex()`
+#                        or `assess_region()$hex_summary`.
+#   rasts                Optional list of SpatRaster objects used to calculate a
+#                        shared prediction limit directly from raster values.
+#   rast_max             Optional explicit shared prediction maximum.
+#   rast_max_q           Quantile used when rast_max is NULL.
+#   max_count_per_effort Optional explicit shared observed-count maximum.
+#   count_max_q          Quantile used when max_count_per_effort is NULL.
+#   max_surveys          Optional explicit shared survey-effort maximum.
+#   max_surveys_q        Quantile used when max_surveys is NULL.
+#
+# Returns:
+#   A named list with `rast_max`, `max_count_per_effort`, and `max_surveys`.
+compute_assessment_scale_limits <- function(...,
+                                            hex_summaries = list(...),
+                                            rasts = NULL,
+                                            rast_max = NULL,
+                                            rast_max_q = 0.99,
+                                            max_count_per_effort = NULL,
+                                            count_max_q = 0.99,
+                                            max_surveys = NULL,
+                                            max_surveys_q = 0.80) {
+  
+  if (length(hex_summaries) == 1 && is.list(hex_summaries[[1]]) &&
+      !inherits(hex_summaries[[1]], "sf")) {
+    hex_summaries <- hex_summaries[[1]]
+  }
+  
+  if (length(hex_summaries) == 0) {
+    stop("At least one hex_summary object must be supplied.")
+  }
+  
+  if (!all(vapply(hex_summaries, inherits, logical(1), what = "sf"))) {
+    stop("All hex_summaries must be sf objects.")
+  }
+  
+  count_values <- unlist(lapply(hex_summaries, function(x) {
+    if (!"mean_count_per_effort" %in% names(x)) {
+      stop("Each hex_summary must contain mean_count_per_effort.")
+    }
+    x$mean_count_per_effort
+  }), use.names = FALSE)
+  
+  survey_values <- unlist(lapply(hex_summaries, function(x) {
+    if (!"n_surveys" %in% names(x)) {
+      stop("Each hex_summary must contain n_surveys.")
+    }
+    x$n_surveys
+  }), use.names = FALSE)
+  
+  if (!is.null(rasts)) {
+    if (inherits(rasts, "SpatRaster")) rasts <- list(rasts)
+    if (!all(vapply(rasts, inherits, logical(1), what = "SpatRaster"))) {
+      stop("rasts must be NULL, a SpatRaster, or a list of SpatRaster objects.")
+    }
+    rast_values <- unlist(lapply(rasts, terra::values), use.names = FALSE)
+  } else {
+    rast_values <- unlist(lapply(hex_summaries, function(x) {
+      if (!"pred_mean" %in% names(x)) {
+        stop("Each hex_summary must contain pred_mean when rasts is NULL.")
+      }
+      x$pred_mean
+    }), use.names = FALSE)
+  }
+  
+  list(
+    rast_max = resolve_positive_max(
+      x             = rast_values,
+      max_value     = rast_max,
+      max_q         = rast_max_q,
+      default       = 1,
+      argument_name = "rast_max"
+    ),
+    max_count_per_effort = resolve_positive_max(
+      x             = count_values,
+      max_value     = max_count_per_effort,
+      max_q         = count_max_q,
+      default       = 1,
+      argument_name = "max_count_per_effort"
+    ),
+    max_surveys = ceiling(resolve_positive_max(
+      x             = survey_values,
+      max_value     = max_surveys,
+      max_q         = max_surveys_q,
+      default       = 1,
+      argument_name = "max_surveys"
+    ))
+  )
+}
+
 # ------------------------------------------------------------
 # Relative abundance maps
 # ------------------------------------------------------------
 
-# Prepare multiple relative-abundance rasters for side-by-side plotting.
-#
-# Purpose:
-#   Applies a shared absence threshold and a shared upper colour-scale limit
-#   across one or more rasters, so Atlas 2 and Atlas 3 maps use comparable
-#   legends. Low values are treated as absent, and high values are clamped at
-#   a common quantile-based maximum.
-#
-# Arguments:
-#   ...                 - named terra SpatRaster objects.
-#   rast_absent_limit   - values at or below this threshold are set to NA.
-#   rast_max_quantile   - quantile used to estimate the upper plotting limit.
-#
-# Returns:
-#   A list containing processed rasters, shared z limits, legend breaks, and
-#   original per-raster upper quantiles.
+# # Prepare multiple relative-abundance rasters for side-by-side plotting.
+# #
+# # Purpose:
+# #   Applies a shared absence threshold and a shared upper colour-scale limit
+# #   across one or more rasters, so Atlas 2 and Atlas 3 maps use comparable
+# #   legends. Low values are treated as absent, and high values are clamped at
+# #   a common quantile-based maximum.
+# #
+# # Arguments:
+# #   ...                 - named terra SpatRaster objects.
+# #   rast_absent_limit   - values at or below this threshold are set to NA.
+# #   rast_max_quantile   - quantile used to estimate the upper plotting limit.
+# #
+# # Returns:
+# #   A list containing processed rasters, shared z limits, legend breaks, and
+# #   original per-raster upper quantiles.
+# prepare_relative_abundance_rasters <- function(...,
+#                                                rast_absent_limit = 1/250,
+#                                                rast_max_quantile = 0.99,
+#                                                rast_max = NULL) {
+#   
+#   rasts <- list(...)
+#   
+#   if (length(rasts) == 0) {
+#     stop("At least one raster must be supplied.")
+#   }
+#   
+#   if (!all(vapply(rasts, inherits, logical(1), what = "SpatRaster"))) {
+#     stop("All inputs passed through `...` must be terra SpatRaster objects.")
+#   }
+#   
+#   process_raster <- function(rast) {
+#     
+#     r <- rast
+#     
+#     # Set low values to NA
+#     r[r <= rast_absent_limit] <- NA
+#     
+#     # Calculate upper limit after low values are removed. If rast_max is
+#     # supplied, it is used directly; otherwise use rast_max_quantile.
+#     zmax <- resolve_rast_max(
+#       rast       = r,
+#       rast_max   = rast_max,
+#       rast_max_q = rast_max_quantile
+#     )
+#     
+#     list(
+#       rast = r,
+#       zmax = zmax
+#     )
+#   }
+#   
+#   processed <- lapply(rasts, process_raster)
+#   
+#   zmax_values <- vapply(processed, `[[`, numeric(1), "zmax")
+#   
+#   # Shared upper limit across all rasters. Use the maximum atlas-specific
+#   # limit so all maps are displayed on the same absolute scale without
+#   # saturating the higher-abundance atlas by default.
+#   zmax_shared <- max(zmax_values, na.rm = TRUE)
+#   
+#   if (!is.finite(zmax_shared) || zmax_shared <= 0) {
+#     zmax_shared <- 1
+#   }
+#   
+#   # Clamp all rasters to the same upper limit
+#   rasts_clamped <- lapply(processed, function(x) {
+#     terra::clamp(
+#       x$rast,
+#       upper = zmax_shared,
+#       values = TRUE
+#     )
+#   })
+#   
+#   names(rasts_clamped) <- names(rasts)
+#   
+#   zlim <- c(rast_absent_limit, zmax_shared)
+#   
+#   # Fixed legend breaks shared by all maps
+#   zbreaks <- seq(zlim[1], zlim[2], length.out = 5)
+#   
+#   list(
+#     rasters = rasts_clamped,
+#     zlim = zlim,
+#     zbreaks = zbreaks,
+#     zmax_original = zmax_values
+#   )
+# }
+
+
 prepare_relative_abundance_rasters <- function(...,
-                                               rast_absent_limit = 1/250,
-                                               rast_max_quantile = 0.99) {
+                                               rast_absent_limit = 1 / 250,
+                                               absent_method = c("fixed", "hybrid"),
+                                               absent_quantile = 0.01,
+                                               relative_to_quantile = 0.99,
+                                               relative_fraction = 0.01,
+                                               rast_max_quantile = 0.99,
+                                               rast_max = NULL) {
   
   rasts <- list(...)
+  absent_method <- match.arg(absent_method)
   
   if (length(rasts) == 0) {
     stop("At least one raster must be supplied.")
@@ -76,19 +325,76 @@ prepare_relative_abundance_rasters <- function(...,
     stop("All inputs passed through `...` must be terra SpatRaster objects.")
   }
   
+  # ------------------------------------------------------------
+  # Resolve absence threshold
+  # ------------------------------------------------------------
+  # fixed:
+  #   Uses `rast_absent_limit` directly.
+  #
+  # hybrid:
+  #   Uses the largest of:
+  #     1. fixed absolute floor: `rast_absent_limit`
+  #     2. low species-specific prediction quantile
+  #     3. small fraction of high species-specific abundance
+  #
+  # This keeps a biological/interpretable floor while adapting to
+  # rare species and avoiding tiny background predictions everywhere.
+  # ------------------------------------------------------------
+  
+  resolve_absent_limit <- function(rasts) {
+    
+    if (absent_method == "fixed") {
+      return(rast_absent_limit)
+    }
+    
+    vals <- unlist(lapply(rasts, function(r) {
+      terra::values(r, mat = FALSE, na.rm = TRUE)
+    }))
+    
+    vals <- vals[is.finite(vals)]
+    
+    if (length(vals) == 0) {
+      return(rast_absent_limit)
+    }
+    
+    q_absent <- as.numeric(
+      stats::quantile(vals, absent_quantile, na.rm = TRUE)
+    )
+    
+    q_high <- as.numeric(
+      stats::quantile(vals, relative_to_quantile, na.rm = TRUE)
+    )
+    
+    relative_limit <- relative_fraction * q_high
+    
+    max(
+      rast_absent_limit,
+      q_absent,
+      relative_limit,
+      na.rm = TRUE
+    )
+  }
+  
+  resolved_absent_limit <- resolve_absent_limit(rasts)
+  
+  # ------------------------------------------------------------
+  # Process each raster
+  # ------------------------------------------------------------
+  
   process_raster <- function(rast) {
     
     r <- rast
     
     # Set low values to NA
-    r[r <= rast_absent_limit] <- NA
+    r[r <= resolved_absent_limit] <- NA
     
-    # Calculate upper quantile after low values are removed
-    zmax <- as.numeric(stats::quantile(
-      terra::values(r),
-      probs = rast_max_quantile,
-      na.rm = TRUE
-    ))
+    # Calculate upper limit after low values are removed. If rast_max is
+    # supplied, it is used directly; otherwise use rast_max_quantile.
+    zmax <- resolve_rast_max(
+      rast       = r,
+      rast_max   = rast_max,
+      rast_max_q = rast_max_quantile
+    )
     
     list(
       rast = r,
@@ -100,8 +406,8 @@ prepare_relative_abundance_rasters <- function(...,
   
   zmax_values <- vapply(processed, `[[`, numeric(1), "zmax")
   
-  # Shared upper limit across all rasters
-  zmax_shared <- min(zmax_values, na.rm = TRUE)
+  # Shared upper limit across all rasters.
+  zmax_shared <- max(zmax_values, na.rm = TRUE)
   
   if (!is.finite(zmax_shared) || zmax_shared <= 0) {
     zmax_shared <- 1
@@ -118,34 +424,34 @@ prepare_relative_abundance_rasters <- function(...,
   
   names(rasts_clamped) <- names(rasts)
   
-  zlim <- c(rast_absent_limit, zmax_shared)
-  
-  # Fixed legend breaks shared by all maps
+  zlim <- c(resolved_absent_limit, zmax_shared)
   zbreaks <- seq(zlim[1], zlim[2], length.out = 5)
   
   list(
     rasters = rasts_clamped,
     zlim = zlim,
     zbreaks = zbreaks,
-    zmax_original = zmax_values
+    zmax_original = zmax_values,
+    rast_absent_limit = resolved_absent_limit,
+    absent_method = absent_method
   )
 }
 
 
 # Create map of posterior mean relative abundance (or PObs) for one atlas period
 make_map <- function(species_name,
-                              subtitle,
-                              legend_title = "Expected count\nper 5-min\npoint count",
-                              rast,
-                              region,
-                              water      = NULL,
-                              colpal     = NULL,
-                              water_fill = "#b8dceb",
-                              transform  = "identity",
-                              zlim       = NULL,
-                              zbreaks    = NULL,
-                              legend_position = c(0.97, 0.97),
-                              legend_justification = c(1, 1)) {
+                     subtitle,
+                     legend_title = "Expected count\nper 5-min\npoint count",
+                     rast,
+                     region,
+                     water      = NULL,
+                     colpal     = NULL,
+                     water_fill = "#b8dceb",
+                     transform  = "identity",
+                     zlim       = NULL,
+                     zbreaks    = NULL,
+                     legend_position = c(0.97, 0.97),
+                     legend_justification = c(1, 1)) {
   
   region <- region |>
     sf::st_transform(terra::crs(rast))
@@ -670,6 +976,7 @@ make_min_supported_change_legend <- function(ci_level = 0.90) {
 make_hex_abs_change_map <- function(species_name,
                                     hex_change_sf,
                                     region,
+                                    region_boundaries = NULL,
                                     prov_change = NULL,
                                     ci_level = 0.90,
                                     size_var = "mu_mid_median",
@@ -692,6 +999,11 @@ make_hex_abs_change_map <- function(species_name,
   
   if (!is.null(water)) {
     water <- sf::st_transform(water, sf::st_crs(hex_change_sf))
+  }
+  
+  if (!is.null(region_boundaries)) {
+    region_boundaries <- sf::st_transform(region_boundaries, sf::st_crs(hex_change_sf)) %>%
+      st_intersection(region)
   }
   
   # Show hexes where the species was present in either atlas
@@ -753,6 +1065,15 @@ make_hex_abs_change_map <- function(species_name,
         data = water,
         fill = water_fill,
         colour = "transparent"
+      )
+  }
+  
+  if (!is.null(region_boundaries)) {
+    chg_plot <- chg_plot +
+      ggplot2::geom_sf(
+        data = region_boundaries,
+        fill = "transparent",
+        colour = "gray30"
       )
   }
   
@@ -862,17 +1183,25 @@ make_hex_abs_change_map <- function(species_name,
 #     \item{`region_stats`}{One-row `data.frame` from `compute_region_stats()`.}
 #   }
 assess_region <- function(region,
+                          region_boundaries       = NULL,
                           sp_dat,
                           rast,
                           hex_grid                = NULL,
                           n_hexagons              = 1000,
                           water                   = NULL,
                           rast_max_q              = 0.99,
+                          rast_max                = NULL,
+                          max_count_per_effort    = NULL,
+                          count_max_q             = 0.99,
+                          max_surveys             = NULL,
+                          max_surveys_q           = 0.80,
                           transform               = "identity",
                           pred_presence_threshold = 0,
                           title                   = NULL,
                           model_source            = NULL,
-                          data_source             = NULL) {
+                          data_source             = NULL,
+                          color_palette           = NULL
+                          ) {
   
   stopifnot(inherits(region, "sf"))
   stopifnot(inherits(sp_dat, "sf"))
@@ -881,6 +1210,12 @@ assess_region <- function(region,
   
   region <- sf::st_transform(region, sf::st_crs(sp_dat))
   sp_dat <- sf::st_filter(sp_dat, region, .predicate = sf::st_intersects)
+  
+  if (!is.null(region_boundaries)) {
+    region_boundaries <- region_boundaries |>
+      sf::st_transform(sf::st_crs(region)) |>
+      sf::st_intersection(region)
+  }
   
   # -- Trim raster to region ---------------------------------------------------
   
@@ -904,19 +1239,39 @@ assess_region <- function(region,
     hex_grid                = hex_grid,
     rast                    = rast_cropped,
     rast_max_q              = rast_max_q,
+    rast_max                = rast_max,
     pred_presence_threshold = pred_presence_threshold
   )
   
   # -- GOAL 3: Region-wide statistics ----------------------------------------
   region_stats <- compute_region_stats(hex_summary)
   
+  # -- GOAL 3b: Resolve display-scale limits ---------------------------------
+  # These values are passed to all relevant panels so scale limits are not
+  # recomputed independently within each plotting function. To force identical
+  # scaling across atlas periods, calculate shared values outside this function
+  # and pass them through rast_max, max_count_per_effort, and max_surveys.
+  scale_limits <- compute_assessment_scale_limits(
+    hex_summaries        = list(hex_summary),
+    rasts                = list(rast_cropped),
+    rast_max             = rast_max,
+    rast_max_q           = rast_max_q,
+    max_count_per_effort = max_count_per_effort,
+    count_max_q          = count_max_q,
+    max_surveys          = max_surveys,
+    max_surveys_q        = max_surveys_q
+  )
+  
   # -- GOAL 4a: Panel A – raw raster -----------------------------------------
   p_rast <- plot_raster_gg(
     rast       = rast_cropped,
     study_area = region,
+    region_boundaries = region_boundaries,
     water      = NULL,        # Water is hidden on the raster
     rast_max_q = rast_max_q,
-    transform  = transform
+    rast_max   = scale_limits$rast_max,
+    transform  = transform,
+    palette = color_palette
   )
   
   # -- GOAL 4b: Panel B – hex predicted vs. observed -------------------------
@@ -924,16 +1279,25 @@ assess_region <- function(region,
     hex_summary = hex_summary,
     rast        = rast_cropped,
     study_area  = region,
-    water       = water,
-    rast_max_q  = rast_max_q,
-    transform   = transform
+    region_boundaries = region_boundaries,
+    water                = water,
+    rast_max_q           = rast_max_q,
+    rast_max             = scale_limits$rast_max,
+    max_count_per_effort   = scale_limits$max_count_per_effort,
+    max_count_per_effort_q = count_max_q,
+    transform              = transform
   )
   
   # -- GOAL 4c: Panel C – honeycomb effort/detection -------------------------
   p_honey <- plot_honeycomb(
-    hex_summary = hex_summary,
-    study_area  = region,
-    water       = water
+    hex_summary          = hex_summary,
+    study_area           = region,
+    region_boundaries = region_boundaries,
+    water                = water,
+    max_surveys          = scale_limits$max_surveys,
+    max_surveys_q        = max_surveys_q,
+    max_count_per_effort   = scale_limits$max_count_per_effort,
+    max_count_per_effort_q = count_max_q
   )
   
   # -- Compose figure --------------------------------------------------------
@@ -941,9 +1305,9 @@ assess_region <- function(region,
   
   combined <-
     (p_rast           + margin_theme) +
-    (p_hex$plot       + margin_theme) +
+    #(p_hex$plot       + margin_theme) +
     (p_honey          + margin_theme) +
-    patchwork::plot_layout(ncol = 3)
+    patchwork::plot_layout(ncol = 2)
   
   # Build annotation: title and optional subtitle from model/data source
   if (!is.null(title) || !is.null(model_source) || !is.null(data_source)) {
@@ -971,9 +1335,12 @@ assess_region <- function(region,
   }
   
   list(
+    p_rast = p_rast,
+    p_honey = p_honey,
     plot_combined = combined,
     hex_summary   = hex_summary,
-    region_stats  = region_stats
+    region_stats  = region_stats,
+    scale_limits  = scale_limits
   )
 }
 
@@ -1063,12 +1430,17 @@ summarize_hex <- function(dat,
                           hex_grid,
                           rast,
                           rast_max_q              = 1,
+                          rast_max                = NULL,
                           pred_presence_threshold = 0) {
   
   hex_obs  <- summarize_surveys_by_hex(dat, hex_grid)
   
-  hex_full <- extract_hex_predictions(hex_obs, rast,
-                                      rast_max_q = rast_max_q)
+  hex_full <- extract_hex_predictions(
+    hex_obs,
+    rast,
+    rast_max_q = rast_max_q,
+    rast_max   = rast_max
+  )
   
   hex_full |>
     dplyr::mutate(
@@ -1158,7 +1530,8 @@ summarize_surveys_by_hex <- function(dat, hex_grid) {
 #   where the hexagon falls entirely outside the raster extent).
 extract_hex_predictions <- function(hex_grid,
                                     rast,
-                                    rast_max_q = 1) {
+                                    rast_max_q = 1,
+                                    rast_max = NULL) {
   
   stopifnot(inherits(hex_grid, "sf"))
   stopifnot(inherits(rast, "SpatRaster"))
@@ -1168,14 +1541,14 @@ extract_hex_predictions <- function(hex_grid,
   rast_crop <- terra::crop(rast, terra::vect(hex_proj))
   
   # Cap extreme non-zero values (outlier suppression only; does not affect
-  # which pixels count as absent)
-  r_max <- as.numeric(stats::quantile(
-    terra::values(rast_crop)[terra::values(rast_crop) > 0],
-    rast_max_q, na.rm = TRUE
-  ))
-  if (is.finite(r_max) && r_max > 0) {
-    rast_crop <- terra::clamp(rast_crop, upper = r_max, values = TRUE)
-  }
+  # which pixels count as absent). The cap can be either an explicit maximum
+  # or a quantile-derived maximum.
+  r_max <- resolve_rast_max(
+    rast       = rast_crop,
+    rast_max   = rast_max,
+    rast_max_q = rast_max_q
+  )
+  rast_crop <- terra::clamp(rast_crop, upper = r_max, values = TRUE)
   
   # Convert NA to 0 so absent pixels are included in the denominator.
   # We work on a copy to avoid modifying the caller's raster object.
@@ -1380,8 +1753,10 @@ compute_region_stats <- function(hex_summary,
 # Returns: A `ggplot` object.
 plot_raster_gg <- function(rast,
                            study_area,
+                           region_boundaries = NULL,
                            water      = NULL,
                            rast_max_q = 1,
+                           rast_max   = NULL,
                            palette    = NULL,
                            water_fill = "#b8dceb",
                            transform  = "identity") {
@@ -1399,11 +1774,10 @@ plot_raster_gg <- function(rast,
   
   water_to_plot <- NULL
   if (!is.null(water)) {
-    stopifnot(inherits(water, "processed_water"))
     plot_crs   <- water$crs
     study_area <- sf::st_transform(study_area, plot_crs)
     rast       <- terra::project(rast, plot_crs$wkt)
-    water_to_plot <- resolve_water_layer(water, study_area)
+    water_to_plot <- water %>% st_intersection(study_area)
   } else {
     plot_crs <- sf::st_crs(study_area)
     rast     <- terra::project(rast, plot_crs$wkt)
@@ -1415,11 +1789,13 @@ plot_raster_gg <- function(rast,
   # Blank out absent pixels (0 or NA to NA so they render as transparent)
   rast[rast <= 0] <- NA
   
-  # Cap the upper end of the scale; compute from non-zero values only
-  r_max <- as.numeric(stats::quantile(
-    terra::values(rast), rast_max_q, na.rm = TRUE
-  ))
-  if (!is.finite(r_max) || r_max <= 0) r_max <- 1
+  # Cap the upper end of the scale. The cap can be either an explicit
+  # maximum or a quantile-derived maximum.
+  r_max <- resolve_rast_max(
+    rast       = rast,
+    rast_max   = rast_max,
+    rast_max_q = rast_max_q
+  )
   rast <- terra::clamp(rast, upper = r_max, values = TRUE)
   
   rast_df           <- as.data.frame(rast, xy = TRUE, na.rm = FALSE)
@@ -1436,6 +1812,15 @@ plot_raster_gg <- function(rast,
                               linewidth = 0.1)
   }
   
+  if (!is.null(region_boundaries)) {
+    p <- p +
+      ggplot2::geom_sf(
+        data = region_boundaries,
+        fill = "transparent",
+        colour = "gray30"
+      )
+  }
+  
   p +
     ggspatial::annotation_scale(location = "br", width_hint = 0.25) +
     ggspatial::annotation_north_arrow(
@@ -1445,7 +1830,7 @@ plot_raster_gg <- function(rast,
     ) +
     ggplot2::scale_fill_gradientn(
       colours  = palette,
-      limits   = c(NA, r_max),   # lower bound auto-detected from non-zero data
+      limits   = c(0, r_max),
       oob      = scales::squish,
       na.value = "transparent",  # absent pixels show panel background through
       trans    = transform,
@@ -1497,9 +1882,12 @@ plot_raster_gg <- function(rast,
 plot_hex_pred_obs <- function(hex_summary,
                               rast,
                               study_area,
+                              region_boundaries    = NULL,
                               water                = NULL,
                               rast_max_q           = 0.99,
+                              rast_max             = NULL,
                               max_count_per_effort = NULL,
+                              max_count_per_effort_q = 0.99,
                               palette              = NULL,
                               circle_fill          = "black",
                               water_fill           = "#b8dceb",
@@ -1513,8 +1901,12 @@ plot_hex_pred_obs <- function(hex_summary,
   
   # Ensure pred_mean is present (re-extract if missing).
   if (!"pred_mean" %in% names(hex_summary)) {
-    hex_summary <- extract_hex_predictions(hex_summary, rast,
-                                           rast_max_q = rast_max_q)
+    hex_summary <- extract_hex_predictions(
+      hex_summary,
+      rast,
+      rast_max_q = rast_max_q,
+      rast_max   = rast_max
+    )
   }
   
   if (is.null(palette)) {
@@ -1526,29 +1918,25 @@ plot_hex_pred_obs <- function(hex_summary,
   }
   
   water_to_plot <- NULL
-  
   if (!is.null(water)) {
-    stopifnot(inherits(water, "processed_water"))
-    plot_crs    <- water$crs
-    study_area  <- sf::st_transform(study_area, plot_crs)
-    hex_summary <- sf::st_transform(hex_summary, plot_crs)
-    rast        <- terra::project(rast, plot_crs$wkt)
-    water_to_plot <- resolve_water_layer(water, study_area)
+    plot_crs   <- water$crs
+    study_area <- sf::st_transform(study_area, plot_crs)
+    rast       <- terra::project(rast, plot_crs$wkt)
+    water_to_plot <- water %>% st_intersection(study_area)
   } else {
-    plot_crs    <- sf::st_crs(hex_summary)
-    study_area  <- sf::st_transform(study_area, plot_crs)
-    hex_summary <- sf::st_transform(hex_summary, plot_crs)
-    rast        <- terra::project(rast, plot_crs$wkt)
+    plot_crs <- sf::st_crs(study_area)
+    rast     <- terra::project(rast, plot_crs$wkt)
   }
   
   # Derive colour scale upper cap from the raster (display copy only)
   rast_display <- terra::crop(rast, terra::vect(study_area))
   rast_display <- terra::mask(rast_display, terra::vect(study_area))
   rast_display[rast_display <= 0] <- NA
-  r_max <- as.numeric(stats::quantile(
-    terra::values(rast_display), rast_max_q, na.rm = TRUE
-  ))
-  if (!is.finite(r_max) || r_max <= 0) r_max <- 1
+  r_max <- resolve_rast_max(
+    rast       = rast_display,
+    rast_max   = rast_max,
+    rast_max_q = rast_max_q
+  )
   
   # Hexagons with pred_mean of 0 or NA map to NA to transparent
   hex_summary <- hex_summary |>
@@ -1560,17 +1948,13 @@ plot_hex_pred_obs <- function(hex_summary,
       )
     )
   
-  if (is.null(max_count_per_effort)) {
-    detected <- hex_summary$mean_count_per_effort[
-      !is.na(hex_summary$mean_count_per_effort) &
-        hex_summary$mean_count_per_effort > 0
-    ]
-    max_count_per_effort <- if (length(detected) == 0) 1 else
-      as.numeric(stats::quantile(detected, probs = 0.99, na.rm = TRUE))
-  }
-  if (!is.finite(max_count_per_effort) || max_count_per_effort <= 0) {
-    max_count_per_effort <- 1
-  }
+  max_count_per_effort <- resolve_positive_max(
+    x             = hex_summary$mean_count_per_effort,
+    max_value     = max_count_per_effort,
+    max_q         = max_count_per_effort_q,
+    default       = 1,
+    argument_name = "max_count_per_effort"
+  )
   
   hex_area       <- as.numeric(sf::st_area(hex_summary))
   inner_diameter <- 2 * sqrt(hex_area / (2 * sqrt(3)))
@@ -1626,6 +2010,15 @@ plot_hex_pred_obs <- function(hex_summary,
                               linewidth = 0.1)
   }
   
+  if (!is.null(region_boundaries)) {
+    p <- p +
+      ggplot2::geom_sf(
+        data = region_boundaries,
+        fill = "transparent",
+        colour = "gray30"
+      )
+  }
+  
   p <- p +
     ggplot2::geom_sf(
       data   = subset(hex_summary, n_surveys > 0),
@@ -1641,7 +2034,7 @@ plot_hex_pred_obs <- function(hex_summary,
     ggspatial::annotation_scale(location = "br", width_hint = 0.25) +
     ggplot2::scale_fill_gradientn(
       colours  = palette,
-      limits   = c(NA, r_max),   # lower bound auto-detected from non-zero data
+      limits   = c(0, r_max),
       oob      = scales::squish,
       na.value = "transparent",  # absent hexagons show panel background through
       trans    = transform,
@@ -1702,9 +2095,12 @@ plot_hex_pred_obs <- function(hex_summary,
 # Returns: A `ggplot` object.
 plot_honeycomb <- function(hex_summary,
                            study_area,
+                           region_boundaries    = NULL,
                            water                = NULL,
                            max_surveys          = NULL,
+                           max_surveys_q        = 0.80,
                            max_count_per_effort = NULL,
+                           max_count_per_effort_q = 0.99,
                            alpha_min            = 0.15,
                            alpha_max            = 1,
                            hex_fill             = "#B38F47", 
@@ -1716,40 +2112,60 @@ plot_honeycomb <- function(hex_summary,
   stopifnot("n_surveys" %in% names(hex_summary))
   stopifnot("mean_count_per_effort" %in% names(hex_summary))
   
+  # water_to_plot <- NULL
+  # 
+  # if (!is.null(water)) {
+  #   stopifnot(inherits(water, "processed_water"))
+  #   plot_crs    <- water$crs
+  #   study_area  <- sf::st_transform(study_area, plot_crs)
+  #   hex_summary <- sf::st_transform(hex_summary, plot_crs)
+  #   water_to_plot <- resolve_water_layer(water, study_area)
+  # } else {
+  #   plot_crs   <- sf::st_crs(hex_summary)
+  #   study_area <- sf::st_transform(study_area, plot_crs)
+  # }
+  
   water_to_plot <- NULL
   
   if (!is.null(water)) {
-    stopifnot(inherits(water, "processed_water"))
-    plot_crs    <- water$crs
-    study_area  <- sf::st_transform(study_area, plot_crs)
-    hex_summary <- sf::st_transform(hex_summary, plot_crs)
-    water_to_plot <- resolve_water_layer(water, study_area)
+    
+    if (inherits(water, "sf")) {
+      plot_crs <- sf::st_crs(study_area)
+      water_to_plot <- water |>
+        sf::st_transform(plot_crs) |>
+        sf::st_intersection(study_area)
+      
+    } else if (inherits(water, "processed_water")) {
+      plot_crs <- water$crs
+      study_area <- sf::st_transform(study_area, plot_crs)
+      hex_summary <- sf::st_transform(hex_summary, plot_crs)
+      water_to_plot <- resolve_water_layer(water, study_area)
+      
+    } else {
+      stop("water must be NULL, an sf object, or a processed_water object.")
+    }
+    
   } else {
-    plot_crs   <- sf::st_crs(hex_summary)
+    plot_crs <- sf::st_crs(hex_summary)
     study_area <- sf::st_transform(study_area, plot_crs)
   }
   
-  if (is.null(max_surveys)) {
-    surveyed    <- hex_summary$n_surveys[
-      !is.na(hex_summary$n_surveys) & hex_summary$n_surveys >= 1
-    ]
-    max_surveys <- if (length(surveyed) == 0) 1 else
-      as.numeric(stats::quantile(surveyed, probs = 0.8, na.rm = TRUE))
-  }
-  max_surveys <- ceiling(max_surveys)
+  max_surveys <- ceiling(resolve_positive_max(
+    x             = hex_summary$n_surveys,
+    max_value     = max_surveys,
+    max_q         = max_surveys_q,
+    default       = 1,
+    argument_name = "max_surveys"
+  ))
   if (!is.finite(max_surveys) || max_surveys < 1) max_surveys <- 1
   
-  if (is.null(max_count_per_effort)) {
-    detected <- hex_summary$mean_count_per_effort[
-      !is.na(hex_summary$mean_count_per_effort) &
-        hex_summary$mean_count_per_effort > 0
-    ]
-    max_count_per_effort <- if (length(detected) == 0) 1 else
-      as.numeric(stats::quantile(detected, probs = 0.99, na.rm = TRUE))
-  }
-  if (!is.finite(max_count_per_effort) || max_count_per_effort <= 0) {
-    max_count_per_effort <- 1
-  }
+  max_count_per_effort <- resolve_positive_max(
+    x             = hex_summary$mean_count_per_effort,
+    max_value     = max_count_per_effort,
+    max_q         = max_count_per_effort_q,
+    default       = 1,
+    argument_name = "max_count_per_effort"
+  )
   
   effort_info   <- make_effort_classes(max_surveys, alpha_min, alpha_max)
   max_surveys   <- effort_info$max_surveys
@@ -1794,7 +2210,7 @@ plot_honeycomb <- function(hex_summary,
     dplyr::mutate(x = xy[, 1], y = xy[, 2])
   
   p <- ggplot2::ggplot() +
-    ggplot2::geom_sf(data = study_area, fill = NA, colour = "gray80")
+    ggplot2::geom_sf(data = study_area, fill = NA, colour = "gray30")
   
   if (!is.null(water_to_plot)) {
     p <- p + ggplot2::geom_sf(data = water_to_plot,
@@ -1802,12 +2218,25 @@ plot_honeycomb <- function(hex_summary,
                               linewidth = 0.1)
   }
   
-  p +
+  
+  
+  p <- p +
     ggplot2::geom_sf(
       data = hex_summary_plot,
       ggplot2::aes(alpha = effort_class),
       fill = hex_fill, colour = NA
-    ) +
+    )
+  
+  if (!is.null(region_boundaries)) {
+    p <- p +
+      ggplot2::geom_sf(
+        data = region_boundaries,
+        fill = "transparent",
+        colour = "gray30"
+      )
+  }
+  
+  p <- p +  
     ggforce::geom_circle(
       data = dplyr::filter(circle_df, circle_radius > 0),
       ggplot2::aes(x0 = x, y0 = y, r = circle_radius),
@@ -1907,4 +2336,203 @@ make_effort_classes <- function(max_surveys, alpha_min, alpha_max) {
     effort_levels   = effort_levels,
     alpha_values    = alpha_values
   )
+}
+
+
+# Plot region-specific estimates of population change
+make_change_comparison_plot <- function(
+    regional_estimates_FullModel,
+    paired_change_summary,
+    region_order = c(
+      "Carolinian",
+      "South Central",
+      "Shield",
+      "Boreal",
+      "Hudson Bay"
+    ),
+    title = "Comparison of population change estimates",
+    subtitle = "Median and 95% credible intervals"
+) {
+  
+  pct_to_logratio <- function(x) log1p(x / 100)
+  
+  pct_label <- function(x) {
+    pct <- 100 * (exp(x) - 1)
+    dplyr::case_when(
+      pct > 0  ~ paste0("+", round(pct), "%"),
+      pct == 0 ~ "0%",
+      TRUE     ~ paste0(round(pct), "%")
+    )
+  }
+  
+  x_breaks_pct <- c(-80, -50, -33, 0, 50, 100, 400)
+  x_breaks <- pct_to_logratio(x_breaks_pct)
+  
+  region_lookup <- regional_estimates_FullModel %>%
+    dplyr::select(
+      Biol_Region = Region_Number,
+      Region_Name
+    )
+  
+  full_model_plot_df <- regional_estimates_FullModel %>%
+    dplyr::transmute(
+      Biol_Region = Region_Number,
+      Region_Name,
+      analysis = "Full spatial model",
+      pct_change_median = pct_change_median,
+      pct_change_qlow   = pct_change_qlow,
+      pct_change_qhigh  = pct_change_qhigh
+    )
+  
+  paired_plot_df <- paired_change_summary %>%
+    dplyr::left_join(region_lookup, by = "Biol_Region") %>%
+    dplyr::mutate(
+      analysis = dplyr::case_when(
+        shared_radius_km == 0.05 ~ "Repeated (50 m buffer)",
+        TRUE ~ paste0("Shared footprint = ", shared_radius_km * 1000, " m")
+      )
+    ) %>%
+    dplyr::transmute(
+      Biol_Region,
+      Region_Name,
+      analysis,
+      pct_change_median = pct_change_median,
+      pct_change_qlow   = pct_change_qlow,
+      pct_change_qhigh  = pct_change_qhigh
+    )
+  
+  plot_df <- dplyr::bind_rows(
+    full_model_plot_df,
+    paired_plot_df
+  ) %>%
+    dplyr::mutate(
+      Region_Name = factor(Region_Name, levels = region_order),
+      region_y = as.numeric(Region_Name),
+      analysis = factor(
+        analysis,
+        levels = c(
+          "Full spatial model",
+          "Repeated (50 m buffer)"
+        )
+      ),
+      y_pos = dplyr::case_when(
+        analysis == "Full spatial model"    ~ region_y + 0.1,
+        analysis == "Repeated (50 m buffer)"  ~ region_y - 0.1
+      ),
+      
+      # Transform percent change to symmetric log-ratio scale
+      x_med  = pct_to_logratio(pct_change_median),
+      x_low  = pct_to_logratio(pct_change_qlow),
+      x_high = pct_to_logratio(pct_change_qhigh)
+    )
+  
+  ggplot2::ggplot(
+    plot_df,
+    ggplot2::aes(
+      y = y_pos,
+      x = x_med,
+      xmin = x_low,
+      xmax = x_high,
+      colour = analysis
+    )
+  ) +
+    ggplot2::geom_vline(
+      xintercept = 0,
+      linewidth = 0.4,
+      linetype = "dashed",
+      colour = "grey40"
+    ) +
+    ggplot2::geom_pointrange(
+      linewidth = 1,
+      fatten = 2.5
+    ) +
+    ggplot2::scale_x_continuous(
+      breaks = x_breaks,
+      labels = pct_label
+    ) +
+    ggplot2::scale_y_continuous(
+      breaks = seq_along(region_order),
+      labels = region_order
+    ) +
+    ggplot2::scale_colour_manual(
+      values = c(
+        "Full spatial model"    = "black",
+        "Repeated (50 m buffer)"  = "#1FAA59"
+      )
+    ) +
+    ggplot2::labs(
+      x = "Estimated population change (%)",
+      y = NULL,
+      colour = "",
+      title = title,
+      subtitle = subtitle
+    ) +
+    ggplot2::theme_bw(base_size = 13) +
+    ggplot2::theme(
+      panel.grid.major.y = ggplot2::element_blank(),
+      panel.grid.minor = ggplot2::element_blank(),
+      legend.position = "top",
+      plot.title = ggplot2::element_text(face = "bold")
+    )
+}
+
+make_paired_summary_table <- function(paired_data_summary,
+                                      title = "Repeated survey data summary") {
+  
+  table_df <- paired_data_summary %>%
+    dplyr::ungroup() %>%
+    dplyr::mutate(
+      Atlas = dplyr::recode(
+        Atlas,
+        OBBA2 = "Atlas 2",
+        OBBA3 = "Atlas 3"
+      ),
+      line = paste0(
+        Atlas,
+        ": mean count = ", sprintf("%.2f", mean_count),
+        "   |   PObs = ", sprintf("%.2f", PObs),
+        "   |   n_svy = ", scales::comma(n_surveys),
+        "   |   n_sq = ", scales::comma(n_squares)
+      )
+    ) %>%
+    dplyr::arrange(dplyr::desc(Biol_Region), Atlas) %>%
+    dplyr::group_by(Biol_Region, ECOZONE_NA) %>%
+    dplyr::summarise(
+      text = paste0(
+        "<b>", unique(ECOZONE_NA), "</b>",
+        "<br>",
+        paste(line, collapse = "<br>")
+      ),
+      .groups = "drop"
+    ) %>%
+    dplyr::arrange(dplyr::desc(Biol_Region)) %>%
+    dplyr::mutate(
+      y = dplyr::row_number()
+    )
+  
+  ggplot2::ggplot(table_df, ggplot2::aes(x = 0, y = -y, label = text)) +
+    ggtext::geom_richtext(
+      hjust = 0,
+      vjust = 1,
+      lineheight = 1.05,
+      size = 3.2,
+      fill = NA,
+      label.color = NA
+    ) +
+    ggplot2::labs(title = title) +
+    ggplot2::coord_cartesian(
+      xlim = c(0, 1),
+      ylim = c(-max(table_df$y) - 0.2, -0.5),
+      expand = FALSE,
+      clip = "off"
+    ) +
+    ggplot2::theme_void() +
+    ggplot2::theme(
+      plot.title = ggplot2::element_text(
+        size = 13,
+        hjust = 0,
+        margin = ggplot2::margin(b = 6)
+      ),
+      plot.margin = ggplot2::margin(5, 5, 5, 5)
+    )
 }

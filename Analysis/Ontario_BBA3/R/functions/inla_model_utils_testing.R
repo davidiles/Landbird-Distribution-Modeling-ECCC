@@ -84,11 +84,401 @@ make_cov_df <- function(covars, mean = 0, sd_linear = 1) {
   )
 }
 
+
+fit_PC_ARU <- function(
+    sp_dat,
+    study_boundary,
+    covariates,
+    timeout_min = 15,
+    
+    # Spatial SPDE priors
+    prior_range_abund  = c(200, 0.1),
+    prior_sigma_abund  = c(3,   0.1),
+    prior_range_change = c(200, 0.1),
+    prior_sigma_change = c(0.1, 0.1),
+    
+    # 1-D SPDE priors: survey timing
+    prior_HSS_range = c(5, 0.9),
+    prior_HSS_sigma = c(3, 0.1),
+    
+    prior_DOY_range_global = c(7, 0.9),
+    prior_DOY_sigma_global = c(3, 0.1),
+    
+    # Atlas-square iid prior
+    kappa_pcprec_diff = c(1, 0.1),
+    
+    # Likelihood
+    family = c("poisson", "nbinomial"),
+    
+    # Negative-binomial PC prior settings
+    nb_pc_target_prob     = 0.5,
+    nb_pc_threshold_theta = 5,
+    
+    # inlabru / INLA options
+    inla_mode    = "experimental",
+    int_strategy = "eb",
+    strategy     = "simplified.laplace",
+    bru_verbose  = 4,
+    waic         = FALSE,
+    cpo          = FALSE,
+    retry        = 0
+) {
+  
+  # ------------------------------------------------------------
+  # 1. Validate inputs
+  # ------------------------------------------------------------
+  
+  family <- match.arg(family)
+  
+  if (!inherits(sp_dat, "sf")) {
+    stop("sp_dat must be an sf object with a geometry column.")
+  }
+  
+  if (!inherits(study_boundary, "sf")) {
+    stop("study_boundary must be an sf object.")
+  }
+  
+  required_cols <- c(
+    "count",
+    "Atlas3",
+    "Atlas3_c",
+    "Hours_Since_Sunrise",
+    "days_midpoint",
+    "ARU",
+    "Survey_Type",
+    "square_atlas",
+    "geometry"
+  )
+  
+  missing_cols <- setdiff(required_cols, names(sp_dat))
+  
+  if (length(missing_cols) > 0) {
+    stop(
+      "sp_dat is missing required columns: ",
+      paste(missing_cols, collapse = ", ")
+    )
+  }
+  
+  if (!is.data.frame(covariates)) {
+    stop("covariates must be a data.frame.")
+  }
+  
+  needed_cov_cols <- c("covariate", "beta", "model", "mean", "prec")
+  cov_missing <- setdiff(needed_cov_cols, names(covariates))
+  
+  if (length(cov_missing) > 0) {
+    stop(
+      "covariates is missing required columns: ",
+      paste(cov_missing, collapse = ", ")
+    )
+  }
+  
+  # ------------------------------------------------------------
+  # 2. Set INLA options and align CRS
+  # ------------------------------------------------------------
+  
+  INLA::inla.setOption(inla.timeout = 60 * timeout_min)
+  
+  if (sf::st_crs(sp_dat) != sf::st_crs(study_boundary)) {
+    study_boundary <- sf::st_transform(study_boundary, sf::st_crs(sp_dat))
+  }
+  
+  # ------------------------------------------------------------
+  # 3. Ensure model variables have expected types
+  # ------------------------------------------------------------
+  
+  sp_dat$Hours_Since_Sunrise <- ensure_numeric(sp_dat$Hours_Since_Sunrise)
+  sp_dat$days_midpoint       <- ensure_numeric(sp_dat$days_midpoint)
+  sp_dat$Atlas3_c            <- ensure_numeric(sp_dat$Atlas3_c)
+  sp_dat$ARU                 <- ensure_numeric(sp_dat$ARU)
+
+  # ------------------------------------------------------------
+  # 5. Build spatial meshes internally
+  # ------------------------------------------------------------
+  
+  hull <- fmesher::fm_extensions(
+    study_boundary,
+    convex  = c(50, 200),
+    concave = c(10, 200)
+  )
+  
+  mesh_abund <- fmesher::fm_mesh_2d_inla(
+    loc      = sf::st_as_sfc(sp_dat),
+    boundary = hull,
+    max.edge = c(40, 100),
+    cutoff   = 40,
+    crs      = sf::st_crs(sp_dat)
+  )
+  
+  mesh_chg <- fmesher::fm_mesh_2d_inla(
+    loc      = sf::st_as_sfc(sp_dat),
+    boundary = hull,
+    max.edge = c(40, 100),
+    cutoff   = 40,
+    crs      = sf::st_crs(sp_dat)
+  )
+  
+  # ------------------------------------------------------------
+  # 6. Build spatial SPDE models
+  # ------------------------------------------------------------
+  
+  matern_mean <- INLA::inla.spde2.pcmatern(
+    mesh        = mesh_abund,
+    prior.range = prior_range_abund,
+    prior.sigma = prior_sigma_abund,
+    constr      = TRUE
+  )
+  
+  matern_diff <- INLA::inla.spde2.pcmatern(
+    mesh        = mesh_chg,
+    prior.range = prior_range_change,
+    prior.sigma = prior_sigma_change,
+    constr      = TRUE
+  )
+  
+  # ------------------------------------------------------------
+  # 7. Build 1-D SPDE smoothers for timing and effort corrections
+  # ------------------------------------------------------------
+  
+  HSS_range <- range(sp_dat$Hours_Since_Sunrise, na.rm = TRUE)
+  
+  HSS_mesh1D <- INLA::inla.mesh.1d(
+    loc = seq(HSS_range[1] - 1, 
+              HSS_range[2] + 1, 
+              length.out = 11),
+    boundary = "free"
+  )
+  
+  HSS_spde <- INLA::inla.spde2.pcmatern(
+    mesh        = HSS_mesh1D,
+    prior.range = prior_HSS_range,
+    prior.sigma = prior_HSS_sigma,
+    constr      = TRUE
+  )
+  
+  DOY_range <- range(sp_dat$days_midpoint, na.rm = TRUE)
+  
+  DOY_mesh1D <- INLA::inla.mesh.1d(
+    loc = seq(DOY_range[1] - 5, 
+              DOY_range[2] + 5, 
+              length.out = 15),
+    boundary = "free"
+  )
+  
+  DOY_spde_global <- INLA::inla.spde2.pcmatern(
+    mesh        = DOY_mesh1D,
+    prior.range = prior_DOY_range_global,
+    prior.sigma = prior_DOY_sigma_global,
+    constr      = TRUE
+  )
+
+  # ------------------------------------------------------------
+  # 8. Define iid atlas-square prior
+  # ------------------------------------------------------------
+  
+  pc_prec_diff <- list(
+    prior = "pcprec",
+    param = kappa_pcprec_diff
+  )
+  
+  # ------------------------------------------------------------
+  # 9. Build covariate components and formula terms
+  # ------------------------------------------------------------
+  
+  covariates <- covariates %>%
+    dplyr::mutate(
+      component = paste0(
+        "Beta", beta, "_", covariate,
+        '(1, model="', model,
+        '", mean.linear=', mean,
+        ", prec.linear=", prec,
+        ")"
+      ),
+      term = paste0(
+        "Beta", beta, "_", covariate,
+        " * I(", covariate, "^", beta, ")"
+      )
+    )
+  
+  covar_components_str <- if (nrow(covariates) > 0) {
+    paste(covariates$component, collapse = " + ")
+  } else {
+    ""
+  }
+  
+  covar_terms_str <- if (nrow(covariates) > 0) {
+    paste(covariates$term, collapse = " + ")
+  } else {
+    ""
+  }
+  
+  # ------------------------------------------------------------
+  # 10. Define inlabru components
+  # ------------------------------------------------------------
+  
+  components_str <- paste0(
+    "~ Intercept(1) + ",
+    
+    "effect_Atlas3(
+       1,
+       model = 'linear',
+       mean.linear = 0,
+       prec.linear = 1 / ((log(1.5) / 2)^2)
+     ) + ",
+    
+    "effect_ARU(
+       1,
+       model = 'linear',
+       mean.linear = 0,
+       prec.linear = 1 / ((log(1.25) / 2)^2)
+     ) + ",
+    
+    "spde_mean(main = geometry, model = matern_mean) + ",
+    "spde_diff(main = geometry, model = matern_diff) + ",
+    
+    "HSS_global(main = Hours_Since_Sunrise, model = HSS_spde) + ",
+    "DOY_global(main = days_midpoint, model = DOY_spde_global) + ",
+    
+    "kappa_diff(
+       square_atlas,
+       model = 'iid',
+       constr = TRUE,
+       hyper = list(prec = pc_prec_diff)
+     )",
+    
+    if (nchar(covar_components_str) > 0) {
+      paste0(" + ", covar_components_str)
+    } else {
+      ""
+    }
+  )
+  
+  model_components <- stats::as.formula(components_str)
+  
+  # ------------------------------------------------------------
+  # 11. Define linear predictor
+  # ------------------------------------------------------------
+  
+  formula_str <- paste0(
+    "count ~
+      Intercept +
+      HSS_global +
+      DOY_global +
+
+      ARU * effect_ARU +
+      kappa_diff +
+      spde_mean +
+
+      Atlas3_c * spde_diff +
+      Atlas3_c * effect_Atlas3",
+    
+    if (nchar(covar_terms_str) > 0) {
+      paste0(" + ", covar_terms_str)
+    } else {
+      ""
+    }
+  )
+  
+  model_formula <- stats::as.formula(formula_str)
+  
+  # ------------------------------------------------------------
+  # 12. Build likelihood
+  # ------------------------------------------------------------
+  
+  if (family == "poisson") {
+    
+    lik <- inlabru::like(
+      family  = "poisson",
+      formula = model_formula,
+      data    = sp_dat
+    )
+    
+  } else {
+    
+    lambda <- calibrate_pc_lambda(
+      target_prob     = nb_pc_target_prob,
+      threshold_theta = nb_pc_threshold_theta
+    )
+    
+    lik <- inlabru::like(
+      family  = "nbinomial",
+      formula = model_formula,
+      data    = sp_dat,
+      control.family = list(
+        hyper = list(
+          theta = list(
+            prior = "pc.gamma",
+            param = c(lambda)
+          )
+        )
+      )
+    )
+  }
+  
+  # ------------------------------------------------------------
+  # 13. Set inlabru / INLA options
+  # ------------------------------------------------------------
+  
+  bru_opts <- list(
+    inla.mode = inla_mode,
+    
+    control.inla = list(
+      int.strategy = int_strategy,
+      strategy     = strategy
+    ),
+    
+    control.compute = list(
+      waic = waic,
+      cpo  = cpo
+    ),
+    
+    bru_verbose = bru_verbose
+  )
+  
+  # ------------------------------------------------------------
+  # 14. Fit model, with optional retries
+  # ------------------------------------------------------------
+  
+  attempt <- 0
+  last_err <- NULL
+  fit <- NULL
+  
+  while (attempt <= retry) {
+    
+    attempt <- attempt + 1
+    
+    fit <- try(
+      inlabru::bru(
+        components = model_components,
+        lik,
+        options = bru_opts
+      ),
+      silent = TRUE
+    )
+    
+    if (!inherits(fit, "try-error")) {
+      break
+    }
+    
+    last_err <- fit
+    fit <- NULL
+  }
+  
+  if (is.null(fit)) {
+    stop(
+      "bru() failed after ", attempt, " attempt(s).\nLast error:\n",
+      as.character(last_err)
+    )
+  }
+  
+  fit
+}
+
 # Fit the joint (multi-atlas) INLA/inlabru model used in the OBBA workflow
 #
 # This is the main model-fitting routine for the joint Atlas 2 vs Atlas 3
 # analysis.
-fit_inla_multi_atlas <- function(
+fit_PC_ARU_CL <- function(
     sp_dat,
     study_boundary,
     covariates,
@@ -947,22 +1337,20 @@ make_shared_footprint_dataset <- function(
   shared_dat
 }
 
+
+# Fits only checklists and ARUs
 fit_inla_shared_footprint_change <- function(
     sp_dat_shared,
     region_col = "Biol_Region",
     family = c("poisson", "nbinomial"),
     
-    # 1-D SPDE priors
     prior_HSS_range = c(5, 0.9),
     prior_HSS_sigma = c(3, 0.1),
     prior_DOY_range = c(7, 0.9),
     prior_DOY_sigma = c(3, 0.1),
     
-    # Random-effect priors
     square_pcprec = c(1, 0.1),
-    region_change_pcprec = c(1, 0.1),
     
-    # INLA options
     timeout_min = 15,
     int_strategy = "eb",
     strategy = "simplified.laplace",
@@ -995,16 +1383,13 @@ fit_inla_shared_footprint_change <- function(
   missing_cols <- setdiff(required_cols, names(sp_dat_shared))
   
   if (length(missing_cols) > 0) {
-    stop(
-      "sp_dat_shared is missing required columns: ",
-      paste(missing_cols, collapse = ", ")
-    )
+    stop("Missing columns: ", paste(missing_cols, collapse = ", "))
   }
   
   INLA::inla.setOption(inla.timeout = 60 * timeout_min)
   
   # ------------------------------------------------------------
-  # 2. Prepare point-count / ARU dataset
+  # 2. Prepare data
   # ------------------------------------------------------------
   
   sp_dat_shared <- sp_dat_shared |>
@@ -1015,8 +1400,7 @@ fit_inla_shared_footprint_change <- function(
       ARU = as.numeric(Survey_Type == "ARU"),
       Hours_Since_Sunrise = as.numeric(Hours_Since_Sunrise),
       days_midpoint = as.numeric(days_midpoint),
-      region_factor = factor(.data[[region_col]]),
-      square_factor = factor(square_atlas)
+      region_factor = factor(.data[[region_col]])
     )
   
   if (nrow(sp_dat_shared) == 0) {
@@ -1024,13 +1408,59 @@ fit_inla_shared_footprint_change <- function(
   }
   
   # ------------------------------------------------------------
-  # 3. Build 1-D SPDE smoothers for survey timing
+  # 3. Numeric iid index for atlas-square random effect
+  # ------------------------------------------------------------
+  
+  square_levels <- sort(unique(sp_dat_shared$square_atlas))
+  
+  square_lookup <- tibble::tibble(
+    square_atlas = square_levels,
+    square_id_iid = seq_along(square_levels)
+  )
+  
+  sp_dat_shared <- sp_dat_shared |>
+    dplyr::left_join(square_lookup, by = "square_atlas")
+  
+  n_square <- nrow(square_lookup)
+  
+  # ------------------------------------------------------------
+  # 4. Cell-means fixed effects for regions and change
+  # ------------------------------------------------------------
+  # region_* = region-specific OBBA2 log-scale intercept
+  # change_* = region-specific OBBA3 - OBBA2 log-scale change
+  
+  region_mm <- stats::model.matrix(
+    ~ 0 + region_factor,
+    data = sp_dat_shared
+  )
+  
+  region_levels <- levels(sp_dat_shared$region_factor)
+  colnames(region_mm) <- paste0("region_", region_levels)
+  
+  change_mm <- region_mm * sp_dat_shared$Atlas3
+  colnames(change_mm) <- paste0("change_", region_levels)
+  
+  sp_dat_shared <- dplyr::bind_cols(
+    sp_dat_shared,
+    as.data.frame(region_mm),
+    as.data.frame(change_mm)
+  )
+  
+  region_terms <- paste(colnames(region_mm), collapse = " + ")
+  change_terms <- paste(colnames(change_mm), collapse = " + ")
+  
+  # ------------------------------------------------------------
+  # 5. Build 1-D SPDE smoothers
   # ------------------------------------------------------------
   
   HSS_range <- range(sp_dat_shared$Hours_Since_Sunrise, na.rm = TRUE)
   
   HSS_mesh1D <- INLA::inla.mesh.1d(
-    loc = seq(HSS_range[1] - 1, HSS_range[2] + 1, length.out = 11),
+    loc = seq(
+      HSS_range[1] - 1,
+      HSS_range[2] + 1,
+      length.out = 11
+    ),
     boundary = "free"
   )
   
@@ -1044,7 +1474,11 @@ fit_inla_shared_footprint_change <- function(
   DOY_range <- range(sp_dat_shared$days_midpoint, na.rm = TRUE)
   
   DOY_mesh1D <- INLA::inla.mesh.1d(
-    loc = seq(DOY_range[1] - 5, DOY_range[2] + 5, length.out = 15),
+    loc = seq(
+      DOY_range[1] - 5,
+      DOY_range[2] + 5,
+      length.out = 15
+    ),
     boundary = "free"
   )
   
@@ -1056,7 +1490,7 @@ fit_inla_shared_footprint_change <- function(
   )
   
   # ------------------------------------------------------------
-  # 4. Random-effect priors
+  # 6. Priors
   # ------------------------------------------------------------
   
   pc_prec_square <- list(
@@ -1064,72 +1498,91 @@ fit_inla_shared_footprint_change <- function(
     param = square_pcprec
   )
   
-  pc_prec_region_change <- list(
-    prior = "pcprec",
-    param = region_change_pcprec
+  # ------------------------------------------------------------
+  # 7. Fixed-effect components
+  # ------------------------------------------------------------
+  
+  region_coef_names <- paste0("b_region_", region_levels)
+  change_coef_names <- paste0("b_change_", region_levels)
+  
+  region_components <- paste0(
+    region_coef_names,
+    "(1, model = 'linear', mean.linear = 0.2, prec.linear = 1 / (3^2))"
+  )
+  
+  change_components <- paste0(
+    change_coef_names,
+    "(1, model = 'linear', mean.linear = 0, prec.linear = 1 / (log(2)^2))"
+  )
+  
+  fixed_components <- paste(
+    c(region_components, change_components),
+    collapse = " + "
+  )
+  
+  region_terms <- paste(
+    paste0(colnames(region_mm), " * ", region_coef_names),
+    collapse = " + "
+  )
+  
+  change_terms <- paste(
+    paste0(colnames(change_mm), " * ", change_coef_names),
+    collapse = " + "
   )
   
   # ------------------------------------------------------------
-  # 5. Define components
+  # 8. Define inlabru components
   # ------------------------------------------------------------
-  # region_change is the region-specific OBBA3 effect.
-  # exp(region_change) - 1 gives proportional change.
+  # NOTE: no global Intercept(1), because region_* terms are cell means.
   
-  components <- ~
-    Intercept(1) +
+  components <- stats::as.formula(paste0(
+    "~ ",
+    fixed_components,
     
-    effect_ARU(
-      1,
-      model = "linear",
-      mean.linear = 0,
-      prec.linear = 1 / ((log(1.25) / 2)^2)
-    ) +
+    " + effect_ARU(
+        1,
+        model = 'linear',
+        mean.linear = 0,
+        prec.linear = 1 / ((log(1.25) / 2)^2)
+      )",
     
-    region_intercept(
-      region_factor,
-      model = "iid",
-      constr = TRUE
-    ) +
+    " + square_effect(
+        main = square_id_iid,
+        model = 'iid',
+        n = n_square,
+        constr = TRUE,
+        hyper = list(prec = pc_prec_square)
+      )",
     
-    region_change(
-      region_factor,
-      model = "iid",
-      constr = FALSE,
-      hyper = list(prec = pc_prec_region_change)
-    ) +
+    " + HSS_global(
+        main = Hours_Since_Sunrise,
+        model = HSS_spde
+      )",
     
-    square_effect(
-      square_factor,
-      model = "iid",
-      constr = TRUE,
-      hyper = list(prec = pc_prec_square)
-    ) +
-    
-    HSS_global(
-      main = Hours_Since_Sunrise,
-      model = HSS_spde
-    ) +
-    
-    DOY_global(
-      main = days_midpoint,
-      model = DOY_spde
-    )
+    " + DOY_global(
+        main = days_midpoint,
+        model = DOY_spde
+      )"
+  ))
   
   # ------------------------------------------------------------
-  # 6. Define linear predictor
+  # 9. Define likelihood formula
   # ------------------------------------------------------------
+  # NOTE: no global intercept term here either.
   
-  formula <- count ~
-    Intercept +
-    region_intercept +
-    Atlas3 * region_change +
-    ARU * effect_ARU +
-    HSS_global +
-    DOY_global +
-    square_effect
+  formula <- stats::as.formula(paste0(
+    "count ~ ",
+    region_terms,
+    " + ",
+    change_terms,
+    " + ARU * effect_ARU",
+    " + HSS_global",
+    " + DOY_global",
+    " + square_effect"
+  ))
   
   # ------------------------------------------------------------
-  # 7. Likelihood
+  # 10. Fit model
   # ------------------------------------------------------------
   
   lik <- inlabru::like(
@@ -1137,10 +1590,6 @@ fit_inla_shared_footprint_change <- function(
     formula = formula,
     data = sp_dat_shared
   )
-  
-  # ------------------------------------------------------------
-  # 8. Fit model
-  # ------------------------------------------------------------
   
   fit <- inlabru::bru(
     components = components,
@@ -1159,7 +1608,105 @@ fit_inla_shared_footprint_change <- function(
     )
   )
   
+  fit$region_levels <- region_levels
+  fit$square_lookup <- square_lookup
+  
   fit
+}
+
+summarize_shared_footprint_change <- function(mod_shared) {
+  
+  probs <- c(
+    q025 = 0.025,
+    q05  = 0.05,
+    q10  = 0.10,
+    q50  = 0.50,
+    q90  = 0.90,
+    q95  = 0.95,
+    q975 = 0.975
+  )
+  
+  change_names <- grep(
+    "^b_change_",
+    rownames(mod_shared$summary.fixed),
+    value = TRUE
+  )
+  
+  purrr::map_dfr(change_names, function(term) {
+    
+    marg <- mod_shared$marginals.fixed[[term]]
+    
+    q_log <- INLA::inla.qmarginal(
+      p = unname(probs),
+      marginal = marg
+    )
+    
+    names(q_log) <- names(probs)
+    
+    q_pct <- 100 * (exp(q_log) - 1)
+    
+    tibble::tibble(
+      Biol_Region = as.integer(sub("^b_change_", "", term)),
+      term = term,
+      
+      log_change_mean = mod_shared$summary.fixed[term, "mean"],
+      log_change_sd   = mod_shared$summary.fixed[term, "sd"],
+      
+      pct_change_mean = 100 * (exp(log_change_mean) - 1),
+      pct_change_q50 = q_pct["q50"],
+      
+      pct_change_q025  = q_pct["q025"],
+      pct_change_q05  = q_pct["q05"],
+      pct_change_q10  = q_pct["q10"],
+      pct_change_q90  = q_pct["q90"],
+      pct_change_q95  = q_pct["q95"],
+      pct_change_q975  = q_pct["q975"]
+    )
+  }) |>
+    dplyr::arrange(Biol_Region)
+}
+
+summarize_shared_footprint_data <- function(sp_dat_shared, radius_km, sp_name, sp_code) {
+  
+  if (nrow(sp_dat_shared) == 0) {
+    return(tibble::tibble(
+      sp_name = sp_name,
+      sp_code = sp_code,
+      radius_km = radius_km,
+      Biol_Region = NA_integer_,
+      Atlas = NA_character_,
+      n_surveys = 0L,
+      n_squares = 0L,
+      n_detections = 0L,
+      total_count = 0,
+      mean_count = NA_real_,
+      mean_count_positive = NA_real_
+    ))
+  }
+  
+  sp_dat_shared |>
+    sf::st_drop_geometry() |>
+    dplyr::group_by(Biol_Region, Atlas) |>
+    dplyr::summarise(
+      n_surveys = dplyr::n(),
+      n_squares = dplyr::n_distinct(square_id),
+      n_square_atlas = dplyr::n_distinct(square_atlas),
+      n_detections = sum(count > 0, na.rm = TRUE),
+      total_count = sum(count, na.rm = TRUE),
+      mean_count = mean(count, na.rm = TRUE),
+      mean_count_positive = ifelse(
+        any(count > 0, na.rm = TRUE),
+        mean(count[count > 0], na.rm = TRUE),
+        NA_real_
+      ),
+      .groups = "drop"
+    ) |>
+    dplyr::mutate(
+      sp_name = sp_name,
+      sp_code = sp_code,
+      radius_km = radius_km,
+      .before = 1
+    )
 }
 
 # ============================================================

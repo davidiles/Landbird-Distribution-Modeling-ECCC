@@ -142,52 +142,7 @@ species_run <- species_to_model %>%
     delta_dets_safe = log(detections_safe_OBBA3 / detections_safe_OBBA2),
     delta_squares_safe = log(n_squares_safe_OBBA3 / n_squares_safe_OBBA2)
   ) %>%
-  arrange(abs(delta_squares_safe)) %>%
-  # 
-  # # Temporary/manual species subset for development.
-  # # Remove this block to run all eligible species.
-  filter(
-    english_name %in% c(
-      # "American Goldfinch",
-      # "Bank Swallow",
-      # "Belted Kingfisher",
-      # "Bobolink",
-      # "Palm Warbler",
-      # "Belted Kingfisher",
-      # "Winter Wren",
-      # "Spotted Sandpiper",
-      # "Wilson's Warbler",
-      # "Yellow-rumped Warbler",
-      # "Wilson's Snipe",
-      # "Solitary Sandpiper",
-      # "Savannah Sparrow",
-      # "Philadelphia Vireo",
-      # "Hermit Thrush",
-      # "Connecticut Warbler",
-      # "Black-and-white Warbler",
-      # "Bobolink",
-      # "Palm Warbler",
-      # "Sandhill Crane",
-      # "Bank Swallow",
-      # "Eastern Meadowlark",
-      # "Northern Cardinal",
-      "Alder Flycatcher",
-      "American Crow",
-      "Black-and-white Warbler"
-      # "Olive-sided Flycatcher"
-      # "Dark-eyed Junco",
-      # "Osprey",
-      # "Rock Pigeon (Feral Pigeon)",
-      # "Double-crested Cormorant",
-      # "Swainson's Thrush",
-      # "American Crow",
-      # "American Goldfinch",
-      # "Bald Eagle",
-      # "Boreal Chickadee",
-      # "Common Yellowthroat",
-      # "Common Nighthawk"
-    )
-  )
+  arrange(abs(delta_squares_safe))
 
 print(species_run)
 message("Species queued: ", nrow(species_run))
@@ -465,7 +420,7 @@ for (i in seq_len(nrow(species_run))) {
   mod <- NULL
   
   mod <- try(
-    fit_inla_multi_atlas(
+    fit_PC_ARU_CL(
       sp_dat = sp_dat,
       study_boundary = study_boundary,
       covariates = cov_df_sp,

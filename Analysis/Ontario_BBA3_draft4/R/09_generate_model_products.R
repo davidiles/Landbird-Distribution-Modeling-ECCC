@@ -52,7 +52,7 @@ source(file.path(paths$functions, "inla_model_utils.R"))   # shared helpers
 # CONFIG
 # ============================================================
 
-model_name <- "PC_ARU_nosite"
+model_name <- "PC_ARU_CL_nosite"
 
 cfg <- list(
   # Rasterization
@@ -84,7 +84,7 @@ cfg <- list(
   # always covers at least sub-detection densities, even if the cumulative floor
   # falls below it. The probability-of-observation panel still uses it directly
   # (that call keeps the default fixed-floor method).
-  relabund_absent_limit = 1/1000,
+  relabund_absent_limit = 1/1000, # 1/1000
 
   # PDF page rendering
   page_width  = 20,
@@ -227,6 +227,10 @@ if (any(is.na(all_surveys$BCR))) {
           " surveys have no BCR assigned; they will be dropped from regional ",
           "change masking.")
 }
+
+# Pixel -> Biol_Region lookups for safe-date trimming (straight off 06's grids).
+pixel_region_OBBA2 <- grid_region_lookup(dat$grid_OBBA2)
+pixel_region_OBBA3 <- grid_region_lookup(dat$grid_OBBA3)
 
 # ------------------------------------------------------------
 # Water polygons used as map overlays (load or build once)
@@ -421,6 +425,16 @@ for (i in seq_along(dat_used_files)) {
 
   preds <- readRDS(pred_path)
 
+  # Trim out predictions for areas with no safe dates
+  # NOTE: this ensures a species cannot occur in a region where it has no safe dates
+  preds <- trim_predictions_to_safe_dates(
+    preds        = preds,
+    lookup_obba2 = pixel_region_OBBA2,
+    lookup_obba3 = pixel_region_OBBA3,
+    hex_no_safe_threshold = 0.5, # zero a hex when >= this fraction of its pixels are no-safe
+    trim_unclassified     = FALSE
+  )
+  
   # Change numbers for this species come from 08's saved table.
   rc_sp <- regional_change_all %>% dplyr::filter(sp_english == !!sp_english)
   if (nrow(rc_sp) == 0) {

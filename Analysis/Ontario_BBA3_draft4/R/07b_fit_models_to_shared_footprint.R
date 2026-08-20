@@ -59,10 +59,10 @@ nb_switch_min_n <- 50
 # The paired analysis mirrors the full model's two detectability smooths: a
 # time-of-day smooth AND a day-of-year smooth, each with the range held fixed and
 # only sigma estimated (see fit_inla_shared_footprint_change()).
-fixed_TOD_range <- 8                 # hours; held fixed, no prior
+fixed_TOD_range <- 9                 # hours; held fixed, no prior
 prior_TOD_sigma <- c(2, 0.1)         # P(sigma > 2) = 0.1 -> prior median ~0.6
 
-fixed_DOY_range <- 30                # days; held fixed, no prior
+fixed_DOY_range <- 45                # days; held fixed, no prior
 prior_DOY_sigma <- c(2, 0.1)         # P(sigma > 2) = 0.1 -> prior median ~0.6
 
 # Random-effect priors.
@@ -115,7 +115,7 @@ if (!dir.exists(species_dir)) {
 # Same selection rule as script 07, so the two analyses cover the same species.
 
 species_sel <- select_modelable_species(
-  species_detection_summaries %>% subset(sp_english %in% c("Purple Martin","Barn Swallow","Wild Turkey","Sandhill Crane","Palm Warbler","Olive-sided Flycatcher","Bald Eagle")),
+  species_detection_summaries,
   min_detections = min_detections,
   min_squares    = min_squares
 )

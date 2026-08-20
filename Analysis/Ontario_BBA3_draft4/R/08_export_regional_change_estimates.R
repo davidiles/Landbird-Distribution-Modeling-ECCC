@@ -67,7 +67,7 @@ source(file.path(paths$functions, "inla_model_utils.R"))
 # CONFIG
 # ============================================================
 
-model_name <- "PC_ARU_nosite"
+model_name <- "PC_ARU_CL_nosite"
 
 # Credible-interval level for the change summaries. 0.90 -> qlow = 5th
 # percentile, qhigh = 95th percentile. Script 09 reads these intervals for its
@@ -150,6 +150,10 @@ all_surveys$BCR <- as.character(all_surveys$BCR)
 
 # Ordering vector (south -> north) for tidy output only; not load-bearing.
 region_order <- c("province", bcr_regions$BCR)
+
+# Pixel -> Biol_Region lookups for safe-date trimming (straight off 06's grids).
+pixel_region_OBBA2 <- grid_region_lookup(dat$grid_OBBA2)
+pixel_region_OBBA3 <- grid_region_lookup(dat$grid_OBBA3)
 
 # ============================================================
 # Precompute per-region hex area weights ONCE (species-independent)
@@ -262,6 +266,17 @@ for (i in seq_along(dat_used_files)) {
   }
 
   preds     <- readRDS(pred_path)
+  
+  # Trim out predictions for areas with no safe dates
+  # NOTE: this ensures a species cannot occur in a region where it has no safe dates
+  preds <- trim_predictions_to_safe_dates(
+    preds        = preds,
+    lookup_obba2 = pixel_region_OBBA2,
+    lookup_obba3 = pixel_region_OBBA3,
+    hex_no_safe_threshold = 0.5, # zero a hex when >= this fraction of its pixels are no-safe
+    trim_unclassified     = FALSE
+  )
+  
   hex_draws <- preds$hex_draws_Corrected_for_Water
 
   if (is.null(hex_draws)) {

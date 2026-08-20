@@ -34,6 +34,183 @@
 #     build_period_assessments, build_period_honeycombs, save_page
 # ============================================================
 
+
+# ------------------------------------------------------------
+# Extract a pixel_id -> Biol_Region lookup from one prediction grid.
+#
+# grid        dat$grid_OBBA2 or dat$grid_OBBA3 (an sf carrying pixel_id, hex_id
+#             and Biol_Region, all written by 06).
+# region_col  Region-label column (default "Biol_Region").
+#
+# Returns a plain data.frame(pixel_id, hex_id, Biol_Region) -- no geometry, no
+# spatial ops. Fails loudly if the grid predates 06's Biol_Region tagging.
+# ------------------------------------------------------------
+grid_region_lookup <- function(grid, region_col = "Biol_Region") {
+  
+  stopifnot(inherits(grid, "sf") || is.data.frame(grid))
+  
+  needed  <- c("pixel_id", "hex_id", region_col)
+  missing <- setdiff(needed, names(grid))
+  if (length(missing) > 0) {
+    stop("grid_region_lookup(): grid is missing ", paste(missing, collapse = ", "),
+         ". Re-run 06_filter_and_finalize_surveys.R so the saved grids carry ",
+         "pixel_id, hex_id and ", region_col, ".", call. = FALSE)
+  }
+  
+  g <- sf::st_drop_geometry(grid)
+  data.frame(
+    pixel_id    = g$pixel_id,
+    hex_id      = g$hex_id,
+    Biol_Region = as.character(g[[region_col]]),
+    stringsAsFactors = FALSE
+  )
+}
+
+
+# ------------------------------------------------------------
+# Zero every prediction product for regions the species has no safe dates in.
+#
+# preds                  One prediction record (readRDS of a 07 output file).
+# lookup_obba2           grid_region_lookup(dat$grid_OBBA2).
+# lookup_obba3           grid_region_lookup(dat$grid_OBBA3).
+# safe_regions           Regions WITH safe dates. NULL -> taken from
+#                        preds$sp_safe_dates$Biol_Region.
+# hex_no_safe_threshold  A hexagon is zeroed when this FRACTION (or more) of its
+#                        pixels fall in no-safe-date regions. 0.5 = majority
+#                        (default). Set 0 to zero a hex if ANY pixel is no-safe;
+#                        set ~1 to zero only hexes lying entirely in no-safe
+#                        regions.
+# trim_unclassified      TRUE also zeros pixels/hexes with region = NA. FALSE
+#                        (default) keeps them. Moot in practice, since 06 tags
+#                        the grid with nearest_fallback = TRUE (no NA regions);
+#                        retained as a guard against a stale grid.
+#
+# Returns preds with OBBA2/OBBA3/abs_change pixel summaries and hex_draws (both
+# plain and _Corrected_for_Water) zeroed in place.
+# ------------------------------------------------------------
+trim_predictions_to_safe_dates <- function(preds,
+                                           lookup_obba2,
+                                           lookup_obba3,
+                                           safe_regions          = NULL,
+                                           hex_no_safe_threshold = 0.5,
+                                           trim_unclassified     = FALSE,
+                                           verbose               = TRUE) {
+  
+  # ---- Resolve the species' safe-date regions ----
+  if (is.null(safe_regions)) {
+    if (is.null(preds$sp_safe_dates) ||
+        !"Biol_Region" %in% names(preds$sp_safe_dates)) {
+      stop("trim_predictions_to_safe_dates(): safe_regions not supplied and ",
+           "preds$sp_safe_dates$Biol_Region is unavailable.", call. = FALSE)
+    }
+    safe_regions <- preds$sp_safe_dates$Biol_Region
+  }
+  safe_regions <- unique(as.character(safe_regions))
+  safe_regions <- safe_regions[!is.na(safe_regions)]
+  
+  # No safe-date table at all -> leave predictions untouched.
+  if (length(safe_regions) == 0) {
+    if (verbose) message("  safe-date trim: no safe regions listed; ",
+                         "predictions left unchanged.")
+    return(preds)
+  }
+  
+  # ---- Guard against a Biol_Region label mismatch ----
+  # Grid and safe-date labels both descend from Biol_Regions_ON, so this should
+  # never fire; but if NONE of the safe regions match the grid labels, a naive
+  # %in% would flag EVERY pixel as no-safe and erase the whole surface. Stop.
+  grid_regions <- unique(c(lookup_obba2$Biol_Region, lookup_obba3$Biol_Region))
+  grid_regions <- grid_regions[!is.na(grid_regions)]
+  if (length(intersect(safe_regions, grid_regions)) == 0) {
+    stop("trim_predictions_to_safe_dates(): none of the species' safe-date ",
+         "regions match the Biol_Region labels on the prediction grid.\n",
+         "  safe_regions: ", paste(safe_regions, collapse = ", "), "\n",
+         "  grid regions: ", paste(sort(grid_regions), collapse = ", "), "\n",
+         "This is almost certainly a Biol_Region label mismatch; refusing to ",
+         "zero the whole surface.", call. = FALSE)
+  }
+  
+  # ---- Per-pixel keep flag for a summary (matched by pixel_id, order-safe) ----
+  pixel_keep <- function(pixel_ids, lookup) {
+    region       <- lookup$Biol_Region[match(pixel_ids, lookup$pixel_id)]
+    keep         <- region %in% safe_regions
+    unclassified <- is.na(region)
+    if (any(unclassified)) keep[unclassified] <- !trim_unclassified
+    keep
+  }
+  
+  # ---- Zero a pixel-summary data.frame in place ----
+  zero_pixel_summary <- function(df, prefix, lookup) {
+    if (is.null(df)) return(df)
+    if (!"pixel_id" %in% names(df)) {
+      stop("trim: summary for prefix '", prefix, "' has no pixel_id column.",
+           call. = FALSE)
+    }
+    drop <- !pixel_keep(df$pixel_id, lookup)
+    if (!any(drop)) return(df)
+    
+    val_cols  <- grep(paste0("^", prefix, "_"), names(df), value = TRUE)
+    cv_cols   <- grep(paste0("^", prefix, "_cv"), names(df), value = TRUE)
+    zero_cols <- setdiff(val_cols, cv_cols)
+    
+    for (cc in zero_cols) df[[cc]][drop] <- 0            # abundance / change -> 0
+    for (cc in cv_cols)   df[[cc]][drop] <- NA_real_     # CV undefined at 0
+    df
+  }
+  
+  # ---- Per-hex no-safe fraction, from the OBBA2 grid (hex_draws' provenance) ----
+  reg   <- lookup_obba2$Biol_Region
+  nsafe <- !(reg %in% safe_regions)
+  nsafe[is.na(reg)] <- isTRUE(trim_unclassified)
+  hex_frac <- tapply(nsafe, lookup_obba2$hex_id, function(z) mean(z, na.rm = TRUE))
+  
+  # ---- Zero the draw vectors of no-safe hexes in place (length preserved) ----
+  zero_hex_draws <- function(hd) {
+    if (is.null(hd) || nrow(hd) == 0) return(hd)
+    f <- hex_frac[as.character(hd$hex_id)]
+    f[is.na(f)] <- 0                       # hex absent from lookup -> keep
+    drop <- f >= hex_no_safe_threshold
+    if (!any(drop)) return(hd)
+    
+    for (j in which(drop)) {
+      hd$mu_OBBA2[[j]] <- numeric(length(hd$mu_OBBA2[[j]]))
+      hd$mu_OBBA3[[j]] <- numeric(length(hd$mu_OBBA3[[j]]))
+      if ("abs_change" %in% names(hd)) {
+        hd$abs_change[[j]] <- numeric(length(hd$abs_change[[j]]))
+      }
+    }
+    hd
+  }
+  
+  # ---- Apply to every product variant ----
+  # OBBA2 and abs_change carry the OBBA2 grid's pixel_id; OBBA3 the OBBA3 grid's.
+  preds$OBBA2      <- zero_pixel_summary(preds$OBBA2,      "OBBA2",      lookup_obba2)
+  preds$OBBA3      <- zero_pixel_summary(preds$OBBA3,      "OBBA3",      lookup_obba3)
+  preds$abs_change <- zero_pixel_summary(preds$abs_change, "abs_change", lookup_obba2)
+  
+  preds$OBBA2_Corrected_for_Water <-
+    zero_pixel_summary(preds$OBBA2_Corrected_for_Water, "OBBA2", lookup_obba2)
+  preds$OBBA3_Corrected_for_Water <-
+    zero_pixel_summary(preds$OBBA3_Corrected_for_Water, "OBBA3", lookup_obba3)
+  preds$abs_change_Corrected_for_Water <-
+    zero_pixel_summary(preds$abs_change_Corrected_for_Water, "abs_change", lookup_obba2)
+  
+  preds$hex_draws <- zero_hex_draws(preds$hex_draws)
+  preds$hex_draws_Corrected_for_Water <-
+    zero_hex_draws(preds$hex_draws_Corrected_for_Water)
+  
+  if (verbose) {
+    n_reg_trim <- length(setdiff(grid_regions, safe_regions))
+    n_hex_trim <- sum(hex_frac >= hex_no_safe_threshold, na.rm = TRUE)
+    message("  safe-date trim: ", n_reg_trim, " region(s) without safe dates -> ",
+            n_hex_trim, " hexagon(s) zeroed (threshold ",
+            hex_no_safe_threshold, ").")
+  }
+  
+  preds
+}
+
+
 # ------------------------------------------------------------
 # Shared constants
 # ------------------------------------------------------------

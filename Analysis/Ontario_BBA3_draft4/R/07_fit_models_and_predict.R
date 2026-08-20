@@ -140,14 +140,23 @@ nb_switch_min_n <- 50
 # Candidate fixed-effect covariates. Species-specific filtering below removes
 # covariates absent from the data or with no variation after filtering.
 base_covars <- c(
-  "ForestNeedleleaf", "ForestBroadleaf", "ForestMixed", "Wetland", "Cropland",
-  "Urban", "On_Road",
-  "Grassland_South", "Grassland_North",
-  "Shrubland_South", "Shrubland_North",
-  "Lake_Lg", "Lake_Sm",
-  "GreatLakes", "HudsonBayCoast",
-  "River_Lg_South", "River_Lg_North",
-  "River_Sm_South", "River_Sm_North"
+  "ForestNeedleleaf", 
+  "ForestBroadleaf", 
+  "ForestMixed", 
+  "Wetland", 
+  "Cropland",
+  "Urban", 
+  "On_Road",
+  "Grassland_South", 
+  "Grassland_North",
+  "Shrubland_South", 
+  "Shrubland_North",
+  "Lake_Lg", 
+  "Lake_Sm",
+  "GreatLakes", 
+  "HudsonBayCoast",
+  "River_Lg",
+  "River_Sm"
 )
 
 priors_list <- list(
@@ -227,7 +236,7 @@ if (!dir.exists(species_dir)) {
 #   species_sel : the subset with enough data to fit a model (fitted + predicted).
 
 # Optional: restrict to a handful of species for testing (NULL = run all).
-species_test <- NULL
+species_test <- NULL #c("American Black Duck","Hooded Merganser","Common Nighthawk","Canada Goose","Belted Kingfisher")
 
 species_all <- species_detection_summaries %>%
   dplyr::select(sp_english, species_id) %>%
@@ -298,7 +307,7 @@ print(TOD_coverage, n = 25)
 # 6. Main species loop
 # ============================================================
 
-for (i in seq_len(nrow(species_all))) {
+for (i in rev(seq_len(nrow(species_all)))) {
 
   # ---- 6.1 Species identifiers and output paths ----
   sp_name <- species_all$sp_english[i]

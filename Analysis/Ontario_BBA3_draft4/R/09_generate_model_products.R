@@ -77,15 +77,21 @@ cfg <- list(
   # Relative-abundance colouring uses a CUMULATIVE-POPULATION floor: pixels are
   # whited out from the low-density tail until the coloured area retains this
   # fraction of the predicted population (see prepare_relative_abundance_rasters).
-  relabund_coverage = 0.99,   # colour the pixels holding >= 99% of the birds
+  relabund_coverage = 0.995,   # colour the pixels holding >= 99% of the birds
 
-  # Biological absence floor (1 expected bird per 1000 point counts). Under the
+  # Biological absence floor (1 expected bird per 2500 point counts). Under the
   # cumulative method this is passed as a LOWER GUARD (min_absent_limit): white
   # always covers at least sub-detection densities, even if the cumulative floor
   # falls below it. The probability-of-observation panel still uses it directly
   # (that call keeps the default fixed-floor method).
-  relabund_absent_limit = 1/1000, # 1/1000
+  relabund_absent_limit = 1/2500, # 1/2500
 
+  
+  # Probability-of-observation surface ----------------------------------------
+  pobs_marginalize_terms = c("kappa_diff"),  # omitted iid terms integrated back in
+  pobs_gh_nodes          = 41L,              # Gaussian integration nodes
+  pobs_floor             = 0,                # white out P(Obs) below this (0 = show all)
+  
   # PDF page rendering
   page_width  = 20,
   page_height = 10,
@@ -697,29 +703,44 @@ for (i in seq_along(dat_used_files)) {
   # ----------------------------------------------------------
   # Probability-of-observation maps (Page 14)
   # ----------------------------------------------------------
-
-  pobs2 <- 1 - exp(-r2)
-  pobs3 <- 1 - exp(-r3)
-
-  rasters_pobs_prepared <- prepare_relative_abundance_rasters(
-    Atlas2            = pobs2,
-    Atlas3            = pobs3,
-    rast_absent_limit = cfg$relabund_absent_limit,
-    rast_max_quantile = 0.99
-  )
-
+  # Per-survey detection probability for one 5-min count at a random square in
+  # the pixel's neighbourhood. Built directly on the single-layer median surface
+  # (NOT via prepare_relative_abundance_rasters, whose density floor and 0.99
+  # clamp are for abundance) so the full 0-1 colour scale is available.
+  
+  # Integrate only the omitted iid terms NOT already baked into q50 (none when
+  # vc_terms was empty in 07), so nothing is double-counted.
+  vc_present    <- preds$variance_correction$present
+  applied_terms <- if (is.null(vc_present)) character(0) else names(which(vc_present))
+  marg_terms    <- setdiff(cfg$pobs_marginalize_terms, applied_terms)
+  
+  sigma2_omit <- sum(vapply(marg_terms,
+                            function(tm) hyper_variance(preds$summary_hyperpar, tm),
+                            numeric(1)))
+  nb_size     <- nb_size_from_hyper(preds$summary_hyperpar)
+  
+  pobs2 <- marginal_pobs(r2[["mu_q50"]], sigma2_omit = sigma2_omit,
+                         size = nb_size, n_nodes = 41)
+  pobs3 <- marginal_pobs(r3[["mu_q50"]], sigma2_omit = sigma2_omit,
+                         size = nb_size)
+  
+  if (cfg$pobs_floor > 0) {
+    pobs2[pobs2 < cfg$pobs_floor] <- NA
+    pobs3[pobs3 < cfg$pobs_floor] <- NA
+  }
+  
   pobs_Map_Atlas2 <- make_map(
     species_name = sp_english, subtitle = "Probability of Observation - Atlas 2",
     legend_title = "P(Obs)\nper 5-min\npoint count",
-    rast = rasters_pobs_prepared$rasters$Atlas2, region = study_boundary,
+    rast = pobs2, region = study_boundary,
     water = NULL, colpal = colpal_pobs, water_fill = "white",
     transform = "identity", zlim = c(0, 1), zbreaks = seq(0, 1, length.out = 5)
   )
-
+  
   pobs_Map_Atlas3 <- make_map(
     species_name = sp_english, subtitle = "Probability of Observation - Atlas 3",
     legend_title = "P(Obs)\nper 5-min\npoint count",
-    rast = rasters_pobs_prepared$rasters$Atlas3, region = study_boundary,
+    rast = pobs3, region = study_boundary,
     water = NULL, colpal = colpal_pobs, water_fill = "white",
     transform = "identity", zlim = c(0, 1), zbreaks = seq(0, 1, length.out = 5)
   )

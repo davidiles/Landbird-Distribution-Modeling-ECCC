@@ -185,15 +185,28 @@ sp_data_path <- function(dir, sp_english) {
 #
 # surveys_f      Filtered survey sf; must carry survey_id, Biol_Region, DayOfYear.
 # count_vec      Species count vector, row-aligned with surveys_f.
-# sp_safe_dates  Rows of safe_dates_breeding for this species, NA rows removed.
-#                Must have Biol_Region, start_doy, end_doy.
+# sp_safe_dates  MODELLING windows: one row per biological region, every window
+#                filled. Regions the species breeds in keep their own safe-date
+#                window; regions with no safe dates borrow the narrowest
+#                cross-regional window (assigned in 06). Used HERE to decide which
+#                surveys enter the model -- including the (mostly zero) surveys in
+#                no-safe-date regions that bend the SPDE toward zero.
+#                Must have Biol_Region, start_doy, end_doy (all non-NA).
+# sp_safe_dates_unmodified
+#                ORIGINAL safe-date definitions: same rows, but start_doy/end_doy
+#                are NA in regions where the species has no safe dates. Stored
+#                verbatim and NOT used for filtering here; script 07 ships it into
+#                each prediction file and script 08 uses it to zero predictions in
+#                the no-safe-date regions. Keeping both objects on the record is
+#                what lets "fit everywhere, predict only where safe" stay coherent.
 #
 # Returns a list, or NULL if no surveys survive the safe-date filter.
 make_sp_dat_record <- function(surveys_f,
                                count_vec,
                                sp_english,
                                species_id,
-                               sp_safe_dates) {
+                               sp_safe_dates,
+                               sp_safe_dates_unmodified) {
   
   stopifnot("survey_id" %in% names(surveys_f))
   stopifnot(nrow(surveys_f) == length(count_vec))
@@ -201,8 +214,10 @@ make_sp_dat_record <- function(surveys_f,
   if (nrow(sp_safe_dates) == 0) return(NULL)
   
   # Prediction reference day: midpoint of the window shared by all regions the
-  # species occupies. Computed once here so 07 and 07b cannot diverge.
-  pred_doy <- (min(sp_safe_dates$end_doy) + max(sp_safe_dates$start_doy)) / 2
+  # species occupies. Computed once here so 07 and 07b cannot diverge. na.rm is
+  # defensive; sp_safe_dates windows are filled (non-NA) by the time we get here.
+  pred_doy <- (min(sp_safe_dates$end_doy,   na.rm = TRUE) +
+               max(sp_safe_dates$start_doy, na.rm = TRUE)) / 2
   
   windows <- sp_safe_dates %>%
     dplyr::select(Biol_Region, start_doy, end_doy)
@@ -222,14 +237,15 @@ make_sp_dat_record <- function(surveys_f,
   if (nrow(sp_dat) == 0) return(NULL)
   
   list(
-    sp_english    = sp_english,
-    species_id    = as.character(species_id),
-    sp_safe_dates = sp_safe_dates,
-    pred_doy      = pred_doy,
-    survey_counts = dplyr::select(sp_dat, survey_id, count),
-    n_surveys     = nrow(sp_dat),
-    n_detections  = sum(sp_dat$count > 0),
-    date_created  = Sys.time()
+    sp_english               = sp_english,
+    species_id               = as.character(species_id),
+    sp_safe_dates            = sp_safe_dates,             # filled: what 06 filtered surveys on
+    sp_safe_dates_unmodified = sp_safe_dates_unmodified,  # original: what 08 zeros predictions with
+    pred_doy                 = pred_doy,
+    survey_counts            = dplyr::select(sp_dat, survey_id, count),
+    n_surveys                = nrow(sp_dat),
+    n_detections             = sum(sp_dat$count > 0),
+    date_created             = Sys.time()
   )
 }
 

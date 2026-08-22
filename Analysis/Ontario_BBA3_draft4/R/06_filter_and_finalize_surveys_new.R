@@ -446,15 +446,27 @@ safe_date_windows <- safe_dates %>%
   ) %>%
   dplyr::filter(start_doy < end_doy)
 
-safe_dates_breeding <- safe_dates %>%
-  dplyr::distinct(sp_english, Biol_Region) %>%
-  dplyr::left_join(safe_date_windows, by = c("sp_english", "Biol_Region")) %>%
+# Enumerate EVERY species x biological-region combination explicitly, so that
+# regions where a species has no safe dates are present as rows with NA windows
+# (start_doy/end_doy = NA) rather than silently absent. Those NA-window rows are
+# load-bearing in both directions:
+#   * the loop below fills them with the narrowest cross-regional window, which
+#     pulls the species' no-safe-date regions into the fit and bends the SPDE
+#     toward zero there;
+#   * script 08 reads the UNMODIFIED (NA-window) copy to force zero predictions in
+#     exactly those regions.
+region_axis <- Biol_Regions_df %>% dplyr::distinct(Biol_Region, ECOZONE_NA)
+
+safe_dates_breeding <- tidyr::expand_grid(
+    sp_english  = sort(unique(safe_dates$sp_english)),
+    Biol_Region = region_axis$Biol_Region
+  ) %>%
+  dplyr::left_join(region_axis,        by = "Biol_Region") %>%
+  dplyr::left_join(safe_date_windows,  by = c("sp_english", "Biol_Region")) %>%
   dplyr::mutate(midpoint = (start_doy + end_doy) / 2) %>%
-  dplyr::select(sp_english, Biol_Region, start_doy, end_doy, midpoint) %>%
-  dplyr::full_join(Biol_Regions_df, by = "Biol_Region") %>%
   dplyr::left_join(all_species_unique, by = c("sp_english" = "english_name")) %>%
   dplyr::relocate(sp_english, species_id, Biol_Region, ECOZONE_NA, start_doy, end_doy) %>%
-  arrange(sp_english)
+  dplyr::arrange(sp_english)
 
 # ============================================================
 # 7. Per-species datasets and detection summaries
@@ -480,20 +492,47 @@ for (sp_id in species_ids) {
   sp_safe_dates <- safe_dates_breeding %>% filter(species_id == sp_id)
   sp_name       <- sp_safe_dates$sp_english[1]
   
-  # Fill in missing safe dates using narrowest possible window
-  max_start <- max(sp_safe_dates$start_doy,na.rm = TRUE)
-  min_end <- max(sp_safe_dates$end_doy,na.rm = TRUE)
+  # Keep the ORIGINAL definitions (NA windows where the species has no safe
+  # dates) before filling. This is the copy 08 uses to zero predictions.
+  sp_safe_dates_unmodified <- sp_safe_dates
   
-  sp_safe_dates$start_doy[is.na(sp_safe_dates$start_doy)] <- max_start
-  sp_safe_dates$end_doy[is.na(sp_safe_dates$end_doy)] <- min_end
-  sp_safe_dates$midpoint <- (sp_safe_dates$start_doy + sp_safe_dates$end_doy)/2
-  
-  if (nrow(sp_safe_dates) == 0) {
+  # A region is "safe" for this species iff it has a defined window. If no region
+  # has one, there is nothing to model -- skip. (With the complete species x
+  # region grid, nrow() is never 0, so the test must be on the window, not nrow.)
+  has_window <- !is.na(sp_safe_dates$start_doy) & !is.na(sp_safe_dates$end_doy)
+  if (!any(has_window)) {
     message("!!!! ", sp_name, " (species_id = ", sp_id,
-            ") has no safe dates listed; skipping")
+            ") has no safe dates in any region; skipping")
     species_with_no_safe_dates <- c(species_with_no_safe_dates, sp_name)
     next
   }
+  
+  # Fill no-safe-date regions with the NARROWEST window shared by the regions
+  # that DO have safe dates: [latest start, earliest end]. Surveys in no-safe
+  # regions are then trimmed to this window and enter the fit as (mostly zero)
+  # observations that bend the SPDE toward zero there. Predictions in those
+  # regions are zeroed later in script 08 using sp_safe_dates_unmodified.
+  max_start <- max(sp_safe_dates$start_doy[has_window])
+  min_end   <- min(sp_safe_dates$end_doy[has_window])
+  
+  if (max_start >= min_end) {
+    # Regional windows do not overlap in time (e.g. early-south / late-north);
+    # no common narrow window exists. Fall back to a short window centred on the
+    # median regional midpoint so no-safe regions still contribute in-season zeros.
+    mids     <- (sp_safe_dates$start_doy[has_window] + sp_safe_dates$end_doy[has_window]) / 2
+    centre   <- stats::median(mids)
+    half_win <- 7
+    max_start <- centre - half_win
+    min_end   <- centre + half_win
+    warning(sp_name, ": regional safe-date windows do not overlap; using +/-",
+            half_win, "-day window centred on DOY ", round(centre),
+            " for no-safe-date regions.")
+  }
+  
+  sp_safe_dates$start_doy[is.na(sp_safe_dates$start_doy)] <- max_start
+  sp_safe_dates$end_doy[is.na(sp_safe_dates$end_doy)]     <- min_end
+  sp_safe_dates$midpoint <- (sp_safe_dates$start_doy + sp_safe_dates$end_doy) / 2
+  
   if (!(as.character(sp_id) %in% colnames(counts_f))) {
     message("!!!! ", sp_name, " (species_id = ", sp_id,
             ") was not observed in atlas dataset; skipping")
@@ -514,7 +553,8 @@ for (sp_id in species_ids) {
       count_vec     = count_vec,
       sp_english    = sp_name,
       species_id    = sp_id,
-      sp_safe_dates = sp_safe_dates
+      sp_safe_dates = sp_safe_dates,
+      sp_safe_dates_unmodified = sp_safe_dates_unmodified
     )
     if (is.null(sp_record)) {
       message("     no surveys remain inside the safe-date window; no file written")
@@ -649,3 +689,44 @@ save_atomic(
 )
 
 message("06_filter_and_finalize_surveys.R complete")
+
+# ============================================================
+# 10. Save covariate raster stacks
+# ============================================================
+
+# rast_dir  <- file.path(paths$data_clean, "spatial")
+# rast_path_a2 <- file.path(rast_dir, "atlas2_cov_rasterstack.tif")
+# rast_path_a3 <- file.path(rast_dir, "atlas3_cov_rasterstack.tif")
+# 
+# figure_utils_path <- file.path(paths$functions, "figure_utils.R")
+# source(figure_utils_path)
+# 
+# r2 <- rasterize_sf(
+#   grid_OBBA2,
+#   covars_to_rasterize,
+#   res = 1001,
+#   metadata = c(description = c("Covariates at 1 km resolution"))
+# )
+# writeRaster(r2, filename = rast_path_a2, overwrite = TRUE)
+# 
+# r3 <- rasterize_sf(
+#   grid_OBBA3,
+#   covars_to_rasterize,
+#   res = 1001,
+#   metadata = c(description = c("Covariates at 1 km resolution"))
+# )
+# writeRaster(r3, filename = rast_path_a3, overwrite = TRUE)
+# 
+# dir.create(file.path(rast_dir,"A2_rasters"), recursive = TRUE, showWarnings = FALSE)
+# terra::writeRaster(
+#   r2,
+#   filename = file.path(rast_dir,"A2_rasters", paste0(names(r2), ".tif")),
+#   overwrite = TRUE
+# )
+# 
+# dir.create(file.path(rast_dir,"A3_rasters"), recursive = TRUE, showWarnings = FALSE)
+# terra::writeRaster(
+#   r3,
+#   filename = file.path(rast_dir,"A3_rasters", paste0(names(r3), ".tif")),
+#   overwrite = TRUE
+# )

@@ -73,8 +73,13 @@ grid_region_lookup <- function(grid, region_col = "Biol_Region") {
 # preds                  One prediction record (readRDS of a 07 output file).
 # lookup_obba2           grid_region_lookup(dat$grid_OBBA2).
 # lookup_obba3           grid_region_lookup(dat$grid_OBBA3).
-# safe_regions           Regions WITH safe dates. NULL -> taken from
-#                        preds$sp_safe_dates$Biol_Region.
+# safe_regions           Regions WITH safe dates. NULL -> derived from
+#                        preds$sp_safe_dates: the regions whose start_doy/end_doy
+#                        are non-NA. preds$sp_safe_dates is the ORIGINAL
+#                        (unmodified) table written by 06/07, which lists EVERY
+#                        region with NA windows where the species has no safe
+#                        dates -- so safety is judged by the window, not by the
+#                        mere presence of a Biol_Region row.
 # hex_no_safe_threshold  A hexagon is zeroed when this FRACTION (or more) of its
 #                        pixels fall in no-safe-date regions. 0.5 = majority
 #                        (default). Set 0 to zero a hex if ANY pixel is no-safe;
@@ -97,13 +102,24 @@ trim_predictions_to_safe_dates <- function(preds,
                                            verbose               = TRUE) {
   
   # ---- Resolve the species' safe-date regions ----
+  # A region counts as "safe" for this species only if it has a DEFINED safe-date
+  # window. preds$sp_safe_dates lists every region, with NA start/end where the
+  # species has no safe dates -- those NA-window regions are exactly the ones to
+  # zero here, so select on the window, not merely on a non-NA Biol_Region label.
   if (is.null(safe_regions)) {
-    if (is.null(preds$sp_safe_dates) ||
-        !"Biol_Region" %in% names(preds$sp_safe_dates)) {
+    ssd <- preds$sp_safe_dates
+    if (is.null(ssd) || !"Biol_Region" %in% names(ssd)) {
       stop("trim_predictions_to_safe_dates(): safe_regions not supplied and ",
            "preds$sp_safe_dates$Biol_Region is unavailable.", call. = FALSE)
     }
-    safe_regions <- preds$sp_safe_dates$Biol_Region
+    if (all(c("start_doy", "end_doy") %in% names(ssd))) {
+      has_window   <- !is.na(ssd$start_doy) & !is.na(ssd$end_doy)
+      safe_regions <- ssd$Biol_Region[has_window]
+    } else {
+      # Backward-compatibility: an older record that already stored ONLY safe
+      # regions (no window columns). Treat every listed region as safe.
+      safe_regions <- ssd$Biol_Region
+    }
   }
   safe_regions <- unique(as.character(safe_regions))
   safe_regions <- safe_regions[!is.na(safe_regions)]
@@ -210,6 +226,75 @@ trim_predictions_to_safe_dates <- function(preds,
   preds
 }
 
+# Marginal per-survey probability of observation.
+# Converts a median-square expected-count surface (geometric-mean lambda, i.e.
+# the iid terms held at 0, as make_pred_formula_multiatlas() predicts) into the
+# probability that a single 5-min count at a RANDOM square in the pixel's
+# neighbourhood detects the species:
+#
+#   PObs = E_z[ 1 - P0( lambda * exp(z) ) ],   z ~ N(0, sigma2_omit)
+#     P0_poisson(m) = exp(-m)
+#     P0_nbinom(m)  = (size / (size + m))^size
+#
+# Integrating z reinstates the omitted log-normal heterogeneity (raising PObs
+# where lambda is small, since detection is concave in a right-skewed density);
+# the family-correct P0 stops the Poisson formula overstating detection in the
+# nbinomial core. sigma2_omit = 0 and size = Inf recover 1 - exp(-lambda).
+#
+# lambda_rast  single-layer SpatRaster of median-square expected counts
+#              (e.g. r2[["mu_q50"]]). NA preserved; lambda <= 0 -> PObs 0.
+# sigma2_omit  total log-scale variance of the omitted iid terms (>= 0).
+# size         nbinomial size; Inf for a Poisson-fitted species.
+# n_nodes      Gaussian integration nodes (odd; 41 is ample for this integrand).
+marginal_pobs <- function(lambda_rast, sigma2_omit = 0, size = Inf, n_nodes = 41L) {
+  stopifnot(inherits(lambda_rast, "SpatRaster"), terra::nlyr(lambda_rast) == 1L)
+  stopifnot(is.finite(sigma2_omit), sigma2_omit >= 0, n_nodes >= 1L)
+  
+  P0 <- if (is.finite(size)) function(m) (size / (size + m))^size else function(m) exp(-m)
+  
+  lam <- terra::values(lambda_rast, mat = FALSE)
+  out <- rep(NA_real_, length(lam))
+  out[is.finite(lam) & lam <= 0] <- 0
+  ok <- is.finite(lam) & lam > 0
+  
+  if (any(ok)) {
+    l <- lam[ok]
+    if (sigma2_omit <= 0) {
+      out[ok] <- 1 - P0(l)
+    } else {
+      sigma <- sqrt(sigma2_omit)
+      z     <- seq(-6, 6, length.out = n_nodes)     # standardized
+      w     <- stats::dnorm(z); w <- w / sum(w)      # normalized normal weights
+      acc   <- numeric(length(l))
+      for (j in seq_along(z)) acc <- acc + w[j] * (1 - P0(l * exp(sigma * z[j])))
+      out[ok] <- acc
+    }
+  }
+  
+  r <- terra::setValues(lambda_rast, out)
+  names(r) <- "PObs"
+  r
+}
+
+# 1 / precision (log-scale variance) for an iid term from a summary.hyperpar
+# table; 0 when the term is absent from this species' model.
+hyper_variance <- function(hyper, name, quantile = "0.5quant") {
+  if (is.null(hyper) || is.null(rownames(hyper))) return(0)
+  i <- match(paste0("Precision for ", name), rownames(hyper))
+  if (is.na(i) || !quantile %in% colnames(hyper)) return(0)
+  v <- 1 / hyper[i, quantile]
+  if (!is.finite(v) || v < 0) 0 else v
+}
+
+# Median nbinomial size (dispersion) from a summary.hyperpar table; Inf for a
+# Poisson-fitted species (no size row).
+nb_size_from_hyper <- function(hyper, quantile = "0.5quant") {
+  if (is.null(hyper) || is.null(rownames(hyper))) return(Inf)
+  i <- grep("size for the nbinomial", rownames(hyper), fixed = TRUE)
+  if (length(i) == 0L || !quantile %in% colnames(hyper)) return(Inf)
+  s <- hyper[i[1L], quantile]
+  if (!is.finite(s) || s <= 0) Inf else s
+}
 
 # ------------------------------------------------------------
 # Shared constants

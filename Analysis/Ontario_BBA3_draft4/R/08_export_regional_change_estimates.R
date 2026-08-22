@@ -32,11 +32,6 @@
 # Notes
 #   - "province" is the whole study boundary; the per-BCR rows loop over every
 #     row of bcr_regions (BCR 12, 13, 74, 76, 77).
-#   - Estimates are NOT masked by default. Script 09 hides a BCR's change on the
-#     figure when the species was detected in too few squares (min_sq_det); for a
-#     quantitative export it is more useful to keep the raw estimate and carry the
-#     detection counts + a `sufficient_data` flag as columns, so you can filter
-#     yourself. Set MASK_INSUFFICIENT <- TRUE to reproduce the figure masking.
 #   - pct_change_* columns are 100 * prop_change_* (proportional change, %).
 #   - Optional annualised trend columns are derived from the symmetric log-ratio
 #     sym_change = log(mu3 / mu2), which annualises cleanly through its quantiles.
@@ -113,6 +108,11 @@ out_dir       <- file.path(paths$model_output, paste0("change_estimates_", model
 paired_out_dir       <- file.path(paths$model_output, "change_estimates")
 paired_analysis_path <- file.path(paths$model_output, "paired_summaries",
                                   "paired_summaries.rds")
+
+# NOTE: safe-date trimming below does NOT re-read the Excel. The regions to zero
+# come from each prediction file's own sp_safe_dates (the ORIGINAL, unmodified
+# definitions that 06 built and 07 shipped with the predictions), so 08 has a
+# single source of truth that cannot drift from what the model was fit against.
 
 dir.create(out_dir,        recursive = TRUE, showWarnings = FALSE)
 dir.create(paired_out_dir, recursive = TRUE, showWarnings = FALSE)
@@ -253,7 +253,7 @@ change_estimate_cols <- c(
 all_rows   <- vector("list", length(dat_used_files))
 draws_list <- if (SAVE_DRAWS) vector("list", length(dat_used_files)) else NULL
 
-for (i in seq_along(dat_used_files)) {
+for (i in rev(seq_along(dat_used_files))) {
 
   dat_used   <- readRDS(dat_used_files[i])
   sp_file    <- basename(dat_used_files[i]) |> stringr::str_remove("_1km\\.rds$")
@@ -266,6 +266,7 @@ for (i in seq_along(dat_used_files)) {
   }
 
   preds     <- readRDS(pred_path)
+  
   
   # Trim out predictions for areas with no safe dates
   # NOTE: this ensures a species cannot occur in a region where it has no safe dates

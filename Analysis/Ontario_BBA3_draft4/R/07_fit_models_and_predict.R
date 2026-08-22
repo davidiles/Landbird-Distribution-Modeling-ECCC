@@ -110,7 +110,7 @@ message("Mode: ", survey_set, "  ->  model_name = ", model_name)
 # 1. Global configuration shared by both modes
 # ============================================================
 
-rerun_predictions  <- FALSE
+rerun_predictions  <- TRUE
 n_prediction_draws <- 500
 prediction_seed    <- 0
 
@@ -143,14 +143,17 @@ base_covars <- c(
   "ForestNeedleleaf", 
   "ForestBroadleaf", 
   "ForestMixed", 
-  "Wetland", 
   "Cropland",
   "Urban", 
   "On_Road",
+  
   "Grassland_South", 
   "Grassland_North",
   "Shrubland_South", 
   "Shrubland_North",
+  "Wetland_North",
+  "Wetland_South",
+  
   "Lake_Lg", 
   "Lake_Sm",
   "GreatLakes", 
@@ -236,7 +239,7 @@ if (!dir.exists(species_dir)) {
 #   species_sel : the subset with enough data to fit a model (fitted + predicted).
 
 # Optional: restrict to a handful of species for testing (NULL = run all).
-species_test <- NULL #c("American Black Duck","Hooded Merganser","Common Nighthawk","Canada Goose","Belted Kingfisher")
+species_test <- c("American Black Duck","Cliff Swallow")
 
 species_all <- species_detection_summaries %>%
   dplyr::select(sp_english, species_id) %>%
@@ -307,7 +310,7 @@ print(TOD_coverage, n = 25)
 # 6. Main species loop
 # ============================================================
 
-for (i in rev(seq_len(nrow(species_all)))) {
+for (i in seq_len(nrow(species_all))) {
 
   # ---- 6.1 Species identifiers and output paths ----
   sp_name <- species_all$sp_english[i]
@@ -319,6 +322,12 @@ for (i in rev(seq_len(nrow(species_all)))) {
           " (species_id = ", sp_code, ")\n====================")
 
   pred_path <- file.path(pred_dir, paste0(sp_file, "_1km.rds"))
+  
+  if (file.exists(pred_path) && !rerun_predictions) {
+    message("Predictions already exist for ", sp_name, "; skipping model fit.")
+    next
+  }
+  
   dat_path  <- file.path(data_used_dir, paste0(sp_file, "_1km.rds"))
   sp_path   <- sp_data_path(species_dir, sp_name)
 
@@ -336,7 +345,7 @@ for (i in rev(seq_len(nrow(species_all)))) {
                     survey_durations = mode$survey_durations)
 
   sp_dat        <- sp$sp_dat
-  sp_safe_dates <- sp$sp_safe_dates
+  sp_safe_dates <- sp$sp_safe_dates_unmodified
   pred_doy      <- sp$pred_doy
 
   sp_dat <- sp_dat %>% subset(!(Survey_Type == "ARU" & Survey_Duration_Minutes != 5))
@@ -358,7 +367,8 @@ for (i in rev(seq_len(nrow(species_all)))) {
   error_family <- choose_error_family(
     count = subset(sp_dat, Survey_Type %in% c("ARU","Point_Count"))$count,
     nb_switch_count = nb_switch_count,
-    nb_switch_min_n = nb_switch_min_n
+    nb_switch_min_n = nb_switch_min_n,
+    top1pct_share   = 0.10
   )
 
   save_atomic(
@@ -377,10 +387,6 @@ for (i in rev(seq_len(nrow(species_all)))) {
   # ---- 6.4 Decide whether to fit a model ----
   if (!is_modelable) {
     message("Honeycomb data saved for ", sp_name, "; not enough data to fit a model.")
-    next
-  }
-  if (file.exists(pred_path) && !rerun_predictions) {
-    message("Predictions already exist for ", sp_name, "; skipping model fit.")
     next
   }
 

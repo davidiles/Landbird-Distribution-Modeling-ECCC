@@ -246,68 +246,33 @@ trim_predictions_to_safe_dates <- function(preds,
 # sigma2_omit  total log-scale variance of the omitted iid terms (>= 0).
 # size         nbinomial size; Inf for a Poisson-fitted species.
 # n_nodes      Gaussian integration nodes (odd; 41 is ample for this integrand).
-# n_surveys    Number of independent surveys to represent PObs for
-marginal_pobs <- function(lambda_rast,
-                          sigma2_omit = 0,
-                          size = Inf,
-                          n_nodes = 41L,
-                          n_surveys = 1L) {
+marginal_pobs <- function(lambda_rast, sigma2_omit = 0, size = Inf, n_nodes = 41L) {
+  stopifnot(inherits(lambda_rast, "SpatRaster"), terra::nlyr(lambda_rast) == 1L)
+  stopifnot(is.finite(sigma2_omit), sigma2_omit >= 0, n_nodes >= 1L)
   
-  stopifnot(
-    inherits(lambda_rast, "SpatRaster"),
-    terra::nlyr(lambda_rast) == 1L
-  )
-  stopifnot(
-    is.finite(sigma2_omit),
-    sigma2_omit >= 0,
-    n_nodes >= 1L,
-    n_surveys >= 1L
-  )
-  
-  P0 <- if (is.finite(size)) {
-    function(m) (size / (size + m))^size
-  } else {
-    function(m) exp(-m)
-  }
+  P0 <- if (is.finite(size)) function(m) (size / (size + m))^size else function(m) exp(-m)
   
   lam <- terra::values(lambda_rast, mat = FALSE)
-  
   out <- rep(NA_real_, length(lam))
   out[is.finite(lam) & lam <= 0] <- 0
   ok <- is.finite(lam) & lam > 0
   
   if (any(ok)) {
-    
     l <- lam[ok]
-    
     if (sigma2_omit <= 0) {
-      
-      # Marginal probability of detection on ONE survey
-      p_single <- 1 - P0(l)
-      
+      out[ok] <- 1 - P0(l)
     } else {
-      
       sigma <- sqrt(sigma2_omit)
-      z <- seq(-6, 6, length.out = n_nodes)
-      
-      w <- stats::dnorm(z)
-      w <- w / sum(w)
-      
-      p_single <- numeric(length(l))
-      
-      for (j in seq_along(z)) {
-        p_single <- p_single +
-          w[j] * (1 - P0(l * exp(sigma * z[j])))
-      }
+      z     <- seq(-6, 6, length.out = n_nodes)     # standardized
+      w     <- stats::dnorm(z); w <- w / sum(w)      # normalized normal weights
+      acc   <- numeric(length(l))
+      for (j in seq_along(z)) acc <- acc + w[j] * (1 - P0(l * exp(sigma * z[j])))
+      out[ok] <- acc
     }
-    
-    # Probability of >=1 detection across n independent surveys
-    out[ok] <- 1 - (1 - p_single)^n_surveys
   }
   
   r <- terra::setValues(lambda_rast, out)
-  names(r) <- paste0("PObs_", n_surveys, "_surveys")
-  
+  names(r) <- "PObs"
   r
 }
 
@@ -774,23 +739,14 @@ prepare_relative_abundance_rasters <- function(...,
   # ------------------------------------------------------------
   
   process_raster <- function(rast) {
-    
-    # Calculate upper plotting limit from the original raster,
-    # independently of the lower display threshold
+    r <- rast
+    r[r <= resolved_absent_limit] <- NA
     zmax <- resolve_rast_max(
-      rast       = rast,
+      rast       = r,
       rast_max   = rast_max,
       rast_max_q = rast_max_quantile
     )
-    
-    # Now apply the lower display threshold
-    r <- rast
-    r[r <= resolved_absent_limit] <- NA
-    
-    list(
-      rast = r,
-      zmax = zmax
-    )
+    list(rast = r, zmax = zmax)
   }
   
   processed   <- lapply(rasts, process_raster)
@@ -2543,8 +2499,8 @@ plot_honeycomb <- function(hex_summary,
   # bottom-left legend, bottom-right scale bar, and top-left title.
   if (!is.null(survey_counts)) {
     bb      <- sf::st_bbox(study_area)
-    inset_x <- 0.005 * (bb[["xmax"]] - bb[["xmin"]])
-    inset_y <- 0.005 * (bb[["ymax"]] - bb[["ymin"]])
+    inset_x <- 0.02 * (bb[["xmax"]] - bb[["xmin"]])
+    inset_y <- 0.02 * (bb[["ymax"]] - bb[["ymin"]])
 
     counts_df <- data.frame(
       x = bb[["xmax"]] - inset_x,
@@ -2628,7 +2584,7 @@ make_effort_classes <- function(max_surveys, alpha_min, alpha_max) {
 # Plot region-specific estimates of population change
 make_change_comparison_plot <- function(
     regional_estimates_FullModel,
-    paired_change_summary = NULL,
+    paired_change_summary,
     # South -> north up the y axis. Must contain every BCR_Label that can appear
     # in the inputs; 08 passes its own copy so the plot and the repeated-survey
     # table cannot drift apart.
@@ -2672,30 +2628,22 @@ make_change_comparison_plot <- function(
       pct_change_qhigh  = pct_change_qhigh
     )
   
-  # Paired estimates are optional. If absent, this panel simply shows the full
-  # spatial-model estimates; the driver omits the other paired-only page-3 panels.
-  has_paired_estimates <- !(is.null(paired_change_summary) || nrow(paired_change_summary) == 0)
-
-  if (!has_paired_estimates) {
-    paired_plot_df <- NULL
-  } else {
-    paired_plot_df <- paired_change_summary %>%
-      dplyr::left_join(region_lookup, by = "BCR") %>%
-      dplyr::mutate(
-        analysis = dplyr::case_when(
-          shared_radius_km == 0.1 ~ "Repeated (100 m buffer)",
-          TRUE ~ paste0("Shared footprint = ", shared_radius_km * 1000, " m")
-        )
-      ) %>%
-      dplyr::transmute(
-        BCR,
-        Region_Name,
-        analysis,
-        pct_change_median = pct_change_median,
-        pct_change_qlow   = pct_change_qlow,
-        pct_change_qhigh  = pct_change_qhigh
+  paired_plot_df <- paired_change_summary %>%
+    dplyr::left_join(region_lookup, by = "BCR") %>%
+    dplyr::mutate(
+      analysis = dplyr::case_when(
+        shared_radius_km == 0.1 ~ "Repeated (100 m buffer)",
+        TRUE ~ paste0("Shared footprint = ", shared_radius_km * 1000, " m")
       )
-  }
+    ) %>%
+    dplyr::transmute(
+      BCR,
+      Region_Name,
+      analysis,
+      pct_change_median = pct_change_median,
+      pct_change_qlow   = pct_change_qlow,
+      pct_change_qhigh  = pct_change_qhigh
+    )
   
   plot_df <- dplyr::bind_rows(
     full_model_plot_df,
@@ -2734,9 +2682,8 @@ make_change_comparison_plot <- function(
         )
       ),
       y_pos = dplyr::case_when(
-        !has_paired_estimates                 ~ region_y,
-        analysis == "Full spatial model"     ~ region_y + 0.1,
-        analysis == "Repeated (100 m buffer)" ~ region_y - 0.1
+        analysis == "Full spatial model"    ~ region_y + 0.1,
+        analysis == "Repeated (100 m buffer)"  ~ region_y - 0.1
       ),
       
       # Transform percent change to symmetric log-ratio scale
@@ -2790,7 +2737,7 @@ make_change_comparison_plot <- function(
     ggplot2::theme(
       panel.grid.major.y = ggplot2::element_blank(),
       panel.grid.minor = ggplot2::element_blank(),
-      legend.position = if (has_paired_estimates) "top" else "none",
+      legend.position = "top",
       plot.title = ggplot2::element_text(face = "bold")
     )
 }

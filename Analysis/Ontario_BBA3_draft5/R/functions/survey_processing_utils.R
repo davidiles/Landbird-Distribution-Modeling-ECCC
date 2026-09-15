@@ -675,3 +675,60 @@ build_pixel_polygon_index <- function(grid_sf,
   )
 }
 
+# Thin sp_dat to ONE observation per site-year (pseudoreplication diagnostic).
+# Within each site-year the retained row is chosen by, in order:
+#   1. Survey_Type priority (survey_priority; earlier = preferred)
+#   2. proximity to days_midpoint = 0
+#   3. random tie-break (reproducible via `seed`)
+# Rows with an incomplete grouping key are each treated as their own site and
+# kept. Returns the thinned sf with geometry preserved.
+thin_one_per_site <- function(
+    sp_dat,
+    group_cols      = "site_id",
+    survey_priority = c("Point_Count", "ARU",
+                        "Breeding Bird Atlas", "Linear transect"),
+    seed            = NULL,
+    quiet           = FALSE
+) {
+  required <- c(group_cols, "Survey_Type", "days_midpoint")
+  missing  <- setdiff(required, names(sp_dat))
+  if (length(missing)) {
+    stop("thin_one_per_site(): missing columns: ",
+         paste(missing, collapse = ", "))
+  }
+  
+  # Reproducible tie-break without clobbering the caller's RNG stream.
+  if (!is.null(seed)) {
+    if (exists(".Random.seed", envir = .GlobalEnv)) {
+      old_seed <- get(".Random.seed", envir = .GlobalEnv)
+      on.exit(assign(".Random.seed", old_seed, envir = .GlobalEnv), add = TRUE)
+    }
+    set.seed(seed)
+  }
+  
+  # Grouping key. Incomplete-key rows get a unique token so they are never
+  # merged -- a row with no site is its own site, not a repeat.
+  key_df     <- sf::st_drop_geometry(sp_dat)[, group_cols, drop = FALSE]
+  grp_key    <- do.call(paste, c(key_df, sep = "\r"))
+  incomplete <- !stats::complete.cases(key_df)
+  grp_key[incomplete] <- paste0("__unique__", which(incomplete))
+  
+  out <- sp_dat %>%
+    dplyr::mutate(
+      .grp       = grp_key,
+      .type_rank = match(Survey_Type, survey_priority),  # unknown type sorts last
+      .day_dist  = abs(days_midpoint),                   # NA sorts last
+      .rand      = stats::runif(dplyr::n())
+    ) %>%
+    dplyr::arrange(.type_rank, .day_dist, .rand) %>%
+    dplyr::group_by(.grp) %>%
+    dplyr::slice_head(n = 1) %>%
+    dplyr::ungroup() %>%
+    dplyr::select(-.grp, -.type_rank, -.day_dist, -.rand)
+  
+  if (!quiet) {
+    message("  thinned ", nrow(sp_dat), " -> ", nrow(out),
+            " rows (one per site-year)")
+  }
+  out
+}

@@ -34,7 +34,7 @@ suppressPackageStartupMessages({
 source(here::here("R", "00_config_paths.R"))
 source(file.path(paths$functions, "survey_processing_utils.R"))
 source(file.path(paths$functions, "covariate_processing_utils.R"))
-source(file.path(paths$functions, "inla_model_utils.R"))  # sp_data_path(), make_sp_dat_record(), save_atomic()
+source(file.path(paths$functions, "inla_model_utils_revised.R"))  # sp_data_path(), make_sp_dat_record(), save_atomic()
 
 in_file     <- file.path(paths$data_clean, "birds", "analysis_data_covariates.rds")
 out_file    <- file.path(paths$data_clean, "birds", "data_ready_for_analysis.rds")
@@ -56,9 +56,10 @@ safe_levels  <- c(1, 2)   # safe-date levels to include (core breeding + shoulde
 min_safe_doy <- 1
 max_safe_doy <- 365
 
-make_diagnostic_plots <- TRUE   # FALSE to run non-interactively without plots
-rebuild_species_data  <- TRUE   # overwrite existing per-species files?
+make_diagnostic_plots  <- TRUE   # FALSE to run non-interactively without plots
+rebuild_species_data   <- TRUE   # overwrite existing per-species files?
 save_species_shapefile <- FALSE  # save shp file of species detections for import into GIS
+save_survey_shapefile  <- TRUE   # save shp file of survey locations
 
 # ------------------------------------------------------------
 # Local helper: derived habitat covariates
@@ -213,6 +214,7 @@ PC_DURATION_MIN     <- 5     # point counts must be exactly this
 ARU_DURATIONS_MIN   <- c(1, 3, 5)
 MAX_YEAR            <- 2025
 
+SPECIAL_SURVEY_TYPES <- c("Central Ontario Owls","Eastern Screech-Owl Survey","Long-eared Owl Survey","Marshbird Survey","Nightjar Survey Protocol","Northern Ontario Owls","Northern Hawk Owl Survey")
 CHECKLIST_TYPES  <- c("Breeding Bird Atlas", "Linear transect")
 STATIONARY_TYPES <- c("ARU", "Breeding Bird Atlas", "Point_Count")
 RETAINED_TYPES   <- c("Point_Count", "ARU", "Breeding Bird Atlas", "Linear transect")
@@ -229,7 +231,8 @@ message("Omitting ", n_na_duration,
 surveys_f <- all_surveys %>%
   mutate(
     Survey_Type_raw = Survey_Type,   # provenance: what the provider called it
-
+    is_special      = Survey_Type_raw %in% SPECIAL_SURVEY_TYPES,  # exempt from effort/protocol filters
+    
     # Negative distances are impossible: treat as unknown rather than letting
     # them slip past a `<= tolerance` test as if they were stationary.
     Distance_Traveled_m = if_else(
@@ -251,12 +254,11 @@ surveys_f <- all_surveys %>%
     )
   ) %>%
   filter(
-    # Retained survey types (first, so the cascade reads correctly).
-    Survey_Type %in% RETAINED_TYPES,
+    # Retained survey types, plus special surveys (exempt from the effort rules below).
+    Survey_Type %in% RETAINED_TYPES | is_special,
 
-    # NA effort is missing-by-design for several providers, NOT a "Special"
-    # protocol designation, so retain it.
-    is.na(EffortMeasurement1) | EffortMeasurement1 != "Special",
+    # NA effort is missing-by-design for several providers, NOT a "Special" protocol designation, so retain it.
+    is_special | is.na(EffortMeasurement1) | EffortMeasurement1 != "Special",
 
     lubridate::year(Date_Time) <= MAX_YEAR,
 
@@ -264,8 +266,8 @@ surveys_f <- all_surveys %>%
     # only those inside the general duration bounds. between() would drop the NAs
     # on its own; the explicit test states the intent and keeps the two rules
     # separable.
-    !is.na(Survey_Duration_Minutes),
-    between(Survey_Duration_Minutes, MIN_DURATION_MIN, MAX_DURATION_MIN),
+    is_special | !is.na(Survey_Duration_Minutes),
+    is_special | between(Survey_Duration_Minutes, MIN_DURATION_MIN, MAX_DURATION_MIN),
 
     !is.na(rivers_large),
 
@@ -326,6 +328,7 @@ stopifnot(
 # Corrects time zones, adds sunrise/sunset times, and adds a time-of-day
 # covariate (Hours_After_Reference, referenced to 3 h before sunrise).
 surveys_f <- add_solar_time_covariates_reference(surveys_sf = surveys_f, reference_hours = -3)
+surveys_f$Atlas <- ifelse(year(surveys_f$Date_Time_Local)>2020,"OBBA3","OBBA2")
 
 # --- BCR ---
 surveys_f$BCR <- assign_poly_id(surveys_f, bcr_split, id_col = "BCR", nearest_fallback = TRUE)
@@ -366,6 +369,13 @@ surveys_f <- surveys_f %>%
 surveys_f  <- add_derived_covariates(surveys_f)
 grid_OBBA2 <- add_derived_covariates(grid_OBBA2)
 grid_OBBA3 <- add_derived_covariates(grid_OBBA3)
+
+# ============================================================
+# 4b. Save survey shapefile
+# ============================================================
+survey_shapefile_path <- file.path(paths$data_clean,"surveys","survey_shapefile.shp")
+sf::st_write(surveys_f, dsn = survey_shapefile_path,delete_layer = TRUE)
+
 
 # ============================================================
 # 5. Diagnostics
@@ -756,3 +766,26 @@ message("06_filter_and_finalize_surveys.R complete")
 #   filename = file.path(rast_dir,"A3_rasters", paste0(names(r3), ".tif")),
 #   overwrite = TRUE
 # )
+
+
+ggplot(surveys_f %>% subset(Survey_Type %in% SPECIAL_SURVEY_TYPES))+
+  geom_sf(data = study_boundary) +
+  geom_sf(size = 0.1)+
+  facet_grid(Atlas~Survey_Type)
+
+
+subset(species_detection_summaries, Survey_Type %in% SPECIAL_SURVEY_TYPES & n_det > 0) %>%
+  group_by(sp_english,species_id,Survey_Type) %>%
+  summarize(n_det = sum(n_det),
+            n_surveys = sum(n_surveys)) %>%
+  arrange(Survey_Type) %>%
+  as.data.frame()
+
+# Examine a few representative species
+subset(species_detection_summaries, sp_english == "Common Nighthawk")
+
+# Northern Saw-whet Owl; Central Ontario Owls
+# Barred Owl; Central Ontario Owls
+
+
+

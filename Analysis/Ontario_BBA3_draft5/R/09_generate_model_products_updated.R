@@ -15,9 +15,10 @@
 #   change map (summarize_hex_draw_change) is still computed here -- it is cheap
 #   and species-specific.
 #
-#   Also requires 07b's paired_summaries.rds for the page-3 comparison panel
-#   (repeated-survey change, locations map, and summary table use the raw shared
-#   survey points, which live only in that file).
+#   If available, 07b's paired_summaries.rds is used for the page-3 repeated-
+#   survey comparison (change estimates, locations map, and summary table). It is
+#   optional: species with full-model predictions still receive the full PDF when
+#   no paired result exists.
 #
 # Main outputs (unchanged)
 #   - model_output/rasters_<model_name>/<species>_{a2,a3,chg}.tif
@@ -95,9 +96,10 @@ cfg <- list(
 
   
   # Probability-of-observation surface ----------------------------------------
-  pobs_marginalize_terms = c("kappa_diff"),  # omitted iid terms integrated back in
+  pobs_marginalize_terms = c("kappa_diff","site_iid"),  # omitted iid terms integrated back in
   pobs_gh_nodes          = 41L,              # Gaussian integration nodes
   pobs_floor             = 0,                # white out P(Obs) below this (0 = show all)
+  pobs_n_surveys = 25L,
   
   # PDF page rendering
   page_width  = 20,
@@ -284,7 +286,7 @@ colpal_relabund <- grDevices::colorRampPalette(c(
 ))(100)
 
 # Probability-of-observation palette.
-colpal_pobs <- c("white", viridis::mako(100, direction = -1))
+colpal_pobs <- c("white", viridis::mako(6, direction = -1))
 
 # Region geometries + their assessment hex grids. These depend only on the study
 # area and n_hexagons, so they are constant across all species.
@@ -304,8 +306,9 @@ names(region_specs) <- names(region_defs)
 # Per-species products
 #
 # Iterate EVERY species that has a saved honeycomb record (data_used). Species
-# with a fitted model AND a paired-survey change analysis get the full multi-page
-# assessment PDF; all others get a honeycomb-only PDF.
+# with fitted-model predictions get the full multi-page assessment PDF. Paired-
+# survey results are optional: when absent, page 3 shows the full-model change
+# summaries only. Species without model predictions get honeycomb-only PDFs.
 # ============================================================
 
 dat_used_files <- list.files(data_used_dir, pattern = "\\.rds$", full.names = TRUE)
@@ -318,11 +321,13 @@ if (file.exists(paired_analysis_path)) {
   paired_summaries <- readRDS(paired_analysis_path)
 } else {
   message("Paired summaries not found at: ", paired_analysis_path,
-          "; species without paired results will receive honeycomb-only PDFs.")
+          "; full model products will still be generated, with paired panels omitted.")
   paired_summaries <- list()
 }
 
-for (i in rev(seq_along(dat_used_files))) {
+i = which(dat_used_files == "C:/Users/IlesD/OneDrive - EC-EC/Iles/Projects/Landbirds/Landbird-Distribution-Modeling-ECCC/Analysis/Ontario_BBA3_draft5/data_clean/model_output/data_used_PC_ARU_CL/purple_martin_1km.rds")
+
+for (i in seq_along(dat_used_files)) {
 
   dat_used <- readRDS(dat_used_files[i])
 
@@ -340,8 +345,8 @@ for (i in rev(seq_along(dat_used_files))) {
   # Decide what, if anything, needs to be generated
   #   1. PDF already exists            -> skip.
   #   2. Modelable but no predictions  -> skip (don't make a honeycomb-only PDF).
-  #   3. Not modelable                 -> honeycomb-only PDF.
-  #   4. Modelable + predictions exist -> full package (needs paired summary).
+  #   3. No predictions / not modelable -> honeycomb-only PDF.
+  #   4. Predictions exist              -> full package (paired summary optional).
   # ----------------------------------------------------------
 
   if (file.exists(pdf_path)) {
@@ -364,11 +369,9 @@ for (i in rev(seq_along(dat_used_files))) {
     next
   }
 
-  if (is_modelable && has_model && !has_paired) {
-    message("Skipping ", sp_english,
-            "; species is modelable and predictions exist, but paired-survey ",
-            "summaries were not found. Run 07b_fit_models_to_shared_footprint.R first.")
-    next
+  if (has_model && !has_paired) {
+    message("  Paired-survey summaries not found; generating full model products ",
+            "and omitting paired-analysis elements from page 3.")
   }
 
   # Reconstruct this species' survey sf (geometry + attributes + count) by
@@ -376,11 +379,11 @@ for (i in rev(seq_along(dat_used_files))) {
   sp_surveys <- load_species_surveys(dat_used, all_surveys)
 
   # ----------------------------------------------------------
-  # Honeycomb-only branch for species that were not modelable
+  # Honeycomb-only branch for species without model predictions
   # ----------------------------------------------------------
 
-  if (!is_modelable) {
-    message("Honeycomb-only maps for ", sp_english, " (species not modelable).")
+  if (!has_model) {
+    message("Honeycomb-only maps for ", sp_english, " (no model predictions available).")
 
     honey_prep <- prepare_honeycomb_surveys(sp_surveys)
     A2_obs     <- honey_prep$data %>% dplyr::filter(Atlas == "OBBA2")
@@ -496,8 +499,7 @@ for (i in rev(seq_along(dat_used_files))) {
                  species_filename = sp_file, model_name = model_name,
                  units = "Expected count (Atlas 2)")
   )
-  # terra::writeRaster(r2, filename = rast_path_a2, overwrite = TRUE)
-
+  
   a3 <- grid3 %>%
     dplyr::mutate(
       mu_q50      = preds$OBBA3_Corrected_for_Water$OBBA3_q50,
@@ -511,8 +513,7 @@ for (i in rev(seq_along(dat_used_files))) {
                  species_filename = sp_file, model_name = model_name,
                  units = "Expected count (Atlas 3)")
   )
-  # terra::writeRaster(r3, filename = rast_path_a3, overwrite = TRUE)
-
+  
   # Both the median and the interval width come from the water-corrected summaries.
   chg_sf <- grid3 %>%
     dplyr::mutate(
@@ -527,8 +528,7 @@ for (i in rev(seq_along(dat_used_files))) {
                  species_filename = sp_file, model_name = model_name,
                  units = "Change in expected counts (Atlas 2 to Atlas 3)")
   )
-  terra::writeRaster(rchg, filename = rast_path_chg, overwrite = TRUE)
-
+  
   # ----------------------------------------------------------
   # Relative-abundance rasters (shared absence floor + scale)
   # ----------------------------------------------------------
@@ -546,6 +546,16 @@ for (i in rev(seq_along(dat_used_files))) {
   r2_clamped <- rasters_relabund_prepared$rasters$Atlas2
   r3_clamped <- rasters_relabund_prepared$rasters$Atlas3
 
+  # Save rasters
+  r2_to_save <- r2
+  r3_to_save <- r3
+  r2_to_save$mu_q50 <- r2_clamped
+  r3_to_save$mu_q50 <- r3_clamped
+  
+  terra::writeRaster(r2_to_save, filename = rast_path_a2, overwrite = TRUE)
+  terra::writeRaster(r3_to_save, filename = rast_path_a3, overwrite = TRUE)
+  terra::writeRaster(rchg, filename = rast_path_chg, overwrite = TRUE)
+  
   # ----------------------------------------------------------
   # Hex-level change map (Page 3, left)
   # ----------------------------------------------------------
@@ -590,18 +600,25 @@ for (i in rev(seq_along(dat_used_files))) {
     dplyr::relocate(Region_Name, Region_Number)
 
   # ---- Paired analysis (surveys within shared 100 m footprint) ----
-  # NOTE: 07b must also summarize by BCR; require_bcr_key() fails loudly on legacy
-  # Biol_Region-keyed files.
-  paired_change_summary <- paired_summaries[[sp_english]]$shared_change_summary %>%
-    require_bcr_key("shared_change_summary", sp_english) %>%
-    dplyr::rename(
-      pct_change_median = pct_change_q50,
-      pct_change_qlow   = pct_change_q05,
-      pct_change_qhigh  = pct_change_q95
-    )
+  # Optional. If 07b has no result for this species, all full-model products are
+  # still generated and only the paired-analysis elements on page 3 are omitted.
+  if (has_paired) {
+    # NOTE: 07b must also summarize by BCR; require_bcr_key() fails loudly on
+    # legacy Biol_Region-keyed files.
+    paired_change_summary <- paired$shared_change_summary %>%
+      require_bcr_key("shared_change_summary", sp_english) %>%
+      dplyr::rename(
+        pct_change_median = pct_change_q50,
+        pct_change_qlow   = pct_change_q05,
+        pct_change_qhigh  = pct_change_q95
+      )
 
-  paired_data <- paired_summaries[[sp_english]]$shared_data %>%
-    require_bcr_key("shared_data", sp_english)
+    paired_data <- paired$shared_data %>%
+      require_bcr_key("shared_data", sp_english)
+  } else {
+    paired_change_summary <- NULL
+    paired_data           <- NULL
+  }
 
   # Hide change estimates where a species was detected in too few squares. The
   # detection counts are read from 08's table (identical to recomputing them from
@@ -628,55 +645,65 @@ for (i in rev(seq_along(dat_used_files))) {
       direction = dplyr::if_else(sufficient_data, direction, NA_character_)
     )
 
-  paired_change_summary_masked <- paired_change_summary %>%
-    dplyr::left_join(data_availability, by = c("BCR" = "BCR")) %>%
-    dplyr::mutate(sufficient_data = dplyr::coalesce(sufficient_data, FALSE)) %>%
-    dplyr::mutate(
-      dplyr::across(
-        dplyr::all_of(change_estimate_cols),
-        ~ dplyr::if_else(sufficient_data, .x, NA_real_)
+  if (has_paired) {
+    paired_change_summary_masked <- paired_change_summary %>%
+      dplyr::left_join(data_availability, by = c("BCR" = "BCR")) %>%
+      dplyr::mutate(sufficient_data = dplyr::coalesce(sufficient_data, FALSE)) %>%
+      dplyr::mutate(
+        dplyr::across(
+          dplyr::all_of(change_estimate_cols),
+          ~ dplyr::if_else(sufficient_data, .x, NA_real_)
+        )
       )
-    )
+  } else {
+    paired_change_summary_masked <- NULL
+  }
 
   change_comparison_plot <- make_change_comparison_plot(
     regional_estimates_FullModel = regional_estimates_FullModel_masked,
     paired_change_summary        = paired_change_summary_masked,
     region_order = region_label_order,
     title    = "Regional population change estimates",
-    subtitle = "Comparison of full atlas model vs repeated surveys only"
+    subtitle = if (has_paired) {
+      "Comparison of full atlas model vs repeated surveys only"
+    } else {
+      "Full atlas model"
+    }
   )
 
-  paired_locations_map <-
-    ggplot2::ggplot() +
-    ggplot2::geom_sf(data = study_boundary, colour = "black") +
-    ggplot2::geom_sf(data = paired_data, size = 0.1, col = "#1FAA59") +
-    ggplot2::geom_sf(data = bcr_regions_clipped, fill = "transparent",
-                     colour = "black", linewidth = 0.3) +
-    ggplot2::ggtitle("Repeated survey locations") +
-    ggplot2::theme_bw() +
-    ggplot2::theme(
-      axis.title = ggplot2::element_blank(),
-      plot.title = ggplot2::element_text(size = 13),
-      plot.margin = ggplot2::margin(5, 5, 5, 5)
-    )
+  if (has_paired) {
+    paired_locations_map <-
+      ggplot2::ggplot() +
+      ggplot2::geom_sf(data = study_boundary, colour = "black") +
+      ggplot2::geom_sf(data = paired_data, size = 0.1, col = "#1FAA59") +
+      ggplot2::geom_sf(data = bcr_regions_clipped, fill = "transparent",
+                       colour = "black", linewidth = 0.3) +
+      ggplot2::ggtitle("Repeated survey locations") +
+      ggplot2::theme_bw() +
+      ggplot2::theme(
+        axis.title = ggplot2::element_blank(),
+        plot.title = ggplot2::element_text(size = 13),
+        plot.margin = ggplot2::margin(5, 5, 5, 5)
+      )
 
-  paired_data_summary <- paired_data %>%
-    as.data.frame() %>%
-    dplyr::group_by(BCR, Atlas) %>%
-    dplyr::summarize(
-      mean_count = mean(count),
-      PObs       = mean(count > 0),
-      n_surveys  = dplyr::n(),
-      n_squares  = length(unique(square_id)),
-      .groups    = "drop"
-    ) %>%
-    dplyr::left_join(
-      as.data.frame(bcr_regions)[, c("BCR", "BCR_Label")],
-      by = c("BCR" = "BCR")
-    ) %>%
-    dplyr::mutate(BCR_Label = factor(BCR_Label, levels = region_label_order))
+    paired_data_summary <- paired_data %>%
+      as.data.frame() %>%
+      dplyr::group_by(BCR, Atlas) %>%
+      dplyr::summarize(
+        mean_count = mean(count),
+        PObs       = mean(count > 0),
+        n_surveys  = dplyr::n(),
+        n_squares  = length(unique(square_id)),
+        .groups    = "drop"
+      ) %>%
+      dplyr::left_join(
+        as.data.frame(bcr_regions)[, c("BCR", "BCR_Label")],
+        by = c("BCR" = "BCR")
+      ) %>%
+      dplyr::mutate(BCR_Label = factor(BCR_Label, levels = region_label_order))
 
-  paired_summary_table <- make_paired_summary_table(paired_data_summary)
+    paired_summary_table <- make_paired_summary_table(paired_data_summary)
+  }
 
   # ----------------------------------------------------------
   # Survey data prepared once, then assessed per region
@@ -728,27 +755,39 @@ for (i in rev(seq_along(dat_used_files))) {
                             numeric(1)))
   nb_size     <- nb_size_from_hyper(preds$summary_hyperpar)
   
-  pobs2 <- marginal_pobs(r2[["mu_q50"]], sigma2_omit = sigma2_omit,
-                         size = nb_size, n_nodes = 41)
-  pobs3 <- marginal_pobs(r3[["mu_q50"]], sigma2_omit = sigma2_omit,
-                         size = nb_size)
+  pobs2 <- marginal_pobs(
+    r2[["mu_q50"]],
+    sigma2_omit = sigma2_omit,
+    size = nb_size,
+    n_nodes = cfg$pobs_gh_nodes,
+    n_surveys = cfg$pobs_n_surveys
+  )
   
+  pobs3 <- marginal_pobs(
+    r3[["mu_q50"]],
+    sigma2_omit = sigma2_omit,
+    size = nb_size,
+    n_nodes = cfg$pobs_gh_nodes,
+    n_surveys = cfg$pobs_n_surveys
+  )
   if (cfg$pobs_floor > 0) {
     pobs2[pobs2 < cfg$pobs_floor] <- NA
     pobs3[pobs3 < cfg$pobs_floor] <- NA
   }
   
   pobs_Map_Atlas2 <- make_map(
-    species_name = sp_english, subtitle = "Probability of Observation - Atlas 2",
-    legend_title = "P(Obs)\nper 5-min\npoint count",
+    species_name = sp_english, 
+    subtitle = "Probability of ≥1 Detection Across 25 Independent 5-min Point Counts - Atlas 2",
+    legend_title = "P(≥1 detection)\nacross 25\npoint counts",
     rast = pobs2, region = study_boundary,
     water = NULL, colpal = colpal_pobs, water_fill = "white",
     transform = "identity", zlim = c(0, 1), zbreaks = seq(0, 1, length.out = 5)
   )
   
   pobs_Map_Atlas3 <- make_map(
-    species_name = sp_english, subtitle = "Probability of Observation - Atlas 3",
-    legend_title = "P(Obs)\nper 5-min\npoint count",
+    species_name = sp_english, 
+    subtitle = "Probability of ≥1 Detection Across 25 Independent 5-min Point Counts - Atlas 3",
+    legend_title = "P(≥1 detection)\nacross 25\npoint counts",
     rast = pobs3, region = study_boundary,
     water = NULL, colpal = colpal_pobs, water_fill = "white",
     transform = "identity", zlim = c(0, 1), zbreaks = seq(0, 1, length.out = 5)
@@ -758,17 +797,22 @@ for (i in rev(seq_along(dat_used_files))) {
   # Compose pages (BCR 76 and 77 get separate page pairs)
   # ----------------------------------------------------------
 
-  # Page 3 layout. Intermediate variables are kept (rather than collapsing into
-  # one expression) so the patchwork operator precedence is preserved.
-  bottom_right_panel <-
-    paired_locations_map |
-    paired_summary_table +
-    patchwork::plot_layout(widths = c(1, 1))
+  # Page 3 layout. When paired results exist, retain the comparison plot, repeated-
+  # survey locations, and repeated-survey summary table. When they do not, keep
+  # the full-model regional estimates and omit only the paired-analysis elements.
+  if (has_paired) {
+    bottom_right_panel <-
+      paired_locations_map |
+      paired_summary_table +
+      patchwork::plot_layout(widths = c(1, 1))
 
-  right_panel <-
-    change_comparison_plot /
-    bottom_right_panel +
-    patchwork::plot_layout(heights = c(0.5, 1))
+    right_panel <-
+      change_comparison_plot /
+      bottom_right_panel +
+      patchwork::plot_layout(heights = c(0.5, 1))
+  } else {
+    right_panel <- change_comparison_plot
+  }
 
   population_change_page <-
     Hex_Change_Map |

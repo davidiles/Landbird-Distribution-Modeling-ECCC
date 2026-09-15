@@ -45,8 +45,8 @@ suppressPackageStartupMessages({
 })
 
 source(here::here("R", "00_config_paths.R"))
-source(file.path(paths$functions, "model_product_utils.R"))
-source(file.path(paths$functions, "inla_model_utils.R"))   # shared helpers
+source(file.path(paths$functions, "model_product_utils_revised_threshold.R"))
+source(file.path(paths$functions, "inla_model_utils_revised.R"))   # shared helpers
 
 # ============================================================
 # CONFIG
@@ -71,18 +71,7 @@ cfg <- list(
 
   # Change summaries. ci_level MUST match the value 08 used to build the change
   # table (checked below), so the page-3 intervals match the exported table.
-  # ci_level is the TWO-SIDED credible interval used for the page-3 interval
-  # displays (map title "Overall change = ... [low to high]" and the comparison-
-  # plot error bars).
   ci_level   = 0.90,
-  # ONE-SIDED confidence for the hex change map's "changed by at least this much"
-  # colour bands (classify_min_supported_change). A hex is coloured e.g. ">=1.1x"
-  # only if P(change >= 1.1x) >= map_change_confidence, i.e. the (1 - value)
-  # posterior quantile of the log-ratio is above the band threshold. This is a
-  # DIRECTIONAL claim and is deliberately separate from the two-sided ci_level
-  # above: reusing ci_level's 5th/95th percentiles as one-sided bounds would make
-  # each band a 95%-confident claim while the legend reads "90% confident".
-  map_change_confidence = 0.90,
   min_sq_det = 10,            # hide BCR-level change unless detected in >= this many squares
 
   # Relative-abundance display threshold. First find the density cutoff below
@@ -442,13 +431,13 @@ for (i in rev(seq_along(dat_used_files))) {
 
   # Trim out predictions for areas with no safe dates
   # NOTE: this ensures a species cannot occur in a region where it has no safe dates
-  # preds <- trim_predictions_to_safe_dates(
-  #   preds        = preds,
-  #   lookup_obba2 = pixel_region_OBBA2,
-  #   lookup_obba3 = pixel_region_OBBA3,
-  #   hex_no_safe_threshold = 0.5, # zero a hex when >= this fraction of its pixels are no-safe
-  #   trim_unclassified     = FALSE
-  # )
+  preds <- trim_predictions_to_safe_dates(
+    preds        = preds,
+    lookup_obba2 = pixel_region_OBBA2,
+    lookup_obba3 = pixel_region_OBBA3,
+    hex_no_safe_threshold = 0.5, # zero a hex when >= this fraction of its pixels are no-safe
+    trim_unclassified     = FALSE
+  )
   
   # Change numbers for this species come from 08's saved table.
   rc_sp <- regional_change_all %>% dplyr::filter(sp_english == !!sp_english)
@@ -496,7 +485,7 @@ for (i in rev(seq_along(dat_used_files))) {
                  species_filename = sp_file, model_name = model_name,
                  units = "Expected count (Atlas 2)")
   )
-  # terra::writeRaster(r2, filename = rast_path_a2, overwrite = TRUE)
+  terra::writeRaster(r2, filename = rast_path_a2, overwrite = TRUE)
 
   a3 <- grid3 %>%
     dplyr::mutate(
@@ -511,7 +500,7 @@ for (i in rev(seq_along(dat_used_files))) {
                  species_filename = sp_file, model_name = model_name,
                  units = "Expected count (Atlas 3)")
   )
-  # terra::writeRaster(r3, filename = rast_path_a3, overwrite = TRUE)
+  terra::writeRaster(r3, filename = rast_path_a3, overwrite = TRUE)
 
   # Both the median and the interval width come from the water-corrected summaries.
   chg_sf <- grid3 %>%
@@ -556,10 +545,9 @@ for (i in rev(seq_along(dat_used_files))) {
 
   # Per-hex change surface IS still computed here (cheap; species-specific).
   hex_change_sf <- summarize_hex_draw_change(
-    hex_grid            = hex_grid,
-    hex_draws           = preds$hex_draws_Corrected_for_Water,
-    ci_level            = cfg$ci_level,
-    classify_confidence = cfg$map_change_confidence
+    hex_grid  = hex_grid,
+    hex_draws = preds$hex_draws_Corrected_for_Water,
+    ci_level  = cfg$ci_level
   ) |>
     classify_min_supported_change()
 
@@ -569,7 +557,7 @@ for (i in rev(seq_along(dat_used_files))) {
     region            = study_boundary,
     region_boundaries = bcr_regions,
     prov_change       = prov_change,
-    map_confidence    = cfg$map_change_confidence,
+    ci_level          = cfg$ci_level,
     zlim              = rasters_relabund_prepared$zlim,
     water             = NULL,
     water_fill        = "gray97"

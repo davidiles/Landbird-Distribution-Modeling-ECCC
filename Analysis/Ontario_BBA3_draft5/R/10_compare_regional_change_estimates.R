@@ -96,9 +96,9 @@ source(here::here("R", "00_config_paths.R"))
 #   "<model>"   full atlas model      (e.g. "PC_ARU_CL")
 #   "paired"    the (model-independent) repeated-survey analysis from 07b/08
 #   "BBS"       external BBS trends CSV
-model_A <- "PC_ARU_135"
+model_A <- "PC_ARU"
 model_B <- "paired"             # try "BBS" or another atlas model
-detection_counts_model <- model_A
+detection_counts_model <- "PC_ARU"
 
 # Quantity to compare.
 #   "percent_change" -> total % change over the interval (always available)
@@ -145,7 +145,7 @@ species_crosswalk_csv <- NULL
 #   detection_counts_model : atlas model whose full export supplies the counts.
 #                    NULL auto-resolves to an atlas source. When NEITHER source is
 #                    an atlas model (e.g. paired vs BBS), set this explicitly.
-min_n_sq_det           <- 10
+min_n_sq_det           <- 20
 detection_rule         <- "either"
 
 # Draw (and save) the comparison scatter (needs ggplot2).

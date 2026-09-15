@@ -1635,7 +1635,8 @@ assess_region <- function(region,
                           model_source            = NULL,
                           data_source             = NULL,
                           color_palette           = NULL,
-                          count_size_label        = "observed mean count in hexagon"
+                          count_size_label        = "observed mean count in hexagon",
+                          special_dat             = NULL   # per-atlas special-survey sf, or NULL
                           ) {
   
   stopifnot(inherits(region, "sf"))
@@ -1645,6 +1646,15 @@ assess_region <- function(region,
   
   region <- sf::st_transform(region, sf::st_crs(sp_dat))
   sp_dat <- sf::st_filter(sp_dat, region, .predicate = sf::st_intersects)
+
+  # Special-survey rows for this region (no effort; shown as the overlay only).
+  if (!is.null(special_dat)) {
+    stopifnot(inherits(special_dat, "sf"))
+    special_dat <- sf::st_filter(
+      special_dat, sf::st_transform(region, sf::st_crs(special_dat)),
+      .predicate = sf::st_intersects
+    )
+  }
 
   # Tallies from exactly the surveys this region+period panel displays.
   honey_counts <- survey_detection_counts(sp_dat)
@@ -1713,6 +1723,9 @@ assess_region <- function(region,
     palette = color_palette
   )
   
+  # Per-hexagon special-survey overlay (all-FALSE when special_dat is NULL).
+  special_hex <- summarize_special_by_hex(dat = special_dat, hex_grid = hex_grid)
+
   # -- GOAL 4b: Panel C – honeycomb effort/detection -------------------------
   p_honey <- plot_honeycomb(
     hex_summary          = hex_summary,
@@ -1724,7 +1737,8 @@ assess_region <- function(region,
     max_count_per_effort   = scale_limits$max_count_per_effort,
     max_count_per_effort_q = count_max_q,
     count_size_label       = count_size_label,
-    survey_counts          = honey_counts
+    survey_counts          = honey_counts,
+    special_hex            = special_hex
   )
   
   # -- Compose figure --------------------------------------------------------
@@ -1930,6 +1944,52 @@ summarize_surveys_by_hex <- function(dat, hex_grid) {
       obs_detected          = dplyr::if_else(n_surveys > 0,
                                              dplyr::coalesce(obs_detected, FALSE),
                                              NA)
+    )
+}
+
+# Per-hexagon special-survey occurrence / detection flags.
+#
+# Special (targeted single-protocol) surveys carry no effort covariate, so they
+# are not summarised as an effort surface. Instead we record, per hexagon, two
+# logicals used by plot_honeycomb() to draw the overlay:
+#   special_surveyed  TRUE if >= 1 special survey fell in the hexagon
+#   special_detected  TRUE if >= 1 of those had count > 0 (species detected)
+# dat may be NULL or a zero-row sf (PC_ARU / PC_ARU_CL runs), in which case every
+# hexagon is FALSE.
+summarize_special_by_hex <- function(dat, hex_grid) {
+  stopifnot(inherits(hex_grid, "sf"))
+  if (!"hex_id" %in% names(hex_grid)) {
+    hex_grid$hex_id <- seq_len(nrow(hex_grid))
+  }
+
+  if (is.null(dat) || nrow(dat) == 0) {
+    return(hex_grid |>
+             dplyr::mutate(special_surveyed = FALSE, special_detected = FALSE))
+  }
+
+  stopifnot(inherits(dat, "sf"), "count" %in% names(dat))
+  if (sf::st_crs(dat) != sf::st_crs(hex_grid)) {
+    dat <- sf::st_transform(dat, sf::st_crs(hex_grid))
+  }
+
+  dat_hex <- sf::st_join(
+    dat, hex_grid["hex_id"], join = sf::st_within, left = FALSE
+  )
+
+  hex_obs <- dat_hex |>
+    sf::st_drop_geometry() |>
+    dplyr::group_by(hex_id) |>
+    dplyr::summarise(
+      special_surveyed = TRUE,
+      special_detected = any(is.finite(count) & count > 0),
+      .groups = "drop"
+    )
+
+  hex_grid |>
+    dplyr::left_join(hex_obs, by = "hex_id") |>
+    dplyr::mutate(
+      special_surveyed = dplyr::coalesce(special_surveyed, FALSE),
+      special_detected = dplyr::coalesce(special_detected, FALSE)
     )
 }
 
@@ -2358,12 +2418,32 @@ plot_honeycomb <- function(hex_summary,
                            count_size_label     = "observed mean count in hexagon",
                            # Optional named list from survey_detection_counts();
                            # NULL omits the corner tally.
-                           survey_counts        = NULL) {
+                           survey_counts        = NULL,
+                           # Optional per-hexagon special-survey overlay: an sf on
+                           # the same hex grid carrying logical special_surveyed /
+                           # special_detected columns (summarize_special_by_hex()).
+                           # NULL (or all-FALSE) draws nothing. Special surveys have
+                           # no effort covariate, so they are shown ONLY here, not
+                           # in the effort fill or the black count circles.
+                           special_hex            = NULL,
+                           special_colour         = "white",   # ring + x colour
+                           special_halo_colour    = NA,  # NA disables halo
+                           special_ring_frac      = 0.7,       # ring dia / hex inner dia
+                           special_ring_linewidth = 0.1,
+                           special_x_size         = 1,
+                           special_x_stroke       = 0.1,
+                           special_halo_extra     = 0.1) {
   
   stopifnot(inherits(hex_summary, "sf"))
   stopifnot(inherits(study_area, "sf"))
   stopifnot("n_surveys" %in% names(hex_summary))
   stopifnot("mean_count_per_effort" %in% names(hex_summary))
+  if (!is.null(special_hex)) stopifnot(inherits(special_hex, "sf"))
+
+  # Does the overlay actually have anything to show? (drives the subtitle note)
+  has_special_overlay <- !is.null(special_hex) &&
+    "special_surveyed" %in% names(special_hex) &&
+    any(special_hex$special_surveyed, na.rm = TRUE)
   
   # water_to_plot <- NULL
   # 
@@ -2532,11 +2612,77 @@ plot_honeycomb <- function(hex_summary,
     ggplot2::labs(
       title    = "Relative survey effort",
       subtitle = paste(
-        "Hex fill = Number of surveys in hexagon",
-        paste0("Circle size = ", count_size_label),
-        sep = "\n"
+        c(
+          "Hex fill = Number of surveys in hexagon",
+          paste0("Circle size = ", count_size_label),
+          if (isTRUE(has_special_overlay))
+            "Special surveys: ring = surveyed, \u2715 = detected"
+        ),
+        collapse = "\n"
       )
     )
+
+  # -- Special-survey overlay: occurrence ring + detection x --------------------
+  # Special (targeted) surveys have no effort covariate, so they are absent from
+  # the effort fill and the black count circles. Drawn AFTER those circles (so
+  # they sit on top): an unfilled ring marks hexes where a special survey
+  # occurred; an "x" marks hexes where the species was detected by one. Each mark
+  # gets a thin dark halo so the white stays legible over pale / empty hexes.
+  if (!is.null(special_hex) && nrow(special_hex) > 0) {
+    if (sf::st_crs(special_hex) != plot_crs) {
+      special_hex <- sf::st_transform(special_hex, plot_crs)
+    }
+    for (col in c("special_surveyed", "special_detected")) {
+      if (!col %in% names(special_hex)) special_hex[[col]] <- FALSE
+      special_hex[[col]] <- dplyr::coalesce(special_hex[[col]], FALSE)
+    }
+
+    special_pts <- sf::st_point_on_surface(special_hex)
+    special_xy  <- sf::st_coordinates(special_pts)
+    special_df  <- special_hex |>
+      sf::st_drop_geometry() |>
+      dplyr::mutate(x = special_xy[, 1], y = special_xy[, 2],
+                    ring_radius = special_ring_frac * inner_diameter / 2)
+
+    ring_df <- dplyr::filter(special_df, special_surveyed)
+    det_df  <- dplyr::filter(special_df, special_detected)
+
+    # (a) occurrence ring: dark halo first, white ring on top.
+    if (nrow(ring_df) > 0) {
+      if (!is.na(special_halo_colour)) {
+        p <- p + ggforce::geom_circle(
+          data = ring_df, inherit.aes = FALSE,
+          ggplot2::aes(x0 = x, y0 = y, r = ring_radius),
+          fill = NA, colour = special_halo_colour,
+          linewidth = special_ring_linewidth + special_halo_extra
+        )
+      }
+      p <- p + ggforce::geom_circle(
+        data = ring_df, inherit.aes = FALSE,
+        ggplot2::aes(x0 = x, y0 = y, r = ring_radius),
+        fill = NA, colour = special_colour,
+        linewidth = special_ring_linewidth
+      )
+    }
+
+    # (b) detection x, over the centroid / black circle: dark halo then white x.
+    if (nrow(det_df) > 0) {
+      if (!is.na(special_halo_colour)) {
+        p <- p + ggplot2::geom_point(
+          data = det_df, inherit.aes = FALSE,
+          ggplot2::aes(x = x, y = y), shape = 4,
+          colour = special_halo_colour,
+          size = special_x_size, stroke = special_x_stroke + special_halo_extra
+        )
+      }
+      p <- p + ggplot2::geom_point(
+        data = det_df, inherit.aes = FALSE,
+        ggplot2::aes(x = x, y = y), shape = 4,
+        colour = special_colour,
+        size = special_x_size, stroke = special_x_stroke
+      )
+    }
+  }
 
   # Optional top-right tally of raw effort and detections. Anchored to the
   # study-area bbox so it sits in the corner under coord_sf, clear of the
@@ -2944,9 +3090,19 @@ prepare_honeycomb_surveys <- function(sp_surveys) {
   stopifnot(inherits(sp_surveys, "sf"))
   stopifnot(all(c("Survey_Type", "count") %in% names(sp_surveys)))
 
-  # Keep every survey type the model used. For a PC_ARU run sp_surveys holds no
-  # checklist rows, so this reduces to Point_Count + ARU.
+  # Effort-based types drive the honeycomb fill and the black count circles. For
+  # a PC_ARU run sp_surveys holds no checklist rows, so this reduces to
+  # Point_Count + ARU.
   keep_types <- c(honeycomb_structured_types, honeycomb_checklist_types)
+
+  # Any remaining type is a special (targeted single-protocol) survey that the SS
+  # model kept -- script 07 leaves only ABOVE-threshold special rows in
+  # survey_counts, so no explicit special-type list is needed here. Special
+  # surveys have NO effort covariate (Survey_Duration_Minutes is NA), so they are
+  # split off and shown as a separate overlay (occurrence ring + detection x)
+  # rather than as effort circles. Empty for PC_ARU / PC_ARU_CL runs.
+  special <- sp_surveys %>%
+    dplyr::filter(!Survey_Type %in% keep_types)
 
   out <- sp_surveys %>%
     dplyr::filter(Survey_Type %in% keep_types)
@@ -2955,6 +3111,7 @@ prepare_honeycomb_surveys <- function(sp_surveys) {
     stop("prepare_honeycomb_surveys(): Survey_Duration_Minutes is missing; ",
          "cannot compute count per survey-minute.", call. = FALSE)
   }
+  # Guard applies to the effort types ONLY; special rows (NA duration) are exempt.
   if (any(!is.finite(out$Survey_Duration_Minutes) |
           out$Survey_Duration_Minutes <= 0)) {
     stop("prepare_honeycomb_surveys(): non-positive or missing ",
@@ -2965,7 +3122,7 @@ prepare_honeycomb_surveys <- function(sp_surveys) {
   out <- out %>%
     dplyr::mutate(count_per_effort = count / Survey_Duration_Minutes)
 
-  list(data = out, per_minute = TRUE)
+  list(data = out, special = special, per_minute = TRUE)
 }
 
 
@@ -3031,7 +3188,9 @@ build_period_assessments <- function(region_geom,
                                      count_max_q   = 0.99,
                                      max_surveys_q = 0.80,
                                      transform     = "identity",
-                                     count_size_label = "observed mean count in hexagon") {
+                                     count_size_label = "observed mean count in hexagon",
+                                     A2_special = NULL,
+                                     A3_special = NULL) {
   
   region_vect <- terra::vect(sf::st_transform(region_geom, terra::crs(r2)))
   
@@ -3087,7 +3246,7 @@ build_period_assessments <- function(region_geom,
     }
   }
   
-  assess_one <- function(period, dat, rast) {
+  assess_one <- function(period, dat, rast, special) {
     assess_region(
       region               = region_geom,
       region_boundaries    = region_boundaries,
@@ -3104,13 +3263,14 @@ build_period_assessments <- function(region_geom,
       model_source         = NULL,
       data_source          = NULL,
       color_palette        = colpal,
-      count_size_label     = count_size_label
+      count_size_label     = count_size_label,
+      special_dat          = special
     )
   }
   
   list(
-    A2           = assess_one("Atlas 2", A2_reg, r2_reg),
-    A3           = assess_one("Atlas 3", A3_reg, r3_reg),
+    A2           = assess_one("Atlas 2", A2_reg, r2_reg, A2_special),
+    A3           = assess_one("Atlas 3", A3_reg, r3_reg, A3_special),
     scale_limits = lims
   )
 }
@@ -3132,7 +3292,9 @@ build_period_honeycombs <- function(region_geom,
                                     title_suffix  = "",
                                     max_surveys_q = 0.80,
                                     count_max_q   = 0.99,
-                                    count_size_label = "observed mean count in hexagon") {
+                                    count_size_label = "observed mean count in hexagon",
+                                    A2_special = NULL,
+                                    A3_special = NULL) {
   
   A2_reg <- sf::st_filter(
     A2_dat, sf::st_transform(region_geom, sf::st_crs(A2_dat)),
@@ -3142,6 +3304,18 @@ build_period_honeycombs <- function(region_geom,
     A3_dat, sf::st_transform(region_geom, sf::st_crs(A3_dat)),
     .predicate = sf::st_intersects
   )
+
+  # Special-survey rows for this region (overlay only), then per-hex flags.
+  A2_special_reg <- if (is.null(A2_special)) NULL else sf::st_filter(
+    A2_special, sf::st_transform(region_geom, sf::st_crs(A2_special)),
+    .predicate = sf::st_intersects
+  )
+  A3_special_reg <- if (is.null(A3_special)) NULL else sf::st_filter(
+    A3_special, sf::st_transform(region_geom, sf::st_crs(A3_special)),
+    .predicate = sf::st_intersects
+  )
+  A2_special_hex <- summarize_special_by_hex(A2_special_reg, region_hex)
+  A3_special_hex <- summarize_special_by_hex(A3_special_reg, region_hex)
   
   # Survey-only hex summaries (no raster involved).
   A2_hex <- summarize_surveys_by_hex(dat = A2_reg, hex_grid = region_hex)
@@ -3163,7 +3337,7 @@ build_period_honeycombs <- function(region_geom,
   A2_counts <- survey_detection_counts(A2_reg)
   A3_counts <- survey_detection_counts(A3_reg)
 
-  honey_one <- function(hex_obs, period, survey_counts) {
+  honey_one <- function(hex_obs, period, survey_counts, special_hex) {
     plot_honeycomb(
       hex_summary            = hex_obs,
       study_area             = region_geom,
@@ -3174,7 +3348,8 @@ build_period_honeycombs <- function(region_geom,
       max_count_per_effort   = shared_max_count,
       max_count_per_effort_q = count_max_q,
       count_size_label       = count_size_label,
-      survey_counts          = survey_counts
+      survey_counts          = survey_counts,
+      special_hex            = special_hex
     ) +
       # Replace plot_honeycomb's generic title with the atlas period; its
       # descriptive subtitle (hex fill / circle size) is retained.
@@ -3182,8 +3357,8 @@ build_period_honeycombs <- function(region_geom,
   }
   
   list(
-    A2 = honey_one(A2_hex, "Atlas 2", A2_counts),
-    A3 = honey_one(A3_hex, "Atlas 3", A3_counts)
+    A2 = honey_one(A2_hex, "Atlas 2", A2_counts, A2_special_hex),
+    A3 = honey_one(A3_hex, "Atlas 3", A3_counts, A3_special_hex)
   )
 }
 

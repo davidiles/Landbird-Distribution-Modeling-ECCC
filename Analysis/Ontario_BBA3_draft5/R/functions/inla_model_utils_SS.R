@@ -97,6 +97,21 @@ make_cov_df <- function(covars, mean = 0, sd_linear = 1) {
   )
 }
 
+# Resolve the per-type special-survey square threshold from min_special_squares.
+#
+# min_special_squares is either a single number (applied to every type) or a
+# named vector: named types use their value; unlisted types fall back to a
+# "default" entry if present, else the first entry. Used by BOTH the main loop
+# (to decide whether to fit a species at all in a special-survey mode) and
+# fit_PC_ARU_CL() (to decide which intercepts to keep), so the two cannot drift.
+resolve_special_threshold <- function(type, min_special_squares) {
+  v <- min_special_squares
+  if (is.null(names(v)) || all(names(v) == "")) return(as.numeric(v[[1]]))
+  if (type %in% names(v))      return(as.numeric(v[[type]]))
+  if ("default" %in% names(v)) return(as.numeric(v[["default"]]))
+  as.numeric(v[[1]])
+}
+
 #' Calibrate lambda for a PC prior via Monte Carlo tail probability
 #'
 #' Some PC priors are parameterized via a rate/scale (lambda) chosen so that
@@ -1234,7 +1249,37 @@ fit_PC_ARU_CL <- function(
     BBA_log_duration_prior_sd   = 0.20,
     LT_log_distance_prior_mean  = 0.30,
     LT_log_distance_prior_sd    = 0.20,
-    
+
+    # --- Special surveys (targeted single-protocol surveys) --------------------
+    # Survey types given their OWN intercept (a protocol detectability offset vs
+    # the 5-min point-count reference) and NO effort covariate, because each is
+    # standardized within its own protocol (e.g. the marshbird quiet+playback
+    # sequence). They still load onto the shared abundance/change surface, habitat
+    # covariates and the square/site iid, so they inform distribution/abundance
+    # like any other survey. Leave as character(0) for the plain checklist model.
+    special_survey_types  = character(0),
+    # A special type's intercept is fit only where it is identifiable: the species
+    # must be detected in >= this many atlas squares (unique square_id, count > 0)
+    # by that survey type. Types below threshold have ALL their rows dropped -- no
+    # intercept, and no contamination of the reference protocol. Either one number
+    # for every type, or a named vector to override per type; types not named fall
+    # back to a "default" entry if present, else the first entry, e.g.
+    #   c(default = 10, "Marshbird Survey" = 20)
+    min_special_squares   = 10,
+    # SD (log link) of each special-survey intercept's Gaussian prior; matches the
+    # factor-of-5 detectability prior used for the checklist intercepts.
+    special_intercept_prior_sd = log(5) / 2,
+    # Whether special-survey rows share the diurnal TOD / seasonal DOY smooths.
+    # Either one logical for every special type, or a NAMED logical vector keyed
+    # by survey type (e.g. c("Northern Hawk Owl Survey" = TRUE)); types not named
+    # fall back to a "default" entry if present, else FALSE. FALSE (the default)
+    # treats timing/season as fixed by protocol and absorbed by the intercept, and
+    # keeps nocturnal owl/nightjar rows from bending the PC/ARU-based smooths where
+    # those carry no data. Per-type control lets, say, the near-dawn hawk-owl
+    # survey opt into TOD without pulling the deep-night owl surveys in with it.
+    special_share_tod     = FALSE,
+    special_share_doy     = FALSE,
+
     # Atlas-square iid prior
     kappa_pcprec_diff = c(0.25, 0.1),    # P(sigma_square > 0.25) = 0.1; fine-scale (10-km square) sink
     
@@ -1376,6 +1421,19 @@ fit_PC_ARU_CL <- function(
   sp_dat$Survey_Duration_Minutes <- ensure_numeric(sp_dat$Survey_Duration_Minutes)
   sp_dat$Distance_Traveled_m     <- ensure_numeric(sp_dat$Distance_Traveled_m)
 
+  # Special-survey rows are, by definition, neither ARU nor BBA (SC) nor LT, so
+  # force those protocol indicators to 0 on them. This keeps the ARU partition
+  # check below robust (a stray NA/1 would break it) and guarantees a special row
+  # never loads onto the BBA/LT intercepts -- its own intercept is added in 3a.
+  if (length(special_survey_types) > 0) {
+    is_special_raw <- sp_dat$Survey_Type %in% special_survey_types
+    if (any(is_special_raw)) {
+      for (col in c("ARU", "ARU_1min", "ARU_3min", "ARU_5min", "SC", "LT")) {
+        sp_dat[[col]][is_special_raw] <- 0
+      }
+    }
+  }
+
   # The three duration indicators must PARTITION the ARU rows: every ARU row
   # carries exactly one (duration in {1, 3, 5}) and every non-ARU row carries
   # none. This is what makes each effect_ARU_* a clean contrast against the
@@ -1384,14 +1442,47 @@ fit_PC_ARU_CL <- function(
   stopifnot(all(sp_dat$ARU_1min + sp_dat$ARU_3min + sp_dat$ARU_5min == sp_dat$ARU))
   
   # ----------------------------------------------------------------------------
-  # 3a. Survey-type masks -- two observation models
+  # 3a. Resolve special surveys, then build survey-type masks
   # ----------------------------------------------------------------------------
-  # PC + ARU (structured) and BBA (stationary checklist) share one likelihood;
-  # LT (linear transect) gets its own likelihood and its own size. All of them
-  # share the site-level random effect built in 3b.
+  # Special (targeted single-protocol) surveys each get their own intercept and
+  # no effort term (sections 10/11). A type's intercept is fit only where the
+  # species is detected in >= its square threshold; types below threshold have
+  # ALL their rows dropped here, so they neither get an intercept nor contaminate
+  # the reference protocol. Row-dropping happens BEFORE the masks, the site index
+  # and the effort medians below, all of which must see the final row set.
+  if (length(special_survey_types) > 0 && !"square_id" %in% names(sp_dat)) {
+    stop("fit_PC_ARU_CL(): square_id is required to threshold special surveys.")
+  }
+
+  special_types_req <- intersect(special_survey_types, unique(sp_dat$Survey_Type))
+
+  special_keep   <- character(0)
+  special_report <- list()
+  for (type in special_types_req) {
+    det  <- sp_dat$Survey_Type == type & sp_dat$count > 0
+    n_sq <- dplyr::n_distinct(sp_dat$square_id[det])
+    thr  <- resolve_special_threshold(type, min_special_squares)
+    keep <- n_sq >= thr
+    if (keep) special_keep <- c(special_keep, type)
+    special_report[[type]] <- c(n_det_squares = n_sq, threshold = thr,
+                                kept = as.numeric(keep))
+    message(sprintf(
+      "  special survey '%s': detected in %d square(s) (threshold %g) -> %s",
+      type, n_sq, thr, if (keep) "KEEP intercept" else "DROP rows"))
+  }
+
+  special_drop <- setdiff(special_types_req, special_keep)
+  if (length(special_drop) > 0) {
+    sp_dat <- sp_dat[!(sp_dat$Survey_Type %in% special_drop), , drop = FALSE]
+  }
+
+  # PC + ARU (structured) and BBA (stationary checklist) share one predictor; LT
+  # and each KEPT special type add their own intercept. All share the site-level
+  # random effect built in 3b. Masks are computed on the FINAL row set.
   is_pc_aru     <- sp_dat$Survey_Type %in% c("Point_Count", "ARU")
   is_bba        <- sp_dat$Survey_Type == "Breeding Bird Atlas"
   is_lt         <- sp_dat$Survey_Type == "Linear transect"
+  is_special    <- sp_dat$Survey_Type %in% special_keep
   is_stationary <- is_pc_aru | is_bba
   
   n_pc_aru <- sum(is_pc_aru)
@@ -1401,9 +1492,12 @@ fit_PC_ARU_CL <- function(
   if (n_pc_aru == 0) {
     stop("fit_PC_ARU_CL(): no Point_Count/ARU rows to fit.")
   }
-  if (any(!(is_pc_aru | is_bba | is_lt))) {
-    stop("fit_PC_ARU_CL(): rows with unrecognised Survey_Type ",
-         "(expected Point_Count, ARU, Breeding Bird Atlas, Linear transect).")
+  if (any(!(is_pc_aru | is_bba | is_lt | is_special))) {
+    bad <- sort(unique(sp_dat$Survey_Type[!(is_pc_aru | is_bba | is_lt | is_special)]))
+    stop("fit_PC_ARU_CL(): rows with unrecognised Survey_Type (",
+         paste(bad, collapse = ", "),
+         "). Expected Point_Count, ARU, Breeding Bird Atlas, Linear transect, ",
+         "or a declared special_survey_types value.")
   }
   
   # ----------------------------------------------------------------------------
@@ -1552,7 +1646,64 @@ fit_PC_ARU_CL <- function(
     sp_dat$LT_log_distance[is_lt] <-
       log(sp_dat$Distance_Traveled_m[is_lt] / lt_ref_distance)
   }
-  
+
+  # ------------------------------------------------------------
+  # 4b. Special-survey indicators and TOD/DOY participation weights
+  # ------------------------------------------------------------
+  # One 0/1 indicator per surviving special type (the column name is reused as
+  # the effect name, so a fit carries readable effect_SS_<slug> terms). tod_w /
+  # doy_w switch the diurnal TOD / seasonal DOY smooths on or off PER TYPE: a
+  # special type participates only if special_share_tod / special_share_doy opts
+  # it in (see the resolver below); every non-special row always participates.
+  # This is per type, not global, so a near-dawn protocol can share the TOD smooth
+  # while deep-night ones stay out. When a special type is excluded, its rows'
+  # timing/season covariate is pinned to an in-domain reference so the 1-D
+  # projector never has to evaluate an out-of-mesh (e.g. nocturnal) value.
+  special_slug <- stats::setNames(paste0("SS_", sp_filename(special_keep)),
+                                  special_keep)
+  for (type in special_keep) {
+    sp_dat[[special_slug[[type]]]] <- as.numeric(sp_dat$Survey_Type == type)
+  }
+
+  # Resolve a scalar-or-named logical flag for one special type. Mirrors
+  # resolve_special_threshold(): named types use their value; unlisted types use a
+  # "default" entry if present, else FALSE.
+  special_flag <- function(type, flags) {
+    if (is.null(names(flags)) || all(names(flags) == "")) {
+      return(isTRUE(unname(flags)[1]))
+    }
+    if (type %in% names(flags))      return(isTRUE(flags[[type]]))
+    if ("default" %in% names(flags)) return(isTRUE(flags[["default"]]))
+    FALSE
+  }
+
+  share_tod_type <- vapply(special_keep, special_flag, logical(1),
+                           flags = special_share_tod)
+  share_doy_type <- vapply(special_keep, special_flag, logical(1),
+                           flags = special_share_doy)
+  names(share_tod_type) <- special_keep
+  names(share_doy_type) <- special_keep
+
+  tod_off_types <- special_keep[!share_tod_type]
+  doy_off_types <- special_keep[!share_doy_type]
+
+  # A row is gated out of a smooth iff its (special) type opted out; all PC/ARU/
+  # BBA/LT rows keep weight 1.
+  sp_dat$tod_w <- as.numeric(!(sp_dat$Survey_Type %in% tod_off_types))
+  sp_dat$doy_w <- as.numeric(!(sp_dat$Survey_Type %in% doy_off_types))
+  if (length(tod_off_types) > 0) {
+    sp_dat$Hours_After_Reference[sp_dat$Survey_Type %in% tod_off_types] <-
+      stats::median(sp_dat$Hours_After_Reference[is_pc_aru], na.rm = TRUE)
+  }
+  if (length(doy_off_types) > 0) {
+    sp_dat$days_midpoint[sp_dat$Survey_Type %in% doy_off_types] <- 0
+  }
+  if (length(special_keep) > 0) {
+    message("  special surveys share smooths: TOD = {",
+            paste(special_keep[share_tod_type], collapse = ", "), "}, DOY = {",
+            paste(special_keep[share_doy_type], collapse = ", "), "}")
+  }
+
   # ------------------------------------------------------------
   # 6. Build spatial SPDE models
   # ------------------------------------------------------------
@@ -1782,6 +1933,19 @@ fit_PC_ARU_CL <- function(
     } else {
       ""
     },
+
+    # Special-survey intercepts: one protocol offset per surviving special type,
+    # NO effort term. Built only for types that cleared their square threshold, so
+    # no component is ever left referenced by zero likelihood rows.
+    if (length(special_keep) > 0) {
+      paste0(" + ", paste(sprintf(
+        "effect_%s(1, model = 'linear', mean.linear = 0, prec.linear = %s)",
+        special_slug[special_keep],
+        1 / (special_intercept_prior_sd^2)
+      ), collapse = " + "))
+    } else {
+      ""
+    },
     
     # Atlas-square iid, only when include_square = TRUE.
     if (use_square_re) {
@@ -1832,13 +1996,17 @@ fit_PC_ARU_CL <- function(
   shared_terms <- paste0(
     "count ~
       Intercept +
-      TOD_global +
-      DOY_global +
 
       spde_mean +
 
       Atlas3_c * spde_diff +
       Atlas3_c * effect_Atlas3",
+    # Special rows are gated out of the diurnal/seasonal smooths (via tod_w/doy_w)
+    # unless the caller opted them in; with no special surveys these are bare
+    # TOD_global + DOY_global, identical to the plain checklist model.
+    if (length(special_keep) > 0)
+         " + tod_w * TOD_global + doy_w * DOY_global"
+    else " + TOD_global + DOY_global",
     if (use_square_re) " + kappa_diff" else "",
     if (use_site_re)   " + site_w * site_iid" else "",
     if (nchar(covar_terms_str) > 0) paste0(" + ", covar_terms_str) else ""
@@ -1864,7 +2032,20 @@ fit_PC_ARU_CL <- function(
   } else {
     ""
   }
-  
+
+  # One intercept term per surviving special type, gated by its own indicator so
+  # it is exactly zero on every other protocol's rows (mirrors SC/LT). No effort
+  # term accompanies it.
+  special_terms <- if (length(special_keep) > 0) {
+    paste0(" +\n      ",
+           paste(sprintf("%s * effect_%s",
+                         special_slug[special_keep],
+                         special_slug[special_keep]),
+                 collapse = " +\n      "))
+  } else {
+    ""
+  }
+
   model_formula <- stats::as.formula(paste0(
     shared_terms,
     " +
@@ -1872,7 +2053,8 @@ fit_PC_ARU_CL <- function(
       ARU_3min * effect_ARU_3min +
       ARU_5min * effect_ARU_5min",
     bba_terms,
-    lt_terms
+    lt_terms,
+    special_terms
   ))
   
   # ------------------------------------------------------------
@@ -1997,6 +2179,16 @@ fit_PC_ARU_CL <- function(
   fit$n_pc_aru_obs      <- n_pc_aru
   fit$n_bba_obs         <- n_bba
   fit$n_lt_obs          <- n_lt
+
+  # Special-survey structure: which targeted protocols kept an intercept, the
+  # per-type detection-square audit (n_det_squares / threshold / kept), whether
+  # they shared the TOD/DOY smooths, and how many rows they contributed.
+  fit$special_survey_types       <- special_keep
+  fit$special_survey_report      <- special_report
+  fit$special_share_tod          <- share_tod_type
+  fit$special_share_doy          <- share_doy_type
+  fit$special_intercept_prior_sd <- special_intercept_prior_sd
+  fit$n_special_obs              <- sum(is_special)
   
   fit
 }

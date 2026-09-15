@@ -58,7 +58,7 @@ source(file.path(paths$functions, "inla_model_utils.R"))
 # CONFIG
 # ============================================================
 
-model_name <- "PC_ARU"
+model_name <- "PC_ARU_CL_SS"
 
 # Credible-interval level for the change summaries. 0.90 -> qlow = 5th
 # percentile, qhigh = 95th percentile. Script 09 reads these intervals for its
@@ -231,11 +231,12 @@ summarize_species_regions <- function(hex_draws, ci_level, retain_bcrs = NULL) {
   dplyr::bind_rows(prov, per_bcr)
 }
 
-# Per-BCR (and province) squares-with-detection counts for the sufficiency flag.
-species_detection_availability <- function(sp_surveys) {
+# Per-BCR (and province) squares with point count or ARU detections for the sufficiency flag.
+species_detection_availability <- function(sp_surveys, survey_types = c("Point_Count","ARU")) {
+  
   df <- sp_surveys %>%
     sf::st_drop_geometry() %>%
-    dplyr::filter(count > 0, !is.na(BCR))
+    dplyr::filter(count > 0, !is.na(BCR),Survey_Type %in% survey_types)
   
   by_bcr <- df %>%
     dplyr::group_by(Atlas, BCR) %>%
@@ -276,7 +277,7 @@ change_estimate_cols <- c(
 all_rows   <- vector("list", length(dat_used_files))
 draws_list <- if (SAVE_DRAWS) vector("list", length(dat_used_files)) else NULL
 
-for (i in rev(seq_along(dat_used_files))) {
+for (i in seq_along(dat_used_files)) {
   
   dat_used   <- readRDS(dat_used_files[i])
   sp_file    <- basename(dat_used_files[i]) |> stringr::str_remove("_1km\\.rds$")
@@ -292,15 +293,15 @@ for (i in rev(seq_along(dat_used_files))) {
   
   preds     <- readRDS(pred_path)
   
-  # Trim out predictions for areas with no safe dates
-  # NOTE: this ensures a species cannot occur in a region where it has no safe dates
-  preds <- trim_predictions_to_safe_dates(
-    preds        = preds,
-    lookup_obba2 = pixel_region_OBBA2,
-    lookup_obba3 = pixel_region_OBBA3,
-    hex_no_safe_threshold = 0.5, # zero a hex when >= this fraction of its pixels are no-safe
-    trim_unclassified     = FALSE
-  )
+  # # Trim out predictions for areas with no safe dates
+  # # NOTE: this ensures a species cannot occur in a region where it has no safe dates
+  # preds <- trim_predictions_to_safe_dates(
+  #   preds        = preds,
+  #   lookup_obba2 = pixel_region_OBBA2,
+  #   lookup_obba3 = pixel_region_OBBA3,
+  #   hex_no_safe_threshold = 0.5, # zero a hex when >= this fraction of its pixels are no-safe
+  #   trim_unclassified     = FALSE
+  # )
   
   hex_draws <- preds$hex_draws_Corrected_for_Water
   

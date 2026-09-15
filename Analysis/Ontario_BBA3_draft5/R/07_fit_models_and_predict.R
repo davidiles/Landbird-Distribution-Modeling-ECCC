@@ -12,10 +12,10 @@
 #                    fit_PC_ARU_CL() (adds BBA + linear-transect checklists)
 #   include_site / include_square -> the two structural iid switches (independent)
 #
-# Error family is chosen per species AND per observation stream (stationary vs
-# linear transect) from the count distribution -- see choose_stream_family() and
-# the loop block in 6.3. Negative binomial is used only where the non-zero counts
-# have a real tail; otherwise Poisson, whose fits are stable on near-binary data.
+# Error family is chosen per species from the pooled count distribution -- see
+# choose_stream_family() and the loop block in 6.3 -- and ONE family is shared
+# across all of a species' surveys. Negative binomial is used only where the
+# non-zero counts have a real tail; otherwise Poisson, stable on near-binary data.
 #
 # Prediction scale: the prediction formula omits the iid terms (kappa_diff,
 # site_iid; both fitted constr = TRUE), so raw exp(eta) is the GEOMETRIC mean over
@@ -52,7 +52,7 @@ source(file.path(paths$functions, "survey_processing_utils.R"))
 # Choose which model to run (normally the only lines you edit)
 # ============================================================
 
-survey_set         <- "PC_ARU"
+survey_set         <- "PC_ARU_CL"
 
 # ============================================================
 # Additional settings that could be modified
@@ -63,28 +63,41 @@ n_prediction_draws <- 500
 prediction_seed    <- 0
 
 # Modelability thresholds (point-count/ARU detections and squares, per atlas).
-min_PC_detections <- 20
-min_squares       <- 20
+min_detections <- 100
+min_squares    <- 20
 
 # Optional: restrict to a subset for testing (NULL = run all).
-species_test <- c(
-  # "American Bittern",
-  "Double-crested Cormorant", "Bank Swallow", "Osprey", "Belted Kingfisher",
-  "Grasshopper Sparrow", "Hooded Merganser", "American Black Duck",
-  "Palm Warbler","Common Nighthawk"
-  # "Common Raven", "Cliff Swallow", "Purple Martin", ,
-  # "Cedar Waxwing", "American Goldfinch", "Canada Jay", 
-  # "Bobolink", "Bald Eagle", "Wild Turkey", "Northern Parula",
-  # "Bay-breasted Warbler"
-)
+species_test <- NULL
+  # 
+  # # Species with previously splotchy maps
+  # c( 
+  #   "American Bittern",
+  #   "Black Tern",
+  #    "Clay-colored Sparrow",
+  #    "Common Goldeneye",
+  #    "Marsh Wren",
+  #    "Osprey",
+  #    "Pied-billed Grebe",
+  #    "Pine Warbler",
+  #    "Ring-necked Duck",
+  #    "Rock Pigeon",
+  #    "Sora",
+  #    "LeConte's Sparrow",
+  #    "Northern Yellow Warbler",
+  #    "Red-tailed Hawk",
+  #    "Red-winged Blackbird",
+  #    "Sandhill Crane",
+  #    "Song Sparrow",
+  #    "Swamp Sparrow",
+  #    "Tennessee Warbler",
+  #    "Tree Swallow"
+  # )
 
 # Each mode points at a base fit function and carries the two structural switches
 # explicitly, so any site/square combination is reachable without a wrapper.
 # include_site / include_square drive EVERY output folder via model_name.
-# family_mode declares the family slots the fit function takes; the actual
-# families are chosen per species in the loop (6.3):
-#   "single"        -> one `family` arg          (fit_PC_ARU)
-#   "stationary_lt" -> `family_stationary` + `family_lt` (fit_PC_ARU_CL)
+# Both fit functions take a single `family` arg: one shared error family spans all
+# of a species' surveys. The family itself is chosen per species in the loop (6.3).
 mode_settings <- list(
   
   # ---- Point counts + ARUs (1, 3, 5 min) ----
@@ -94,25 +107,21 @@ mode_settings <- list(
     survey_types     = c("Point_Count", "ARU"),
     survey_durations = c(1, 3, 5),
     include_site     = TRUE,
-    include_square   = TRUE,
-    snap_m_lt        = NA,               # no linear transects in this mode
-    family_mode      = "single"          # PCs and ARUs are fit with a single shared error family (e.g., poisson or nbinomial)
+    include_square   = TRUE
   ),
   
   # ---- Point counts + ARUs + checklists (BBA stationary + linear transects) ----
-  # OBBA3-only. PC/ARU/BBA share one stationary observation model; linear
-  # transects are a separate model with their own site-year iid (snap_m_lt) and
-  # their own family.
+  # OBBA3-only. PC/ARU/BBA and linear transects share ONE observation model with a
+  # single shared error family across all surveys; linear transects keep their own
+  # effort terms and site-year iid (snap_m_lt) but not a separate family.
   PC_ARU_CL = list(
     model_name       = "PC_ARU_CL",
     fit_function     = fit_PC_ARU_CL,
     survey_types     = c("Point_Count", "ARU",
                          "Breeding Bird Atlas", "Linear transect"),
-    survey_durations = c(1, 3, 5),       # applies to PC/ARU only (load_sp_dat)
+    survey_durations = c(1, 3, 5),
     include_site     = TRUE,
-    include_square   = TRUE,
-    snap_m_lt        = 1000,             # linear-transect site grid (metres)
-    family_mode      = "stationary_lt"   # stationary counts (PCs, ARUs, stationary checklists) and linear transects are fit with separate error families
+    include_square   = TRUE
   )
 )
 
@@ -135,14 +144,14 @@ message("Mode: ", survey_set, "  ->  model_name = ", model_name)
 # near-binary counts and destabilises the fit).
 
 nb_min_positive <- 50
-nb_tail_value   <- 10
+nb_tail_value   <- 5
 nb_min_tail_n   <- 10
 
 # Decide one stream's error family from its count distribution.
 choose_stream_family <- function(count,
                                  min_positive = 50,
-                                 tail_value   = 3,
-                                 min_tail_n   = 30) {
+                                 tail_value   = 10,
+                                 min_tail_n   = 10) {
   y_pos <- count[is.finite(count) & count > 0]
   if (length(y_pos) >= min_positive && sum(y_pos >= tail_value) >= min_tail_n) {
     "nbinomial"
@@ -163,15 +172,13 @@ base_covars <- c(
   "Grassland_South", "Grassland_North",
   "Shrubland_South", "Shrubland_North",
   "Wetland_South",   "Wetland_North"
-  
-  
 )
 
 priors_list <- list(
   # Large-scale abundance & change fields (SPDE, PC-Matern). 
   # Range prior favours long (300-1000 km) ranges
   prior_range_abund  = c(300, 0.1),   # P(range < 300 km) = 0.1
-  prior_sigma_abund  = c(1, 0.1),   # P(sigma > 0.5)    = 0.1
+  prior_sigma_abund  = c(1, 0.1),     # P(sigma > 1)    = 0.1
   prior_range_change = c(300, 0.1),   # P(range < 300 km) = 0.1
   prior_sigma_change = c(0.3, 0.1),   # P(sigma > 0.3)    = 0.1
   
@@ -185,7 +192,15 @@ priors_list <- list(
   
   # Day-of-year smooth: FIXED range + estimated sigma.
   fixed_DOY_range = 30,
-  prior_DOY_sigma = c(1, 0.1)         # P(sigma > 1) = 0.1
+  prior_DOY_sigma = c(1, 0.1),        # P(sigma > 1) = 0.1
+  
+  # Checklist effort slopes on log(effort / median effort). A single log-linear
+  # coefficient per protocol (BBA duration, LT distance), NOT a 1-D SPDE. Prior
+  # mean > 0 favours more detections with more effort (diminishing returns).
+  BBA_log_duration_prior_mean = 0.30,
+  BBA_log_duration_prior_sd   = 0.20,
+  LT_log_distance_prior_mean  = 0.30,
+  LT_log_distance_prior_sd    = 0.20
 )
 
 # INLA approximation settings used inside the fit function.
@@ -234,31 +249,19 @@ if (!dir.exists(species_dir)) {
 }
 
 # ============================================================
-# 4. Select species to model
+# 4. List of species to consider
 # ============================================================
-#   species_all : every species (honeycomb survey data is saved for all).
-#   species_sel : the subset with enough data to fit (fitted + predicted).
 
 species_all <- species_detection_summaries %>%
   dplyr::select(sp_english, species_id) %>%
   distinct()
 
-species_sel <- species_detection_summaries %>%
-  subset(Survey_Type == "Point_Count" & n_det >= min_PC_detections & n_sq >= min_squares) %>%
-  group_by(sp_english, species_id) %>%
-  summarize(n_PCdet_BothAtlas = sum(n_det),
-            n_PCsq_BothAtlas  = sum(n_sq), .groups = "drop") %>%
-  # Drop an unresolved composite species label.
-  subset(sp_english != "Philadelphia/Red-eyed Vireo")
-
 # Apply the test filter to both sets when supplied (NULL means "all").
 if (!is.null(species_test)) {
   species_all <- species_all %>% filter(sp_english %in% species_test)
-  species_sel <- species_sel %>% filter(sp_english %in% species_test)
 }
 
-message("Species total (honeycomb data saved for all): ", nrow(species_all))
-message("Species to model: ", nrow(species_sel))
+message("Species in list: ", nrow(species_all))
 
 # ============================================================
 # 5. Build spatial meshes once
@@ -335,9 +338,6 @@ for (i in seq_len(nrow(species_all))) {
     next
   }
   
-  # Enough data to fit a model? Honeycomb data is saved either way.
-  is_modelable <- sp_code %in% species_sel$species_id
-  
   # ---- 6.2 Load species data (safe-date filtering + pred_doy from 06) ----
   sp <- load_sp_dat(sp_path, all_surveys,
                     survey_types = mode$survey_types,
@@ -358,61 +358,54 @@ for (i in seq_len(nrow(species_all))) {
     next
   }
   
-  # Site-level REs. Stationary sites (PCs, ARUs, BBA checklists): 500-m site-year grid.
-  sp_dat <- add_site_ids(sp_dat, snap_m = 500, tolerance_m = 0)
-
-  # Stream mask for the per-stream family decision (6.3). Always defined; in
-  # PC_ARU mode there are no LT rows, so this is all FALSE.
-  is_lt_row <- sp_dat$Survey_Type == "Linear transect"
   
-  # ---- 6.3 Per-stream error family from the count distribution ----
-  # Stationary = PC + ARU + BBA; LT = linear transects (only in stationary_lt mode).
-  # NB overdispersion is estimable only where the non-zero counts have a real tail;
-  # each stream is set independently by choose_stream_family(), and near-binary or
-  # sparse streams fall back to Poisson.
-  count_streams <- list(
-    stationary = sp_dat$count[!is_lt_row]
-  )
-  if (identical(mode$family_mode, "stationary_lt")) {
-    count_streams$lt <- sp_dat$count[is_lt_row]
-  }
-  
-  family_by_stream <- purrr::map_chr(
-    count_streams, choose_stream_family,
+  # ---- 6.3 Error family from the count distribution ----
+  # ONE error family is shared across all of a species' surveys, so it is chosen
+  # from the pooled count distribution (every retained row, LT included). NB
+  # overdispersion is estimable only where the non-zero counts have a real tail
+  # (choose_stream_family); near-binary or sparse data fall back to Poisson.
+  shared_family <- choose_stream_family(
+    sp_dat$count,
     min_positive = nb_min_positive,
     tail_value   = nb_tail_value,
     min_tail_n   = nb_min_tail_n
   )
   
-  family_args <- if (identical(mode$family_mode, "single")) {
-    list(family = unname(family_by_stream[["stationary"]]))
-  } else {
-    list(family_stationary = unname(family_by_stream[["stationary"]]),
-         family_lt         = unname(family_by_stream[["lt"]]))
-  }
-  stat_arg     <- if (identical(mode$family_mode, "single")) "family" else "family_stationary"
-  error_family <- paste(unlist(family_args), collapse = "/")
+  family_args  <- list(family = shared_family)
+  stat_arg     <- "family"
+  error_family <- shared_family
   
-  if (is_modelable) {
-    count_dist_summary <- dplyr::bind_rows(lapply(names(count_streams), function(nm) {
-      cnt   <- count_streams[[nm]]
-      y_pos <- cnt[cnt > 0]
-      tibble::tibble(
-        stream    = nm,
-        n         = length(cnt),
-        n_pos     = length(y_pos),
-        det_rate  = round(mean(cnt > 0), 4),
-        max_count = if (length(y_pos)) max(y_pos) else 0L,
-        n_ge2     = sum(y_pos >= 2),
-        n_tail    = sum(y_pos >= nb_tail_value),   # counts >= nb_tail_value
-        family    = family_by_stream[[nm]]
-      )
-    }))
-    message("  error family by stream (nbinomial needs a real non-zero tail):")
-    print(count_dist_summary)
+  y_pos <- sp_dat$count[sp_dat$count > 0]
+  count_dist_summary <- tibble::tibble(
+    n         = nrow(sp_dat),
+    n_pos     = length(y_pos),
+    det_rate  = round(mean(sp_dat$count > 0), 4),
+    max_count = if (length(y_pos)) max(y_pos) else 0L,
+    n_ge2     = sum(y_pos >= 2),
+    n_tail    = sum(y_pos >= nb_tail_value),   # counts >= nb_tail_value
+    family    = shared_family
+  )
+  
+  # Determine if species clears sample size threshold for modeling
+  sp_det_summary <- sp_dat %>%
+    as.data.frame() %>%
+    subset(count>0) %>%
+    
+    group_by(Atlas) %>%
+    summarize(n_squares    = length(unique(square_id)),
+              n_detections = sum(count>0),
+              n_detections_PC = sum(Survey_Type == "Point_Count"),
+              n_detections_ARU = sum(Survey_Type == "ARU"),
+              n_detections_BBA = sum(Survey_Type == "Breeding Bird Atlas"),
+              n_detections_LT = sum(Survey_Type == "Linear transect"))
+  
+  if (max(sp_det_summary$n_squares) > min_squares & max(sp_det_summary$n_detections) > min_detections){
+    is_modelable <- TRUE
+  } else{
+    is_modelable <- FALSE
   }
   
-  # ---- 6.4 Save honeycomb (per-survey) record for every species ----
+  # ---- 6.4 Save data record for every species ----
   save_atomic(
     list(
       sp_english    = sp_name,
@@ -421,6 +414,7 @@ for (i in seq_len(nrow(species_all))) {
       sp_safe_dates = sp_safe_dates,
       pred_doy      = pred_doy,
       survey_counts = sp_dat %>% st_drop_geometry() %>% select(survey_id, count),
+      sp_det_summary = sp_det_summary,
       error_family  = error_family
     ),
     dat_path
@@ -430,6 +424,12 @@ for (i in seq_len(nrow(species_all))) {
     message("Honeycomb data saved for ", sp_name, "; not enough data to fit a model.")
     next
   }
+  
+  # Site-level REs: 500-m site-year grid.
+  sp_dat <- add_site_ids(sp_dat, snap_m = 500, tolerance_m = 0)
+  
+  # OPTIONAL: THIN TO A SINGLE OBSERVATION PER SITE
+  # sp_dat <- thin_one_per_site(sp_dat, group_cols = "site_id")
   
   # ---- 6.5 Species-specific covariate table ----
   # Keep candidate covariates present in this species' data with > 1 unique finite
@@ -518,6 +518,21 @@ for (i in seq_len(nrow(species_all))) {
     include_square = mode$include_square
   )
   
+  # Checklist effort priors apply only to the checklist fit function
+  # (fit_PC_ARU_CL); fit_PC_ARU has no effort terms. Append them only when the
+  # selected fit function declares them, so PC/ARU-only modes don't error on
+  # unused arguments.
+  effort_prior_args <- list(
+    BBA_log_duration_prior_mean = priors_list$BBA_log_duration_prior_mean,
+    BBA_log_duration_prior_sd   = priors_list$BBA_log_duration_prior_sd,
+    LT_log_distance_prior_mean  = priors_list$LT_log_distance_prior_mean,
+    LT_log_distance_prior_sd    = priors_list$LT_log_distance_prior_sd
+  )
+  fit_args <- c(
+    fit_args,
+    effort_prior_args[names(effort_prior_args) %in% names(formals(fit_model))]
+  )
+  
   mod <- try(do.call(fit_model, c(fit_args, family_args)), silent = TRUE)
   
   # Fallback: a chosen nbinomial stationary family that fails to fit -> retry once
@@ -538,14 +553,18 @@ for (i in seq_len(nrow(species_all))) {
   
   # Stationary family actually used (after any fallback).
   stationary_family_used <- family_args[[stat_arg]]
-  family_fallback        <- !identical(stationary_family_used,
-                                       family_by_stream[["stationary"]])
+  family_fallback        <- !identical(stationary_family_used, shared_family)
   if (family_fallback) {
     message("  -> fit succeeded with Poisson stationary error (nbinomial fallback).")
   }
   
   end_model   <- Sys.time()
   fit_minutes <- round(as.numeric(end_model - start_model, units = "mins"), 1)
+  
+  print(summary(mod))
+  message("\n====================\n", i, "/", nrow(species_all), ": ", sp_name,
+          " (species_id = ", sp_code, "); ", fit_minutes, " min to fit model\n====================")
+  
   
   # ---- 6.7b Reference time of day, from the fitted TOD curve ----
   # Read off TOD_global (estimated alongside the protocol intercepts), restricted
@@ -613,7 +632,7 @@ for (i in seq_len(nrow(species_all))) {
   model_summaries[[sp_name]] <- list(
     sp_name          = sp_name,
     sp_code          = sp_code,
-    error_family           = error_family,             # chosen family/families
+    error_family           = error_family,             # chosen error family
     stationary_family_used = stationary_family_used,   # after any fallback
     family_fallback        = family_fallback,
     priors           = priors_list,
@@ -639,10 +658,6 @@ for (i in seq_len(nrow(species_all))) {
     summary_hyperpar      = mod$summary.hyperpar
   )
   save_atomic(model_summaries, model_summaries_path)
-  
-  print(summary(mod))
-  message("\n====================\n", i, "/", nrow(species_all), ": ", sp_name,
-          " (species_id = ", sp_code, "); ", fit_minutes, " min to fit model\n====================")
   
   # ---- 6.8 Full-grid predictions ----
   # Standardized to optimal_TOD, days_midpoint = 0, with kappa_diff and site_iid
@@ -747,7 +762,7 @@ for (i in seq_len(nrow(species_all))) {
       sp_safe_dates     = sp_safe_dates,
       sp_square_summary = sp_square_summary,
       
-      error_family           = error_family,             # chosen family/families
+      error_family           = error_family,             # chosen error family
       stationary_family_used = stationary_family_used,   # after any fallback
       family_fallback        = family_fallback,
       priors       = priors_list,
